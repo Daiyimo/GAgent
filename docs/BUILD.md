@@ -1,8 +1,8 @@
 # Android build
 
 The CI workflow is the authoritative build recipe: Android API 34, NDK
-25.1.8937393, Gradle 8.2, Liberica Java 17.0.21, Kotlin 1.9.22, Chaquopy 15.0.1,
-Python 3.10, Go 1.27.3 and the pinned gomobile revision in `tsbridge/go.mod`.
+25.1.8937393, Gradle 8.2, Liberica Java 17.0.21, Kotlin 1.9.22, Chaquopy 17.1.0,
+Python 3.10.22, OpenSSL 3.5.9, Go 1.27.3 and the pinned gomobile revision in `tsbridge/go.mod`.
 Install Android SDK components and expose `ANDROID_HOME` and `ANDROID_NDK_HOME`.
 
 ```sh
@@ -32,3 +32,6 @@ repository access. No workflow changes repository visibility or publishes a rele
 Android runtime Python wheels come from Chaquopy's Android index. They differ from
 desktop test dependencies. Compatibility pins are not a promise of security
 currency; security review must include native wheels and packaged CA stores.
+CI checks the actual packaged OpenSSL and Go libraries. Chaquopy's `_chaquopy`
+OpenSSL names are compatibility stubs forwarding to the current `_python` libraries.
+An old build-time version string in an extension is not its dynamically loaded TLS library.

@@ -6,6 +6,7 @@ claim that every bundled runtime is current. Review this file before public rele
 
 | Dependency | Change / observation | Remaining boundary |
 | --- | --- | --- |
+| CPython / OpenSSL | Chaquopy17.1.0 supplies CPython3.10.22 and OpenSSL3.5.9; CI verifies the packaged native library | Replaces the initial candidate's actual OpenSSL3.0.5, which was discovered by artifact inspection rather than inferred from Python package metadata |
 | Go mesh | Go1.27.3; x/net0.60, x/crypto0.57, x/text0.42, compress1.18.7 | Module scan only flags deprecated OpenPGP (GO-2026-5932); the inspected dependency graph does not import it |
 | DOMPurify | 3.4.17 | WebView still executes model-rendering code, so keep sanitization and bridge separation |
 | certifi | 2026.10.19 in runtime and bundled Lark dependencies; also replaces Chaquopy's default CA asset before its integrity hashes are calculated | Android-native TLS uses the device/provider trust store separately |
@@ -16,8 +17,10 @@ claim that every bundled runtime is current. Review this file before public rele
 | OpenCV | Android wheel4.5.1.48 | Its Chaquopy recipe explicitly disables WebP/TIFF/Jasper/OpenEXR, so the PyPI wheel libwebp finding is not directly transferable. The old native dependency set still needs a supported replacement |
 
 OpenSSL findings attached to desktop cryptography wheels do not identify the
-OpenSSL version in a separately built Chaquopy wheel. Inspect the actual native
-libraries; do not clear or confirm them from the Python package version alone.
+OpenSSL version in a separately built Chaquopy wheel. The Android cryptography
+extension dynamically depends on the `_chaquopy` compatibility stubs, which forward
+to the current `_python` OpenSSL libraries. Its old build-time version string is
+not the dynamically loaded library. CI checks the actual native runtime as well.
 The desktop regression environment uses cryptography50.0.2 and cannot substitute
 for testing the Android binary. Generated Python artifacts replace public upstream
 build-user paths with equal-length anonymous strings before packaging.
@@ -26,6 +29,8 @@ build-user paths with equal-length anonymous strings before packaging.
 或未走到特定 API，都是限定条件下的风险收敛，不能宣传为依赖已经全部打补丁。
 
 Sources: [Go report](https://pkg.go.dev/vuln/GO-2026-5932),
+[Chaquopy release notes](https://chaquo.com/chaquopy/doc/current/changelog.html),
+[OpenSSL supported releases](https://openssl-library.org/source/),
 [Chaquopy OpenCV recipe](https://github.com/chaquo/chaquopy/tree/master/server/pypi/packages/opencv-python),
 [cryptography SECT](https://github.com/advisories/GHSA-r6ph-v2qm-q3c2),
 [cryptography name constraints](https://github.com/advisories/GHSA-m959-cc7f-wv43),

@@ -92,7 +92,8 @@ afterEvaluate {
         doLast {
             exec {
                 commandLine System.getenv('CHAQUOPY_PYTHON') ?: 'python3',
-                    rootProject.file('tools/prepare_python_assets.py'), task.assetDir
+                    rootProject.file('tools/prepare_python_assets.py'),
+                    new File(task.outputDir.get().asFile, 'chaquopy')
             }
         }
     }

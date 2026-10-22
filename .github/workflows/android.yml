@@ -93,12 +93,12 @@ jobs:
           fi
           for apk in dist/*.apk; do
             python tools/audit_source.py --apk "$apk"
-            python tools/apk_inventory.py "$apk" > "$apk.inventory.json"
+            python tools/apk_inventory.py --verify-runtime "$apk" > "$apk.inventory.json"
             if [[ "$apk" != *-unsigned.apk ]]; then
               "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs "$apk" >> dist/SIGNATURES.txt
             fi
           done
-          sha256sum dist/*.apk > dist/SHA256SUMS
+          (cd dist && sha256sum *.apk > SHA256SUMS)
           printf '%s\n' "$GITHUB_SHA" > dist/SOURCE_COMMIT
       - name: Remove signing material
         if: always()

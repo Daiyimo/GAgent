@@ -42,7 +42,28 @@ def inventory(path):
             'scope': 'Package metadata and embedded version strings, not a vulnerability-free attestation.'}
 
 
+def verify_runtime(result):
+    """Gate the actual linked runtime libraries, not build-machine versions."""
+    expected = {
+        '/libcrypto_python.so': 'OpenSSL 3.5.9 ',
+        '/libgojni.so': 'go1.27.3',
+    }
+    native = result['native_libraries']
+    for suffix, version in expected.items():
+        matches = [entry for entry in native if entry['path'].endswith(suffix)]
+        if len(matches) != 1 or not any(v.startswith(version) for v in matches[0]['version_strings']):
+            raise ValueError('Missing or outdated packaged runtime: ' + suffix)
+    for entry in native:
+        if entry['path'].endswith('/libcrypto_chaquopy.so') and entry['version_strings']:
+            raise ValueError('Expected the compatibility stub, not an old OpenSSL binary')
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('apk', type=Path)
-    print(json.dumps(inventory(parser.parse_args().apk), indent=2))
+    parser.add_argument('--verify-runtime', action='store_true')
+    args = parser.parse_args()
+    result = inventory(args.apk)
+    if args.verify_runtime:
+        verify_runtime(result)
+    print(json.dumps(result, indent=2))
