@@ -6,7 +6,7 @@ claim that every bundled runtime is current. Review this file before public rele
 
 | Dependency | Change / observation | Remaining boundary |
 | --- | --- | --- |
-| CPython / OpenSSL | Chaquopy17.1.0 supplies CPython3.10.22 and OpenSSL3.5.9; CI verifies the packaged native library | Replaces the initial candidate's actual OpenSSL3.0.5, which was discovered by artifact inspection rather than inferred from Python package metadata |
+| CPython / OpenSSL | Chaquopy17.1.0 supplies CPython3.10.22 and OpenSSL3.5.9; CI verifies the packaged native library | Replaces the initial candidate's actual OpenSSL3.0.5. Python3.10 reached upstream end of life on2026-10-01; a supported Python/native-wheel migration remains a public-release gate |
 | Go mesh | Go1.27.3; x/net0.60, x/crypto0.57, x/text0.42, compress1.18.7 | Module scan only flags deprecated OpenPGP (GO-2026-5932); the inspected dependency graph does not import it |
 | DOMPurify | 3.4.17 | WebView still executes model-rendering code, so keep sanitization and bridge separation |
 | certifi | 2026.10.19 in runtime and bundled Lark dependencies; also replaces Chaquopy's default CA asset before its integrity hashes are calculated | Android-native TLS uses the device/provider trust store separately |
@@ -31,6 +31,7 @@ build-user paths with equal-length anonymous strings before packaging.
 Sources: [Go report](https://pkg.go.dev/vuln/GO-2026-5932),
 [Chaquopy release notes](https://chaquo.com/chaquopy/doc/current/changelog.html),
 [OpenSSL supported releases](https://openssl-library.org/source/),
+[CPython support status](https://devguide.python.org/versions/),
 [Chaquopy OpenCV recipe](https://github.com/chaquo/chaquopy/tree/master/server/pypi/packages/opencv-python),
 [cryptography SECT](https://github.com/advisories/GHSA-r6ph-v2qm-q3c2),
 [cryptography name constraints](https://github.com/advisories/GHSA-m959-cc7f-wv43),
