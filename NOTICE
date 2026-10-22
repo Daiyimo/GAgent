@@ -1,0 +1,12 @@
+GAgent
+Copyright 2026 GAgent contributors
+
+Derived from GenericAgent / GAndroid by Liang Jiaqing and contributors.
+This distribution integrates the Android beta and subsequent PC Link fixes,
+removes mandatory hosted services and embedded credentials, and adds explicit
+integration configuration and local capability authentication.
+
+Third-party code, fonts, models and runtime dependencies retain their original
+copyright notices and licenses. See THIRD_PARTY.md and third_party/licenses/.
+The Apache-2.0 project license does not relicense third-party components or grant
+rights to service trademarks, accounts or privately operated infrastructure.

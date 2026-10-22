@@ -1,0 +1,101 @@
+{
+  "_doc": "GAndroid 能力注册表(单一真相源)。onboarding_sop 据此逐项引导解锁 + 探针自检 + 出能力地图。加能力=加一项。probe=只读探针(droid/系统), required=核心能力。name/why/unlock 双语供 i18n。",
+  "capabilities": [
+    {
+      "id": "accessibility",
+      "name": {"zh": "无障碍控制", "en": "Accessibility control"},
+      "why": {"zh": "跨 App 执行与读屏的唯一主控, 几乎所有手机操作的基础", "en": "The single master control for cross-app action and screen reading"},
+      "unlock": {"zh": "对 Agent 说「带我开无障碍」→ 设置 > 无障碍 > GenericAgent 开启", "en": "Tell the agent 'enable accessibility' → Settings > Accessibility > GenericAgent"},
+      "probe": "droid.ping().get('a11y')",
+      "required": true
+    },
+    {
+      "id": "overlay",
+      "name": {"zh": "悬浮窗", "en": "Floating window"},
+      "why": {"zh": "切到别的 App 时仍能看到 GA 在工作、可随时唤回", "en": "Stay visible and recallable while operating other apps"},
+      "unlock": {"zh": "允许 GenericAgent 显示悬浮窗", "en": "Allow GenericAgent to draw over other apps"},
+      "probe": "ui:Settings.canDrawOverlays",
+      "required": false
+    },
+    {
+      "id": "record_audio",
+      "name": {"zh": "语音输入", "en": "Voice input"},
+      "why": {"zh": "语音下达任务、语音确认危险动作", "en": "Voice tasking and voice confirmation of risky actions"},
+      "unlock": {"zh": "允许麦克风权限", "en": "Grant microphone permission"},
+      "probe": "perm:RECORD_AUDIO",
+      "required": false
+    },
+    {
+      "id": "install_unknown",
+      "name": {"zh": "安装应用", "en": "Install apps"},
+      "why": {"zh": "让 GA 帮你安装它获取到的应用包(用户授权确认, 非静默)", "en": "Install app packages GA fetches for you (user-confirmed, never silent)"},
+      "unlock": {"zh": "允许安装未知来源应用", "en": "Allow installing unknown apps"},
+      "probe": "ui:canRequestPackageInstalls",
+      "required": false
+    },
+    {
+      "id": "asset_scan",
+      "name": {"zh": "应用资产扫描", "en": "Installed-app scan"},
+      "why": {"zh": "枚举已装 App 建能力地图; 厂商助手据此选目标", "en": "Enumerate installed apps to build the capability map"},
+      "unlock": {"zh": "随无障碍即可用(QUERY_ALL_PACKAGES 已声明)", "en": "Available once accessibility is on"},
+      "probe": "len(droid.pkgs()) > 0",
+      "required": false
+    },
+    {
+      "id": "vendor_assistant",
+      "name": {"zh": "厂商 AI 助手(借权)", "en": "Vendor AI assistant"},
+      "why": {"zh": "借手机自带 AI 助手(各 OEM, 如小爱/小艺/小布/Jovi/Bixby/Aicy)用其系统授权执行 GA 权限不够的动作", "en": "Borrow the phone's built-in vendor AI assistant (any OEM) and its system privileges for actions GA itself cannot do"},
+      "unlock": {"zh": "手机已内置并登录厂商 AI 助手(discover 自动识别机型; 详见 vendor_assistant_sop)", "en": "A built-in vendor AI assistant installed and signed in (auto-detected by discover; see vendor_assistant_sop)"},
+      "probe": "vendor_bridge.discover",
+      "required": false
+    },
+    {
+      "id": "wireless_adb",
+      "name": {"zh": "无线调试自连", "en": "Wireless ADB self-connect"},
+      "why": {"zh": "补无障碍够不到的系统级 shell(input/am/pm/wm/screencap -d), 虚拟屏模式的前置", "en": "Adds system-level shell (input/am/pm/wm/screencap -d) beyond accessibility; prerequisite for virtual-screen mode"},
+      "unlock": {"zh": "设置>通用里点「无线调试自连」按引导开无线调试→adb_pair(一次)→adb_connect; 详见 adb_self_setup", "en": "Settings>General 'Wireless ADB', follow the guide to enable wireless debugging → adb_pair(once) → adb_connect; see adb_self_setup"},
+      "probe": "droid.adb_status().get('connected')",
+      "required": false
+    },
+    {
+      "id": "vision",
+      "name": {"zh": "视觉/OCR", "en": "Vision/OCR"},
+      "why": {"zh": "A11y 节点缺失时(自绘/游戏/WebView)端侧 YOLO+OCR 定位", "en": "Locate elements when the a11y tree is missing (canvas/games/WebView)"},
+      "unlock": {"zh": "随包内置, 无需授权(端侧 ONNX)", "en": "Built-in on-device ONNX, no grant needed"},
+      "probe": "droid.ui_detect|droid.ocr",
+      "required": false
+    },
+    {
+      "id": "sense_mic_bg",
+      "name": {"zh": "环境录音(真实世界记忆)", "en": "Ambient recording (real-world memory)"},
+      "why": {"zh": "把线下谈话/会议录成可检索的转写文本; 默认关闭, 每次由你显式开始, 音频默认不出设备", "en": "Turn offline conversations into searchable transcripts; off by default, you start each session explicitly, audio stays on-device"},
+      "unlock": {"zh": "允许麦克风权限; 采集期状态栏麦克风指示与常驻通知(带停止按钮)平台强制可见, 不可隐藏(用法见 sense_sop)", "en": "Grant microphone permission; while capturing, the system mic indicator and the ongoing notification (with a stop action) are platform-enforced and cannot be hidden (see sense_sop)"},
+      "probe": "perm:RECORD_AUDIO|sense.handle('/sense.mic probe')",
+      "required": false
+    },
+    {
+      "id": "sense_location",
+      "name": {"zh": "位置与停留点", "en": "Location & stay points"},
+      "why": {"zh": "回答「我在哪待了多久/去过哪」, 并给每条记忆加上地点这一维", "en": "Answer where you were and for how long; adds place as a memory dimension"},
+      "unlock": {"zh": "对 GA 说「开始记录, 带上位置」→ 系统权限框当场弹出(GA 只在你明确要开始记录时才申请), 选「大致位置」即可(不申请后台定位); 想更准再单独开「精确位置」。若之前选过「不再询问」, 系统不再弹框, 去 设置 > 应用 > GenericAgent > 权限 > 位置 开启", "en": "Tell GA 'start recording, include location' → the system prompt appears right then (GA only asks once you explicitly start a recording); Approximate is enough (background location is never requested), enable Precise only if you want better accuracy. If you previously chose 'Don't ask again', open Settings > Apps > GenericAgent > Permissions > Location"},
+      "probe": "perm:ACCESS_COARSE_LOCATION|sense.handle('/sense.loc status')",
+      "required": false
+    },
+    {
+      "id": "sense_nearby",
+      "name": {"zh": "同场者感知", "en": "Nearby-device sensing"},
+      "why": {"zh": "用附近设备指纹判断「和谁在一起」; 地址一律 hash 后存, 不做真名识别", "en": "Infer who you were with from nearby-device fingerprints; addresses are stored hashed, no name recognition"},
+      "unlock": {"zh": "对 GA 说「开始记录, 记一下同场的人」→ 系统弹「附近的设备」框(本项声明不用于定位, 不需要定位权限); 若之前选过「不再询问」, 去 设置 > 应用 > GenericAgent > 权限 > 附近的设备 开启", "en": "Tell GA 'start recording, note who is around' → the system 'Nearby devices' prompt appears (declared never-for-location, so no location permission is needed); if you previously chose 'Don't ask again', open Settings > Apps > GenericAgent > Permissions > Nearby devices"},
+      "probe": "perm:BLUETOOTH_SCAN",
+      "required": false
+    },
+    {
+      "id": "sense_calendar",
+      "name": {"zh": "日历(只读)", "en": "Calendar (read-only)"},
+      "why": {"zh": "把会议的时间/地点/参会人直接继承给记录, 是最便宜且零推断的元数据", "en": "Inherit meeting time/place/attendees straight into the record — the cheapest zero-inference metadata"},
+      "unlock": {"zh": "对 GA 说「开始记录, 顺便对一下日历」(session start 的 sources 带 cal)→ 系统弹日历读取框; 只查与采集时段重叠的事件, 不做全量同步。若之前选过「不再询问」, 去 设置 > 应用 > GenericAgent > 权限 > 日历 开启", "en": "Tell GA 'start recording and match it against my calendar' (pass cal in session start sources) → the calendar prompt appears; only events overlapping the capture window are queried, never a full sync. If you previously chose 'Don't ask again', open Settings > Apps > GenericAgent > Permissions > Calendar"},
+      "probe": "perm:READ_CALENDAR",
+      "required": false
+    }
+  ]
+}

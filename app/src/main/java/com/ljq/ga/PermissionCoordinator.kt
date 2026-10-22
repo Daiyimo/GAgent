@@ -1,0 +1,68 @@
+package com.ljq.ga
+
+import android.content.Context
+import android.content.Intent
+import android.provider.Settings
+
+class PermissionCoordinator(
+    private val activity: MainActivity,
+    private val webCallbacks: WebCallbacks,
+) {
+    // 悬浮窗授权往返闭环: 用户从系统授权页返回 → 上报 float_perm_result(ok/from/secs, 补齐 denied 之后的漏斗断点)。
+    //   授权成功自动接续原动作: button→直接进悬浮窗模式(完成用户原意图); always_on→补落开关+回推前端(免二次手点)。
+    //   必须在下方 alwaysOn 读取之前处理: 补落的 SP 值要在同一趟 onResume 里生效(服务由既有分支拉起)。
+    // 返回 false: 调用方(Activity.onResume)应立即 return, 不再跑后续逻辑(如 Analytics.drainAgentEvents)。
+    fun pushResumeState(): Boolean {
+        // 采集会话真值收敛(与下方所有分支无关, 故放最前, 任何提前 return 都不该跳过它):
+        //   任务管理器手停 / OEM 杀后台后会留下"current 指针还在但服务已死"的幻影, 上层会一直以为还在录。
+        //   回前台第一件事就是把幻影收敛掉并补一条显式缺口 —— 假数据比没数据危险得多。
+        runCatching { Sense.reconcile(activity) }
+        val sp = activity.getSharedPreferences("ga", Context.MODE_PRIVATE)
+        sp.getString("overlay_perm_pending", null)?.let { from ->
+            val ts = sp.getLong("overlay_perm_ts", System.currentTimeMillis())
+            sp.edit().remove("overlay_perm_pending").remove("overlay_perm_ts").apply()
+            val ok = Settings.canDrawOverlays(activity)
+            val secs = ((System.currentTimeMillis() - ts) / 100) / 10.0   // 0.1s 精度
+            Analytics.track("""{"event":"float_perm_result","props":{"ok":$ok,"from":"$from","secs":$secs}}""")
+            if (ok) when (from) {
+                "always_on" -> {
+                    sp.edit().putBoolean("float_always_on", true).apply()
+                    webCallbacks.onFloatAlways(true)
+                }
+                else -> { activity.toFloat(); return false }   // 悬浮窗模式会 moveTaskToBack, 后续 onResume 逻辑无需再跑
+            }
+        }
+        // 悬浮窗常开开关关闭时: 回前台收起悬浮球(原行为)。开启且有权限时: 保持常驻(不 stop),
+        //   并确保服务在跑(用户可能刚重装/冷启还没起过服务)。权限被撤销则退化为收起。
+        val alwaysOn = sp.getBoolean("float_always_on", false)
+        if (alwaysOn && Settings.canDrawOverlays(activity)) {
+            if (FloatService.live == null) {
+                val fsi = Intent(activity, FloatService::class.java).putExtra("trigger", "always")
+                if (android.os.Build.VERSION.SDK_INT >= 26) activity.startForegroundService(fsi) else activity.startService(fsi)
+            }
+        } else {
+            activity.stopService(Intent(activity, FloatService::class.java))
+            // 常开开着却没权限(用户去系统撤了 overlay 权限): 真值源 SP 落 false, 假"开"由下方统一回推纠正。
+            if (alwaysOn) sp.edit().putBoolean("float_always_on", false).apply()
+        }
+        // 无条件回推有效常开态(仿 gaOnA11y): 前端镜像(kv)可因授权往返时 WebView 未加载、登录切 kv 命名空间等
+        // 与 SP 分叉(真机实证: SP=true 服务在跑而开关显示关)。每次 onResume 以 SP 真值收敛, 消灭双向假态。
+        webCallbacks.onFloatAlways(sp.getBoolean("float_always_on", false))
+        // 从悬浮窗/后台返回: WebView 挂起期间布局重排会把会话列表停在中部, 后台不可靠触发 visibilitychange,
+        // 故主动驱动前端回底(前端 gaOnResume 仅在原本贴底/任务运行中才回底, 尊重上滑看历史)。
+        webCallbacks.onResumeSync()
+        // 无障碍自愈(v2.29): 持久化开 ∧ 已授 WRITE_SECURE_SETTINGS ∧ 服务被系统摘除(OEM force-stop 策略)
+        //   → 静默写回。必须在下行 gaOnA11y 回推之前: 前端拿到的即恢复后状态(用户开 app 无感, 免系统开关+10s 倒计时)。
+        runCatching {
+            if (A11yPersist.persistEnabled(activity) && A11yPersist.hasWriteSecure(activity) && !activity.isA11yOn()) {
+                val healed = A11yPersist.reEnable(activity)
+                Analytics.track("""{"event":"a11y_heal","props":{"ok":$healed}}""")
+            }
+        }
+        // 回推无障碍最新状态: 用户可能刚从系统无障碍设置页开完权限返回, 让前端即时更新横幅/红点/引导。
+        webCallbacks.onA11y(activity.isA11yOn())
+        // 回推无线调试自连最新状态: 用户可能刚从开发者选项/无线调试页返回; JS 侧自己重读 adbSelfStatus, 单一真值源(无需入参)。
+        webCallbacks.onAdb()
+        return true
+    }
+}

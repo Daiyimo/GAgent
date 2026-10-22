@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 应用名(OS 层显示: 启动器图标名 / 悬浮窗权限 / 应用信息 / 通知): 必须是字符串资源(labelRes!=0),
+         而非 manifest 里的裸字符串。某些 OEM 权限管理器(如 Flyme「悬浮窗」)对 labelRes==0 的应用会泛化为
+         「包名+占位图标」(曾显示 com.ljq.ga 的根因), 改用资源后即正常显示应用名与图标。
+         v2.6: 启动器名恢复为简称「GAgent」(更短更清爽); 应用内文案/品牌字标仍用全称「GenericAgent」表述。
+         单一真相源——启动器/悬浮窗/应用信息均读此键, 故三处天然一致(issue#3 名称统一)。 -->
+    <string name="app_name">GAgent</string>
+    <string name="a11y_desc">GA 能力总线: UI dump/手势/截图，仅本机 127.0.0.1:8765 调用</string>
+    <!-- 桌面长按快捷方式(sense 无感开录): 短标签进桌面, 长标签进快捷菜单 -->
+    <string name="sc_sense_start_short">记一下</string>
+    <string name="sc_sense_start_long">开始记录真实世界</string>
+    <string name="sc_sense_stop_short">停止记录</string>
+    <string name="sc_sense_stop_long">停止记录</string>
+</resources>

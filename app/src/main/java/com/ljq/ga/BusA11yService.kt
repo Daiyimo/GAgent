@@ -1,0 +1,478 @@
+package com.ljq.ga
+
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.graphics.Bitmap
+import android.graphics.Path
+import android.graphics.Rect
+import android.os.Build
+import android.os.Bundle
+import android.os.SystemClock
+import android.util.DisplayMetrics
+import android.view.Display
+import android.view.WindowManager
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import java.security.MessageDigest
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.random.Random
+
+/** 无障碍服务: 被 BusHttpd 调用。移植自旧 GenericAgentAndroid/AgentA11yService。 */
+class BusA11yService : AccessibilityService() {
+    companion object { var instance: BusA11yService? = null }
+
+    override fun onServiceConnected() {
+        instance = this
+        // 无障碍开启=手机版核心操控能力就绪(前面漏斗看不到此维度)。init 幂等, 服务可能先于 Activity 起。
+        runCatching { Analytics.init(applicationContext); Analytics.track("""{"event":"a11y_enabled","props":{}}""") }
+    }
+    override fun onDestroy() {
+        if (instance == this) instance = null
+        runCatching { ActStats.flush() }   // 服务收尾前把未满批的操作统计冲出去, 不留尾巴
+        runCatching { Analytics.track("""{"event":"a11y_disabled","props":{}}""") }   // 用户关掉无障碍=操控能力流失点
+        super.onDestroy()
+    }
+    // 被动前台包名: 系统推送的 TYPE_WINDOW_STATE_CHANGED 自带 packageName, 不向目标 App 发任何节点请求。
+    // 用于 act() 统计等"只要大概前台"的场合, 替代 rootInActiveWindow?.packageName —— 后者每次动作都会向前台 App
+    // 拉一次根节点, 对把 a11y 访问计入风控的 App(微信)是无谓的暴露(droid.SENSITIVE_APPS 注释)。dump/ping 的精确前台仍走 getWindows。
+    // a11y_config.xml 为 Files「重命名」这类对话框改了三处, 真机逐一排除后的根因是 ③:
+    // ① flagIncludeNotImportantViews: 让容器层(importantForAccessibility=no)入树 —— 空壳从 1 层变 5 层, 但 EditText/按钮仍拿不到;
+    // ② 订阅面 +typeWindowsChanged|typeWindowContentChanged: 节点缓存随内容失效 —— 无效(不是缓存问题); 回调体 O(1) 丢弃, 保留无害;
+    // ③ isAccessibilityTool=true (API33+): Android 14 的 accessibilityDataSensitive —— App 标记的视图子树对**非工具类** a11y 服务
+    //    既不暴露节点(childCount>0 但 getChild 全 null, refresh 无用), 也**丢弃其注入的触摸**(点「取消/确定」无反应, 点对话框外
+    //    scrim 却能关掉——scrim 不在标记子树里); uiautomator/UiAutomation 天然按工具处理, 所以同刻看得到也点得动。
+    //    Files by Google 把重命名/删除等对话框整体标了 dataSensitive。声明为工具后行为与 uiautomator 一致。
+    // 敏感 App 的零注入/dump 置空策略与此无关(策略在 droid.py 按前台包名判, 不因看得到就去动)。
+    @Volatile private var lastEventPkg: String? = null
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)
+            event.packageName?.toString()?.takeIf { it.isNotEmpty() && it != packageName }?.let { lastEventPkg = it }
+    }
+    override fun onInterrupt() {}
+
+    // --- dump ---
+    fun dump(full: Boolean): String {
+        val root = foregroundRoot() ?: throw RuntimeException("no active window root")
+        val (sw, sh) = screenSize()
+        val out = JSONArray()
+        collect(root, sw, sh, out, 0, full)
+        // Hollow-root fallback: Compose/Material dialogs (Files 重命名, Contacts 权限弹窗后半程) surface as a second
+        // TYPE_APPLICATION window whose root, when fetched right after the transition, is a childless FrameLayout ——
+        // uiautomator (system a11y) sees the full tree (EditText + 确定/取消) at the same instant. Symptom in bench
+        // v6_files_rename r2: dump()==[1 node], paste "no focused input", 47 turns of blind tapping. Re-fetch the root
+        // once (the first fetch often precedes the window's content refresh) then merge the trees of *all* live app
+        // windows of the same package so the dialog's own nodes are visible alongside the page behind it.
+        if (out.length() <= 1) {
+            // ① 强制刷新: 本服务只订阅 typeWindowStateChanged, 框架给它的节点缓存不会随对话框内容变化更新,
+            //    root.refresh() 绕过缓存向 App 重新取一次真节点(uiautomator 订阅全部事件所以同刻能看到完整树)。
+            val refreshed = try { root.refresh() } catch (_: Exception) { false }
+            if (refreshed) { val o1 = JSONArray(); collect(root, sw, sh, o1, 0, full); if (o1.length() > out.length()) return o1.toString() }
+            Thread.sleep(120)
+            val again = foregroundRoot()
+            if (again != null) {
+                try { again.refresh() } catch (_: Exception) {}
+                val o2 = JSONArray(); collect(again, sw, sh, o2, 0, full); if (o2.length() > out.length()) return o2.toString()
+            }
+            val pkg = root.packageName?.toString()
+            val merged = JSONArray()
+            (try { windows } catch (_: Exception) { null })?.filter {
+                it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.root?.packageName?.toString() == pkg
+            }?.forEach { w -> w.root?.let { try { it.refresh() } catch (_: Exception) {}; collect(it, sw, sh, merged, 0, full) } }
+            if (merged.length() > out.length()) return merged.toString()
+        }
+        return out.toString()
+    }
+
+    /** One window only. Legacy dump may merge dialogs; guarded actions must never use that view. */
+    fun uiSnapshot(expectedPkg: String, targets: MutableList<AccessibilityNodeInfo>? = null): JSONObject {
+        require(expectedPkg.isNotBlank() && expectedPkg != packageName) { "need external expected package" }
+        val window = foregroundWindow() ?: error("unknown foreground window")
+        val root = window.root ?: error("unknown foreground root")
+        require(root.packageName?.toString() == expectedPkg) { "foreground changed" }
+        require(window.type == AccessibilityWindowInfo.TYPE_APPLICATION) { "not an app window" }
+        if (Build.VERSION.SDK_INT >= 30) require(window.displayId == Display.DEFAULT_DISPLAY) { "non-default display" }
+        val (sw, sh) = screenSize()
+        val nodes = JSONArray()
+        collect(root, sw, sh, nodes, 0, true, guarded = true, visited = intArrayOf(0), targets = targets)
+        val blockers = JSONArray()
+        val live = windows ?: error("unknown windows")
+        require(live.any { it.id == window.id }) { "window disappeared" }
+        live.filter { it.id != window.id && it.layer >= window.layer }
+            .sortedWith(compareBy({ it.layer }, { it.id })).forEach {
+                val r = Rect(); it.getBoundsInScreen(r)
+                if (!r.isEmpty) blockers.put(JSONArray(listOf(r.left, r.top, r.right, r.bottom)))
+            }
+        require(foregroundWindow()?.id == window.id) { "foreground changed during observation" }
+        val snapshot = JSONObject().put("pkg", expectedPkg).put("window_id", window.id)
+            .put("rot", rotation()).put("w", sw).put("h", sh).put("nodes", nodes)
+            .put("method", "node_click").put("schema", 1)
+        // Bind the app state. Unrelated overlay geometry may change; observedTap checks current occlusion.
+        val digest = MessageDigest.getInstance("SHA-256").digest(snapshot.toString().toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
+        return snapshot.put("blockers", blockers).put("fingerprint", digest).put("captured_ms", SystemClock.elapsedRealtime())
+    }
+
+    private fun observedTap(req: JSONObject): String {
+        // Recheck immediately before dispatch; Android does not offer an atomic snapshot+gesture transaction.
+        val age = SystemClock.elapsedRealtime() - req.getLong("captured_ms")
+        if (age !in 0L..8000L) return """{"dispatched":false,"reason":"expired_snapshot"}"""
+        val targets = mutableListOf<AccessibilityNodeInfo>()
+        val current = try { uiSnapshot(req.getString("expected_pkg"), targets) }
+            catch (_: Exception) { return """{"dispatched":false,"reason":"unknown_foreground"}""" }
+        if (current.getString("fingerprint") != req.getString("expected_ui"))
+            return """{"dispatched":false,"reason":"stale_snapshot"}"""
+        val node = current.getJSONArray("nodes").getJSONObject(req.getInt("node_index"))
+        require(node.optInt("click") == 1 && node.optInt("disabled") == 0 && node.optInt("hidden") == 0)
+        require(node.optInt("edit") == 0 && node.optInt("checkable") == 0 && node.optInt("password") == 0)
+        val x = node.getInt("x"); val y = node.getInt("y")
+        val blockers = current.getJSONArray("blockers")
+        for (i in 0 until blockers.length()) {
+            val b = blockers.getJSONArray(i)
+            if (x >= b.getInt(0) && x < b.getInt(2) && y >= b.getInt(1) && y < b.getInt(3))
+                return """{"dispatched":false,"reason":"occluded_target"}"""
+        }
+        if (SystemClock.elapsedRealtime() - req.getLong("captured_ms") > 8000)
+            return """{"dispatched":false,"reason":"expired_snapshot"}"""
+        val target = targets[req.getInt("node_index")]
+        if (target.actionList.none { it.id == AccessibilityNodeInfo.ACTION_CLICK })
+            return """{"dispatched":false,"reason":"node_click_unavailable"}"""
+        val accepted = target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        return JSONObject().put("dispatched", true).put("method", "node_click")
+            .put("action_result", accepted).toString()
+    }
+
+    // rootInActiveWindow races when GA 自己的 MainActivity 残留在刚启动的目标 App 后面(同 baseLayer)
+    // → 返回 GA 自己的 WebUI, 于是 dump()/ping 误报 com.ljq.ga, agent 据此臆造"GA 顶部悬浮窗拦截"。
+    // 改用 getWindows()(需 flagRetrieveInteractiveWindows)确定性地取真前台窗口: 优先 active/focused,
+    // 再偏好 App 窗口而非系统栏, 最后取最高层; 排除输入法与 GA 自身(让真 App/弹窗胜出, GA 在前台时仍能 dump 自己)。
+    private fun foregroundWindow(): AccessibilityWindowInfo? {
+        val wins = try { windows } catch (_: Exception) { null }
+        if (wins.isNullOrEmpty()) return null
+        val me = packageName
+        val live = wins.filter { it.root?.packageName != null && it.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+        if (live.isEmpty()) return null
+        return live.maxWithOrNull(compareBy(
+            { it.isActive }, { it.isFocused },
+            { it.type == AccessibilityWindowInfo.TYPE_APPLICATION },
+            { it.root!!.packageName.toString() != me },   // 同等条件下偏好非 GA(化解 GA 残留窗与目标同层竞争), 但不硬排除 → GA 真前台时仍返回自己(否则会落到状态栏 systemui)
+            { it.layer }))
+    }
+
+    private fun foregroundRoot(): AccessibilityNodeInfo? = foregroundWindow()?.root ?: rootInActiveWindow
+
+    fun foregroundPkg(): String =
+        (foregroundWindow()?.root ?: rootInActiveWindow)?.packageName?.toString() ?: ""
+
+    // 旋转正确的物理屏尺寸: Service 的 resources.displayMetrics 不随旋转可靠更新, getRealMetrics 才行(横屏修正)。
+    private val wm get() = getSystemService(WINDOW_SERVICE) as WindowManager
+    private fun screenSize(): Pair<Int, Int> {
+        val m = DisplayMetrics(); wm.defaultDisplay.getRealMetrics(m); return m.widthPixels to m.heightPixels
+    }
+    fun rotation(): Int = wm.defaultDisplay.rotation
+    fun screenW(): Int = screenSize().first
+    fun screenH(): Int = screenSize().second
+
+    private fun collect(node: AccessibilityNodeInfo, sw: Int, sh: Int, out: JSONArray, depth: Int,
+                        full: Boolean, guarded: Boolean = false, visited: IntArray? = null,
+                        targets: MutableList<AccessibilityNodeInfo>? = null) {
+        if (guarded) {
+            requireNotNull(visited)
+            visited[0] += 1
+            require(depth <= 32 && visited[0] <= 2000) { "tree budget exceeded" }
+            require(node.refresh()) { "incomplete or stale tree" }
+        }
+        val r = Rect(); node.getBoundsInScreen(r)
+        if (r.right < 0 || r.bottom < 0 || r.left > sw || r.top > sh || r.isEmpty) {
+            // offscreen: still recurse (scrollable containers may hold onscreen children)
+        } else {
+            val txt = node.text?.toString() ?: ""
+            val rawDesc = node.contentDescription?.toString() ?: ""
+            val click = node.isClickable
+            val isEdit = node.isEditable
+            val desc = if (isMeaningfulDesc(rawDesc)) {
+                if (txt.isNotEmpty() && rawDesc == txt) "" else rawDesc
+            } else ""
+            val hasInfo = txt.isNotEmpty() || desc.isNotEmpty() || isEdit || click
+            if (hasInfo || full) {
+                val obj = JSONObject()
+                if (txt.isNotEmpty()) obj.put("t", txt)
+                if (desc.isNotEmpty()) obj.put("d", desc)
+                obj.put("x", (r.left + r.right) / 2); obj.put("y", (r.top + r.bottom) / 2)
+                obj.put("l", depth)
+                if (full || (txt.isEmpty() && desc.isEmpty() && click))
+                    obj.put("b", "${r.left},${r.top},${r.right},${r.bottom}")
+                if (full) obj.put("cls", node.className?.toString()?.substringAfterLast('.') ?: "")
+                if (full && !node.isEnabled) obj.put("disabled", 1)
+                if (full && !node.isVisibleToUser) obj.put("hidden", 1)
+                if (full && node.isCheckable) obj.put("checkable", 1)
+                if (full && node.isPassword) obj.put("password", 1)
+                if (click) obj.put("click", 1)
+                if (isEdit) obj.put("edit", 1)
+                if (node.isScrollable) obj.put("scroll", 1)
+                if (node.isChecked) obj.put("chk", 1)
+                if (node.isSelected) obj.put("sel", 1)
+                if (hasInfo || full) { out.put(obj); targets?.add(node) }
+            }
+        }
+        var missed = false
+        for (i in 0 until node.childCount) {
+            val c = node.getChild(i)
+            if (c == null) missed = true else collect(c, sw, sh, out, depth + 1, full, guarded, visited, targets)
+        }
+        if (guarded) require(!missed) { "incomplete tree" }
+        // Compose 对话框(Files 重命名): 第 5 层 FrameLayout childCount>0 但 getChild(i) 全返 null —— 子节点属于框架尚未
+        // 预取的分片, 缓存里只有父壳(真机实证: uiautomator 同刻能列出 LinearLayoutCompat/EditText/确定)。refresh() 让框架
+        // 向 App 重新取该节点及其子树, 再遍历一次; 仍空则放弃(不循环)。
+        if (missed && depth < 24) {
+            val ok = try { node.refresh() } catch (_: Exception) { false }
+            if (ok) for (i in 0 until node.childCount) node.getChild(i)?.let { collect(it, sw, sh, out, depth + 1, full) }
+        }
+    }
+
+    private fun isMeaningfulDesc(d: String): Boolean {
+        if (d.isEmpty()) return false
+        if (d.any { it in '\u4e00'..'\u9fff' || it in '\u3040'..'\u309f' || it in '\u30a0'..'\u30ff' }) return true
+        if (d.contains('_')) return false
+        if (d.length <= 20 && !d.startsWith("com.")) return true
+        return false
+    }
+
+    // --- act ---
+    // Agent 操作手机的唯一入口(droid.py tap/swipe/paste/launch... → /a11y/act → 此处)。
+    // 埋点走 ActStats 内存聚合(每 50 次或 5 分钟一条 a11y_act_stats): 逐次上报会淹没
+    // Analytics 本地队列(MAX_QUEUE=500)并挤掉低频关键事件。只记 op 枚举/前台包名/成败, 不碰坐标与文本。
+    fun act(req: JSONObject): String {
+        val op = runCatching { req.getString("op") }.getOrDefault("?")
+        val pkg = lastEventPkg   // 统计用途只要大概前台: 被动事件缓存, 不再每次动作向前台 App 拉根节点(见 lastEventPkg 注释)
+        return try { actInner(req).also { ActStats.hit(op, pkg, true) } }
+        catch (e: Exception) { ActStats.hit(op, pkg, false); throw e }
+    }
+
+    private fun actInner(req: JSONObject): String {
+        when (val op = req.getString("op")) {
+            "tap" -> if (req.has("expected_ui")) return observedTap(req)
+                else if (req.optBoolean("human", false)) humanTap(req)
+                else gesture(Path().apply {
+                    moveTo(req.getInt("x").toFloat(), req.getInt("y").toFloat()) }, 100)
+            "swipe" -> {   // 端点夹到"安全带"内, 避开系统手势区(底部 home/recents 带、侧边返回带、顶部状态栏)→ 实测从底部快滑会被系统当成回桌面/最近而切走 App
+                val (sw, sh) = screenSize()
+                val mx = (sw * 0.04f).toInt().coerceAtLeast(24)
+                val mt = (sh * 0.05f).toInt().coerceAtLeast(48)
+                val mb = (sh * 0.06f).toInt().coerceAtLeast(60)
+                fun cx(v: Int) = v.coerceIn(mx, maxOf(mx, sw - mx))
+                fun cy(v: Int) = v.coerceIn(mt, maxOf(mt, sh - mb))
+                gesture(Path().apply {
+                    moveTo(cx(req.getInt("x1")).toFloat(), cy(req.getInt("y1")).toFloat())
+                    lineTo(cx(req.getInt("x2")).toFloat(), cy(req.getInt("y2")).toFloat()) },
+                    req.optLong("dur", 300))
+            }
+            "paste" -> {  // 剪贴板粘贴: WebView contenteditable 等 SET_TEXT 失效场景的标准注入
+                val node = focusedEdit()
+                val latch = CountDownLatch(1)
+                android.os.Handler(mainLooper).post {
+                    val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("ga", req.getString("text")))
+                    latch.countDown()
+                }
+                if (!latch.await(3, TimeUnit.SECONDS)) throw RuntimeException("clipboard timeout")
+                Thread.sleep(150)
+                if (req.optBoolean("replace", false)) selectAll(node)   // replace=覆盖而非追加: 先全选, PASTE 即替换(预填昵称/旧搜索词场景)
+                if (!node.performAction(AccessibilityNodeInfo.ACTION_PASTE))
+                    throw RuntimeException("ACTION_PASTE rejected")
+            }
+            "key" -> {  // 仅支持 ENTER: 对聚焦输入框触发 IME 动作(搜索/发送/换行), API30+
+                val name = req.getString("name").uppercase()
+                if (name != "ENTER") throw RuntimeException("unsupported key: $name (only ENTER)")
+                if (Build.VERSION.SDK_INT < 30) throw RuntimeException("ACTION_IME_ENTER needs API30+")
+                val node = focusedEdit()
+                if (!node.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id))
+                    throw RuntimeException("IME_ENTER rejected; node=${node.className} (fallback: tap键盘右下角回车/搜索键)")
+            }
+            "launch" -> {  // 免adb启动app
+                val pkg = req.getString("pkg")
+                val intent = packageManager.getLaunchIntentForPackage(pkg)
+                    ?: throw RuntimeException("no launch intent for: $pkg (not installed?)")
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                if (req.optBoolean("nofloat", false)) {
+                    // 敏感 App(droid.SENSITIVE_APPS nofloat 策略, 如微信): 不起悬浮窗且收起已有的——TYPE_APPLICATION_OVERLAY 会让目标 App
+                    // 收到 FLAG_WINDOW_IS_OBSCURED 触摸并可被枚举, 是"自动化工具在场"的旁证; 该 App 前台期间 GA 状态只在应用内看。
+                    runCatching { stopService(android.content.Intent(this, FloatService::class.java)) }
+                } else if (android.provider.Settings.canDrawOverlays(this)) {
+                    // 切走前自动起悬浮窗(有overlay权限时), 让用户能看到GA仍在工作
+                    val fsi = android.content.Intent(this, FloatService::class.java).putExtra("trigger", "auto")
+                    if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(fsi) else startService(fsi)
+                }
+                startActivity(intent)
+            }
+            "back" -> performGlobalAction(GLOBAL_ACTION_BACK)
+            "home" -> performGlobalAction(GLOBAL_ACTION_HOME)
+            "notifications" -> performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)   // 下拉通知栏: swipe 被安全带夹住够不到顶部, 用全局动作(API16+)
+            "dismiss_shade" -> {   // 确定性收起通知栏/快捷设置(API31+ 全局动作): Pixel/Android16 上 home() 后面板可残留为透明层吃掉后续 tap、
+                if (Build.VERSION.SDK_INT < 31) performGlobalAction(GLOBAL_ACTION_BACK)   // 且 ping 前台停在 systemui(r22 bench L1_contact 实证); 低版本回退 back
+                else performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE)
+            }
+            "quicksettings" -> performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)   // 展开快捷设置(AOSP语义; 部分OEM如Flyme只到通知栏够不到控制中心→改用 panel)
+            "panel" -> {   // 物理下拉顶部面板: 从屏幕最顶端 raw 下滑(不夹安全带, 才能触发系统下拉手势)。side=right→控制中心(录屏/手电等磁贴, Flyme/AOSP12+ 分屏下拉在右半)/left|center→通知栏。全局动作在部分 OEM 够不到控制中心, 故提供物理下拉。
+                val (sw, sh) = screenSize()
+                val x = when (req.optString("side", "right")) { "left" -> sw * 0.12f; "center" -> sw * 0.5f; else -> sw * 0.9f }
+                gesture(Path().apply { moveTo(x, 3f); lineTo(x, sh * 0.6f) }, req.optLong("dur", 320))
+            }
+            "pkgs" -> {  // 列可启动app; filter模糊匹配包名/应用名(需QUERY_ALL_PACKAGES)
+                val f = req.optString("filter").lowercase()
+                val intent = android.content.Intent(android.content.Intent.ACTION_MAIN)
+                    .addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+                val arr = org.json.JSONArray()
+                packageManager.queryIntentActivities(intent, 0).forEach { ri ->
+                    val pkg = ri.activityInfo.packageName
+                    val label = ri.loadLabel(packageManager).toString()
+                    if (f.isEmpty() || pkg.lowercase().contains(f) || label.lowercase().contains(f))
+                        arr.put(JSONObject().put("pkg", pkg).put("label", label))
+                }
+                return JSONObject().put("apps", arr).toString()
+            }
+            "install_apk" -> {  // 装任意 APK(APK 工厂产物): 复制到 FileProvider 覆盖的 cacheDir/ota → 拉起系统安装器(用户确认)
+                val src = java.io.File(req.getString("path"))
+                if (!src.exists()) throw RuntimeException("apk not found: ${src.path}")
+                val dir = java.io.File(cacheDir, "ota").apply { mkdirs() }
+                val dst = java.io.File(dir, "install.apk")
+                src.copyTo(dst, overwrite = true)
+                return Updater.installFile(this, dst)
+            }
+            else -> throw RuntimeException("unknown op: $op (tap|swipe|paste|key|launch|back|home|notifications|dismiss_shade|quicksettings|panel|pkgs|install_apk)")
+        }
+        return """{"ok":1}"""
+    }
+
+    // findFocus(FOCUS_INPUT)在WebView上常返回拒绝一切action的容器节点(edit=false,foc=true);
+    // 且WebView虚节点isFocused可能为false → 收集全部isEditable, 优先focused, 否则唯一者
+    private fun focusedEdit(): AccessibilityNodeInfo {
+        val root = rootInActiveWindow ?: throw RuntimeException("no root")
+        val edits = mutableListOf<AccessibilityNodeInfo>()
+        fun walk(n: AccessibilityNodeInfo) {
+            if (n.isEditable) edits.add(n)
+            for (i in 0 until n.childCount) n.getChild(i)?.let { walk(it) }
+        }
+        walk(root)
+        if (edits.isEmpty()) {
+            // Same partially-fetched-tree case as dump(): the EditText may sit under a node whose children came back
+            // null from the cache, or in a sibling app window (dialog). Refresh-walk the focused window's root and then
+            // every live application window before giving up.
+            fun walkRefreshing(n: AccessibilityNodeInfo) {
+                if (n.isEditable) edits.add(n)
+                var missed = false
+                for (i in 0 until n.childCount) { val c = n.getChild(i); if (c == null) missed = true else walkRefreshing(c) }
+                if (missed && (try { n.refresh() } catch (_: Exception) { false }))
+                    for (i in 0 until n.childCount) n.getChild(i)?.let { walkRefreshing(it) }
+            }
+            (try { windows } catch (_: Exception) { null })
+                ?.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+                ?.sortedByDescending { it.isFocused }
+                ?.forEach { w -> w.root?.let { walkRefreshing(it) } }
+        }
+        return edits.firstOrNull { it.isFocused } ?: edits.singleOrNull()
+            ?: root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            ?: throw RuntimeException("no focused input (tap an edit field first); editables=${edits.size}")
+    }
+
+    // 全选编辑框现有文本(空框直接返回): 与 PASTE 组合成"替换"原语——a11y 没有退格键, 这是唯一不依赖 IME 的清空手段。
+    // 选区失败=显式报错(半径大: 否则 PASTE 会静默追加, 调用方以为已替换), 报错文案给出人工兜底路径。
+    private fun selectAll(node: AccessibilityNodeInfo) {
+        val len = node.text?.length ?: 0
+        if (len == 0 || (Build.VERSION.SDK_INT >= 26 && node.isShowingHintText)) return   // 空框/只显示占位符(text 会返回 hint, 但没有可选文本): 直接粘贴
+
+        val args = android.os.Bundle().apply {
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, len)
+        }
+        if (!node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, args))
+            throw RuntimeException("ACTION_SET_SELECTION rejected (field not selectable; fallback: tap the field's ✕ clear button or ask the user)")
+    }
+
+    private fun humanTap(req: JSONObject) {
+        val x = req.getDouble("x").toFloat()
+        val y = req.getDouble("y").toFloat()
+        val jitter = req.optDouble("jitter", 1.0).toFloat().coerceIn(0f, 2f)
+        val dx = Random.nextDouble(-jitter.toDouble(), jitter.toDouble()).toFloat()
+        val dy = Random.nextDouble(-jitter.toDouble(), jitter.toDouble()).toFloat()
+        val wiggle = req.optDouble("wiggle", 0.6).toFloat().coerceIn(0f, 1.5f)
+        val dur = req.optLong("dur", Random.nextLong(80, 121)).coerceIn(50L, 180L)
+        gesture(Path().apply {
+            moveTo(x + dx, y + dy)
+            lineTo(x + dx + Random.nextDouble(-wiggle.toDouble(), wiggle.toDouble()).toFloat(),
+                y + dy + Random.nextDouble(-wiggle.toDouble(), wiggle.toDouble()).toFloat())
+        }, dur)
+    }
+
+    private fun gesture(p: Path, dur: Long) {
+        val ok = dispatchGesture(GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(p, 0, dur)).build(), null, null)
+        if (!ok) throw RuntimeException("dispatchGesture rejected")
+    }
+
+    // --- shot ---
+    fun shot(jpegQuality: Int?): ByteArray {
+        if (Build.VERSION.SDK_INT < 30) throw RuntimeException("takeScreenshot needs API30+, this=${Build.VERSION.SDK_INT}")
+        if (BrowserActivity.secureForeground)   // 前台是登录浏览器: FLAG_SECURE 必涂黑, 与其返回黑图不如显式报错让 agent 换路由
+            throw RuntimeException("前台是登录浏览器(FLAG_SECURE 保护密码输入), 截图必为黑屏; 网页任务请用前台任务浏览器 webcdp.open_url(url) 操作, 或先离开登录页再截图")
+        val latch = CountDownLatch(1)
+        var bmp: Bitmap? = null
+        var err: String? = null
+        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+            override fun onSuccess(res: ScreenshotResult) {
+                bmp = Bitmap.wrapHardwareBuffer(res.hardwareBuffer, res.colorSpace)
+                    ?.copy(Bitmap.Config.ARGB_8888, false)
+                res.hardwareBuffer.close()
+                latch.countDown()
+            }
+            override fun onFailure(code: Int) { err = "takeScreenshot failed code=$code"; latch.countDown() }
+        })
+        if (!latch.await(5, TimeUnit.SECONDS)) throw RuntimeException("screenshot timeout")
+        err?.let { throw RuntimeException(it) }
+        val b = bmp ?: throw RuntimeException("screenshot null bitmap")
+        val bos = ByteArrayOutputStream()
+        if (jpegQuality != null) b.compress(Bitmap.CompressFormat.JPEG, jpegQuality, bos)
+        else b.compress(Bitmap.CompressFormat.PNG, 100, bos)
+        b.recycle()
+        return bos.toByteArray()
+    }
+}
+
+// Agent 模拟操作聚合埋点: act() 每次命中计数, 满 50 次或首次命中后 5 分钟上报一条 a11y_act_stats。
+// 脱敏: 只记 op 枚举计数、失败数、触达 app 数与最高频包名(应用标识非 PII)——坐标/文本/剪贴板一概不碰。
+private object ActStats {
+    private const val FLUSH_N = 50
+    private const val FLUSH_MS = 5 * 60_000L
+    private val ops = HashMap<String, Int>()
+    private val pkgCounts = HashMap<String, Int>()
+    private var fails = 0
+    private var t0 = 0L
+
+    @Synchronized fun hit(op: String, pkg: String?, ok: Boolean) {
+        if (t0 == 0L) t0 = System.currentTimeMillis()
+        ops[op] = (ops[op] ?: 0) + 1
+        if (!ok) fails++
+        if (!pkg.isNullOrEmpty()) pkgCounts[pkg] = (pkgCounts[pkg] ?: 0) + 1
+        if (ops.values.sum() >= FLUSH_N || System.currentTimeMillis() - t0 >= FLUSH_MS) flush()
+    }
+
+    @Synchronized fun flush() {
+        val n = ops.values.sum()
+        if (n == 0) return
+        val props = JSONObject().apply {
+            put("n", n)
+            put("fails", fails)
+            put("ops", ops.entries.sortedByDescending { it.value }
+                .joinToString(",") { "${it.key}:${it.value}" })
+            put("apps", pkgCounts.size)
+            put("top_app", pkgCounts.entries.maxByOrNull { it.value }?.key ?: "")
+            put("secs", ((System.currentTimeMillis() - t0) / 1000).toInt())
+        }
+        runCatching { Analytics.track(JSONObject().put("event", "a11y_act_stats").put("props", props).toString()) }
+        ops.clear(); pkgCounts.clear(); fails = 0; t0 = 0L
+    }
+}

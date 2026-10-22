@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 拍照临时文件目录(issue#1): 仅暴露 cacheDir/cam, 供相机 App 写入后由 WebView 读取 -->
+<paths>
+    <cache-path name="cam" path="cam/"/>
+    <!-- 应用内热更新下载的 APK(cacheDir/ota): 经 FileProvider 暴露给系统安装器读取 -->
+    <cache-path name="ota" path="ota/"/>
+    <!-- 分享图(cacheDir/share): 经 FileProvider 暴露给系统分享面板(ACTION_SEND) -->
+    <cache-path name="share" path="share/"/>
+    <!-- AI 生成文件(filesDir/ga/temp): "用其他应用打开"经 content:// 暴露给系统查看器(v2.18 预览框架) -->
+    <files-path name="gatemp" path="ga/temp/"/>
+</paths>

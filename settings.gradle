@@ -1,0 +1,8 @@
+pluginManagement {
+    repositories { google(); mavenCentral(); gradlePluginPortal() }
+}
+dependencyResolutionManagement {
+    repositories { google(); mavenCentral(); maven { url "https://chaquo.com/maven" }; maven { url "https://jitpack.io" } }
+}
+rootProject.name = "GAgent"
+include ':app'

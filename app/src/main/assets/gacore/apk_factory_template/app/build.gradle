@@ -1,0 +1,47 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'app.ga.starter'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'app.ga.starter'
+        minSdk 24
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false        // starter 极小; 产 app-release-unsigned.apk 交 apksigner 签名
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = '17' }
+    sourceSets { main { kotlin.srcDirs += 'src/main/kotlin' } }
+}
+
+// 钉死预热清单坐标：任一依赖子集图都强制解析到已预热缓存的版本 → --offline 一定编得过(消「照边界写还是编不过」)。别改这块。
+configurations.all {
+    resolutionStrategy {
+        force 'androidx.core:core-ktx:1.13.1', 'androidx.appcompat:appcompat:1.7.0',
+              'com.google.android.material:material:1.12.0', 'androidx.constraintlayout:constraintlayout:2.1.4',
+              'androidx.recyclerview:recyclerview:1.3.2', 'androidx.activity:activity-ktx:1.9.2'
+        // lifecycle/annotation 整族对齐到已缓存版本(material 单用会拉旧版传递依赖→离线缺 artifact)
+        eachDependency { d ->
+            if (d.requested.group == 'androidx.lifecycle') d.useVersion '2.8.6'
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.13.1'
+    // GA 按需增删依赖(仅限预热清单内, 见 apk_factory_sop): 这就是个普通 Gradle 工程
+}

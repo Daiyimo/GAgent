@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <!-- PCLink 扫码(应用内预览); 与拍照(外置相机 App、不声明 CAMERA)分开。required=false 以免无摄像头设备无法安装。 -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false"/>
+    <!-- 无障碍持久化(v2.29): 开发级权限, 系统不自动授予, 须 `adb shell pm grant` 一次(卸载前永久有效)。
+         授予后 app 启动时把被 OEM(force-stop 策略)摘除的无障碍服务静默写回 Settings.Secure, 免系统开关+10s 倒计时。 -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" tools:ignore="ProtectedPermissions"/>
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- 应用内热更新: 下载新版 APK 后拉起系统安装器(原地升级, 数据保留)需此权限(Android 8+) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- 悬浮窗/无障碍保活前台服务(来自 main: 精炼 droid 控制) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <!-- 自连 shell 执行期持 PARTIAL_WAKE_LOCK(带超时自释), 防命令执行中 CPU/线程被深度 Doze/后台冻结掉线(自连稳定性) -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- ── 真实世界感知(sense/L0): 全部默认关闭, 采集只能由用户显式动作开启; 声明 ≠ 授予, 运行时按需申请 ──
+         · 显式不申请 ACCESS_BACKGROUND_LOCATION: 采集期本就跑前台服务, 其间定位属前台定位 —— 这一刀砍掉最难拿的权限与整张申报表。
+         · COARSE 是默认档; FINE 只在用户显式开"精确地点"时申请(A12+ 必须 FINE+COARSE 同一次请求, 只写 FINE 在部分机型静默不弹框)。
+         · BLUETOOTH_SCAN 带 neverForLocation ⇒ A12+ 拿同场者信号无需任何定位权限(全表性价比最高的一条)。 -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" tools:targetApi="s"/>
+    <!-- A11 及以下的 BLE 扫描旧路: 安装期权限, 不弹框; A12+ 由上面的 BLUETOOTH_SCAN 接手 -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false"/>
+    <uses-permission android:name="android.permission.READ_CALENDAR"/>
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION"/>
+    <!-- A14 起 FGS 类型与权限必须配套: 声明哪个类型就得有哪个权限, 且 startForeground 传的类型须 ⊆ manifest 声明 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <!-- 保活自检(A16): 请求电池优化豁免须声明它, 否则 ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS 弹框会被
+         系统静默关掉(startActivity 不抛异常 → 会误报 opened:true)。Play 政策限制该权限, 本应用自分发, 同 QUERY_ALL_PACKAGES。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <!-- 让 resolveActivity 在 Android 11+ 能找到相机 App(即便 QUERY_ALL_PACKAGES 被裁剪)(issue#2) -->
+    <queries>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE"/>
+        </intent>
+        <!-- 官网/GitHub 外链经 ACTION_VIEW 打开系统浏览器(Android 11+ 包可见性) -->
+        <intent>
+            <action android:name="android.intent.action.VIEW"/>
+            <category android:name="android.intent.category.BROWSABLE"/>
+            <data android:scheme="https"/>
+        </intent>
+    </queries>
+    <application android:name=".App" android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/AppTheme"
+        android:allowBackup="false"
+        android:usesCleartextTraffic="true">
+        <activity android:name=".GanetQrCaptureActivity" android:exported="false"
+            android:screenOrientation="portrait" android:theme="@style/zxing_CaptureTheme"/>
+        <activity android:name=".MainActivity" android:exported="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <!-- 桌面长按图标直达「记一下/停止记录」(A14 无感开录成本最低通道) -->
+            <meta-data android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts"/>
+        </activity>
+        <!-- 可见登录浏览器: 用户人工登录网站, 登录态经进程级 CookieManager 供离屏自动化复用 -->
+        <activity android:name=".BrowserActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:windowSoftInputMode="adjustResize"/>
+        <!-- 无桥 HTML 预览(v2.19): 生成的 html 产物全屏渲染, 独立 WebView 零 JS 接口(不可信脚本摸不到 GA 桥) -->
+        <activity android:name=".HtmlPreviewActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"/>
+        <!-- 订阅方案整页: 独立 WebView + 精简 GA 桥, load 白名单站点(改站即生效, 不再注入 plan.js) -->
+        <!-- 前台任务浏览器(浏览器三级路由 L1 默认): agent 可见可截图可 CDP 驱动; 无 FLAG_SECURE, 结构上独立于登录浏览器 -->
+        <activity android:name=".AgentBrowserActivity" android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"/>
+        <!-- 拍照输出文件经 FileProvider 暴露给相机 App 写入(issue#1)。
+             拍照仍走 ACTION_IMAGE_CAPTURE 外置相机 App；CAMERA 权限仅用于 PCLink 应用内扫码，二者路径分开。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
+        <!-- FloatService 升级为 specialUse 前台服务(来自 main): 悬浮窗 + 无障碍保活, 减少后台被杀 -->
+        <service android:name=".FloatService" android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="agent overlay and accessibility keep-alive"/>
+        </service>
+        <!-- 采集会话前台服务(sense/L0): 类型在运行时按"实际拿得到的权限"从声明集合里收窄(A14 校验类型⊆声明且权限齐备)。
+             绝不复用 FloatService: 它是 specialUse 型(拿不住后台麦克风), 且生命周期被"悬浮窗常开"开关绑死。
+             不设 stopWithTask: 采集是用户显式开启的长任务, 划掉最近任务不等于要停止记录(停止入口是通知上的按钮与 /sense/session stop)。 -->
+        <service android:name=".SenseService" android:exported="false"
+            android:foregroundServiceType="microphone|location"/>
+        <!-- gaagent://plan?rs=<码> 深链蹦床: 路演落地页「一键领取」→ 存码拉起主任务 → 引擎就绪后
+             带码开订阅页(SPA 自动预填), 全程零手输。透明即关, 与 SenseQuickActivity 同型。 -->
+        <!-- 无感开录透明中转(A14): 磁贴/桌面快捷方式的开录意图落点, 满足 A34「mic FGS 须由可见 Activity 起」。
+             透明主题 + 不进最近任务; 起完会话即 finish, 用户只感到「点一下就在录」。 -->
+        <activity android:name=".SenseQuickActivity" android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true" android:noHistory="true"
+            android:taskAffinity=":senseQuick"/>
+        <!-- 快捷设置磁贴(A14): mic 无感开启的合规天花板(下拉一点 → 透明 Activity → mic FGS)。 -->
+        <service android:name=".SenseTileService" android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="GA 记一下"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE"/>
+            </intent-filter>
+        </service>
+        <service android:name=".BusA11yService" android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService"/>
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice"
+                android:resource="@xml/a11y_config"/>
+        </service>
+        <!-- 通知监听服务: 读取系统通知、支持回复与取消操作 -->
+        <service android:name=".NotifService" android:exported="false"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService"/>
+            </intent-filter>
+        </service>
+    </application>
+</manifest>
