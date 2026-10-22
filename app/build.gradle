@@ -90,8 +90,8 @@ afterEvaluate {
         inputs.file rootProject.file('tools/prepare_python_assets.py')
         inputs.file rootProject.file('app/src/main/assets/gacore/fsbot/deps/site_packages.tgz')
         doLast {
-            exec {
-                commandLine System.getenv('CHAQUOPY_PYTHON') ?: 'python3',
+            project.exec { spec ->
+                spec.commandLine System.getenv('CHAQUOPY_PYTHON') ?: 'python3',
                     rootProject.file('tools/prepare_python_assets.py'),
                     new File(task.outputDir.get().asFile, 'chaquopy')
             }
