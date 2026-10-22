@@ -116,11 +116,6 @@
     "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
   },
   {
-    "name": "Chaquopy",
-    "source": "https://raw.githubusercontent.com/chaquo/chaquopy/15.0.1/LICENSE.txt",
-    "sha256": "338d9a4f0a43079c18d24e374443cc6f1065234668f488b4c559650eb7b60f17"
-  },
-  {
     "name": "OpenCV",
     "source": "https://raw.githubusercontent.com/opencv/opencv/4.5.1/LICENSE",
     "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
@@ -139,5 +134,15 @@
     "name": "OkHttp",
     "source": "https://raw.githubusercontent.com/square/okhttp/parent-4.12.0/LICENSE.txt",
     "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  },
+  {
+    "name": "Chaquopy",
+    "source": "https://raw.githubusercontent.com/chaquo/chaquopy/17.1.0/LICENSE.txt",
+    "sha256": "345a9fdfeed355d37b18569ef277ba56eb0ab7c0b17a08a90163ce8d33d2b862"
+  },
+  {
+    "name": "OpenSSL",
+    "source": "https://raw.githubusercontent.com/openssl/openssl/openssl-3.5.9/LICENSE.txt",
+    "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
   }
 ]
