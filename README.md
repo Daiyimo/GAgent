@@ -22,6 +22,9 @@ Subscriptions, payments, points, mandatory hosted accounts, hosted telemetry,
 prompt collection, embedded service credentials and source encryption are removed.
 The related commercial servers and production operations are not part of this repository.
 
+See the [feature scope](docs/FEATURE_SCOPE.md) for retained capabilities, removed
+flows, excluded server implementations and items awaiting acceptance.
+
 ## Get started
 
 1. Build an APK or download one from this repository's Releases when available.
