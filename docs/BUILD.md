@@ -21,7 +21,9 @@ verification. Updating a build host alone does not update an older APK.
 For local release signing set `GAGENT_KEYSTORE_PATH` to a private PKCS12 keystore,
 `GAGENT_STORE_PASSWORD` through your secret manager, and use alias `gagent`.
 Without these variables release builds are unsigned; debug builds use a local
-debug identity. Never commit the keystore or password.
+debug identity. When signing variables are present, both variants use that stable
+maintainer identity; debug retains its separate application ID. Never commit the
+keystore or password.
 
 Maintainer CI accepts `GAGENT_RELEASE_KEYSTORE` (base64 PKCS12) and
 `GAGENT_STORE_PASSWORD` as Actions secrets. Pull requests from forks do not need

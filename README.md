@@ -8,7 +8,8 @@ You choose the model provider and supply your own credentials.
 
 This distribution combines the latest Android beta (2.33.0 / 133) with the newer
 PC Link fixes from the former main branch. Version 2.33.1 / 134 starts a clean
-repository history. The owner controls when this repository becomes public.
+repository history. Version 2.33.2 / 135 adds screenshot-only WeChat control and
+GLM tool/vision fixes. The owner controls when this repository becomes public.
 
 ## What is included
 

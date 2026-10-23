@@ -5,6 +5,7 @@
   I4 其它块逐字节不动;  I5 幂等(同操作再做一次文本不变);  I6 非字面量块不被静默丢字段(显式报错).
 用法: python tools/test_mykey_writer.py"""
 import ast, os, py_compile, re, sys, tempfile, threading, secrets, json
+import importlib.util
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, 'app', 'src', 'main', 'assets', 'gacore', 'android_entry.py')
 NAMES = ['_mykey_py_path', '_py_repr', '_cfg_type', '_var_type', '_retype_block_var', '_FIELD_RE', '_line_patchable',
@@ -14,14 +15,18 @@ NAMES = ['_mykey_py_path', '_py_repr', '_cfg_type', '_var_type', '_retype_block_
 
 def load_writer():
     pure = os.path.join(os.path.dirname(SRC), 'provider_config.py')
-    tree = ast.parse(open(pure, encoding='utf-8').read() + '\n' + open(SRC, encoding='utf-8').read())
+    spec = importlib.util.spec_from_file_location('provider_config_under_test', pure)
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    tree = ast.parse(open(SRC, encoding='utf-8').read())
     want = set(NAMES); picked = []
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in want: picked.append(node)
         elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in want for t in node.targets): picked.append(node)
     got = {n.name if isinstance(n, ast.FunctionDef) else n.targets[0].id for n in picked}
-    assert got == want, f'missing from android_entry: {want - got}'
+    got.update(name for name in want if hasattr(module, name))
+    assert got == want, f'missing writer dependencies: {want - got}'
     g = {'os': os, 're': re, 'ast': ast, 'json': json, 'py_compile': py_compile, 'threading': threading, 'secrets': secrets}
+    g.update({name: getattr(module, name) for name in want if hasattr(module, name)})
     exec(compile(ast.Module(body=picked, type_ignores=[]), SRC, 'exec'), g)
     g['_atomic_write'] = lambda path, text: open(path, 'w', encoding='utf-8', newline='\n').write(text)
     g['_refresh_mykeys'] = lambda: None

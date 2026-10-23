@@ -1,6 +1,6 @@
 # Feature scope / 功能去留清单
 
-Reviewed on 2026-10-23 against application source `4a7e84f58f85d7aa11b8ae774b743960a11f7a42`.
+Reviewed on 2026-10-23; application source updated to `e82ea0bbf05930acdd3ef7e07ce695b1a4efc959` (2.33.2 / 135).
 This describes the private open-source candidate, not a public launch. “Removed”
 means removed from this distribution; the original projects remain intact.
 
@@ -30,7 +30,7 @@ HTTPS/WSS、P2P 传输加密和设备总线鉴权继续保留，它们承担通�
 | Hosted telemetry, prompt contribution, remote diagnostics and feedback submission / 托管遥测、提问捐赠、远端诊断和反馈上传 | Collection/upload disabled; compatibility no-ops and bounded local diagnostics remain / 停用收集上传，保留兼容空实现和有界本地诊断 | [Analytics.kt](../app/src/main/java/com/ljq/ga/Analytics.kt), [Diag.kt](../app/src/main/java/com/ljq/ga/Diag.kt) |
 | Embedded service authority / 内置服务权限 | No default shared P2P credential, vendor speech key or client-side root signer / 移除默认共享 P2P 凭据、供应商语音密钥和客户端根签发权限 | [Official modules](OFFICIAL_MODULES.md) |
 | Old update channels / 旧版自动更新通道 | Old manifests disabled; download/install primitives remain; releases are obtained from this repository / 旧清单地址停用，下载与安装基础能力保留，从本仓库获取版本 | [Endpoints.kt](../app/src/main/java/com/ljq/ga/Endpoints.kt), [Updater.kt](../app/src/main/java/com/ljq/ga/Updater.kt) |
-| Bundled YOLO icon detector / 内置 YOLO 图标检测模型 | Old AGPL-derived weight excluded; its learned icon detection is unavailable by default; OCR still runs / 排除旧权重，默认不再提供该模型的图标检测，OCR 保留 | [Model notice](../app/src/main/assets/gacore/models/ui_detect_v1/MODEL_NOTICE.txt), [detector fallback](../app/src/main/assets/gacore/models/ui_detect_v1/ui_detect_lite.py) |
+| Bundled YOLO icon detector / 内置 YOLO 图标检测模型 | Weight excluded by default; users may install a compatible model under its applicable terms; OCR still runs / 默认不分发权重，用户可按适用许可自行安装，OCR 保留 | [Model notice](../app/src/main/assets/gacore/models/ui_detect_v1/MODEL_NOTICE.txt), [detector fallback](../app/src/main/assets/gacore/models/ui_detect_v1/ui_detect_lite.py) |
 | Old release identity and private material / 旧发布身份与私有资料 | Old signing key, production configuration, account data and old Git history excluded; new app ID and signing identity / 不分发旧签名、生产配置、账号资料或旧 Git 历史，使用新应用与签名身份 | [Build](BUILD.md), [review](REVIEW.md) |
 
 ## Outside this repository / 未纳入此次仓库
@@ -85,9 +85,10 @@ Kotlin application paths are under `app/src/main/java/com/ljq/ga/`.
   per-user issuer are not implemented. Legacy shared-key relays require migration;
   a settings screen alone does not establish safe authorization.
   官方自动登录、令牌续签和新逐用户签发器尚未实现；旧共享密钥中继仍需迁移，配置页不等于安全授权闭环。
-- **Detector replacement / 图标检测替代：** no replacement model has been selected
-  and accepted for redistribution. PaddleOCR and accessibility are retained.
-  新图标检测模型尚未选定并完成再分发与效果验收；文字 OCR 和无障碍识别保留。
+- **Model redistribution / 模型再分发：** optional YOLO installation is documented in
+  [OPTIONAL_YOLO.md](OPTIONAL_YOLO.md). The upstream model-card and export notices
+  conflict; no new redistribution license is claimed.
+  已提供自行下载和安装说明；模型卡与旧导出声明不一致，未宣称已取得新的再分发授权。
 - **Device acceptance / 真机验收：** source retention, successful compilation and
   desktop regressions do not prove microphone, background jobs, screenshots,
   wireless ADB, virtual displays or third-party integrations work on every device.
@@ -100,7 +101,10 @@ Kotlin application paths are under `app/src/main/java/com/ljq/ga/`.
   large files. This is not a completed architectural rewrite.
   已分离模型与组件配置，继承的运行时、WebUI 和原生层仍有大文件，尚未完成全部架构重构。
 
-The existing APKs were built from the source baseline above. This scope document
-changes no application code and does not imply a new build or new device tests.
+2.33.2 removes the fixed WeChat action budget while retaining screenshot-only
+observation, visible GUI input, and stopping on observed account security challenges.
+GLM tool arguments and vision text parsing are corrected. See release notes for
+the exact build and device acceptance evidence.
 
-现有 APK 对应本文顶部源码基线。本清单只补充事实说明，不代表重新构建或新增真机测试。
+2.33.2 去除微信固定操作预算，保留纯视觉观察、可见 GUI 输入与出现账号安全验证时停止。
+修复 GLM 工具参数和视觉文本解析；具体构建与真机结果以发布说明为准。

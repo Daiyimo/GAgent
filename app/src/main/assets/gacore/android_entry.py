@@ -255,16 +255,6 @@ def _retype_block_var(lines, block, ptype):
     return lines
 
 
-def _line_patchable(line):
-    """块体行能否被 _patch_block_lines 单独改写: 空行/注释恒可; 字段行要求 value 在本行就是完整表达式
-    (`'models': [` 这种跨行列表的首行不是 → 逐行改写会留下半截尾巴)。"""
-    s = line.strip()
-    if not s or s.startswith('#'): return True
-    m = _FIELD_RE.match(line)
-    if not m: return False
-    try: ast.parse(m.group(5).strip(), mode='eval'); return True
-    except SyntaxError: return False
-
 def _rebuild_single_line_block(lines, block, cfg, ptype):
     """非规范存量块(单行 `var={...}`, 收尾 `}` 与字段同行, 跨行字段值, 尾随逗号 tuple 写法…)原地重建为规范多行块:
     _patch_block_lines/_retype 只认 canonical 块——对非规范块逐行补丁会把 `'model': 'x', 'read_timeout': 120}`

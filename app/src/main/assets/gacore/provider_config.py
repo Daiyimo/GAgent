@@ -21,6 +21,16 @@ def _var_type(var):
 _FIELD_RE = re.compile(r"^(\s*)(['\"])([^'\"]+)\2(\s*:\s*)(.*?)(,?\s*)$")   # 块体一行 = 一个 `'key': value,` 字段
 
 
+def _line_patchable(line):
+    """块体行能否被 _patch_block_lines 单独改写: 空行/注释恒可; 字段行要求 value 在本行就是完整表达式
+    (`'models': [` 这种跨行列表的首行不是 → 逐行改写会留下半截尾巴)。"""
+    s = line.strip()
+    if not s or s.startswith('#'): return True
+    m = _FIELD_RE.match(line)
+    if not m: return False
+    try: ast.parse(m.group(5).strip(), mode='eval'); return True
+    except SyntaxError: return False
+
 def _drop_duplicate_blocks(lines, blocks, keep):
     """同一导出身份(ename)出现多块时只保留 keep 的内容(文件中最后一块 = Python 同名变量的实际生效值), 删掉影子块;
     保留内容落在**最早那块的位置**——/config 的 item_N 按文件顺序编号, UI 的 active.pid 就是它, 顺序一变活跃服务商就跑偏。
