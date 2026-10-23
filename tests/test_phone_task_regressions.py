@@ -197,6 +197,37 @@ assert ns['ask_vision']('image', 'read', timeout=15) == ('image', 'read', {'time
 
 
 class VisualObservationTest(unittest.TestCase):
+    def test_label_filter_keeps_all_matches_and_screen_coordinates(self):
+        import numpy as np
+        for height, width in [(200, 100), (100, 200), (240, 300)]:
+            with self.subTest(size=(width, height)):
+                frame = np.zeros((height, width, 3), dtype=np.uint8)
+                detections = [{'bbox': [5, 6, 25, 26], 'label': '搜索入口'},
+                              {'bbox': [30, 6, 50, 26], 'label': '搜索'},
+                              {'bbox': [55, 6, 75, 26], 'label': '取消'},
+                              {'bbox': [80, 6, 90, 26], 'label': None}]
+                cache = {'thumb': None, 'roi': None, 'dets': None}
+                with patch.object(droid, '_LOOK_CACHE', cache), \
+                     patch.object(droid, 'shot', return_value=frame) as shot, \
+                     patch.object(droid, 'ui_detect', return_value=detections) as detect:
+                    hits = droid.look(roi='lower', label='搜索')
+                    self.assertEqual([d['label'] for d in hits], ['搜索入口', '搜索'])
+                    self.assertEqual([(d['x'], d['y']) for d in hits],
+                                     [(15, height // 2 + 16), (40, height // 2 + 16)])
+                    other = droid.look(roi='lower', label='取消')
+                    self.assertEqual([d['label'] for d in other], ['取消'])
+                    self.assertTrue(other[0]['cached'])
+                    self.assertEqual(len(droid.look(roi='lower')), 4)
+                    self.assertEqual(droid.look(roi='lower', label='不存在'), [])
+                    self.assertEqual(detect.call_count, 1)
+                    self.assertEqual(shot.call_count, 4)
+
+    def test_invalid_label_is_rejected_before_capture(self):
+        with patch.object(droid, 'shot') as shot:
+            with self.assertRaisesRegex(TypeError, 'label must be a string'):
+                droid.look(label=123)
+        shot.assert_not_called()
+
     def test_look_rejects_prompts_before_capturing_a_frame(self):
         with patch.object(droid, 'shot') as shot:
             with self.assertRaisesRegex(ValueError, 'ask_vision'):

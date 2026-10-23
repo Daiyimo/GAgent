@@ -472,12 +472,19 @@ _LOOK_CACHE = {"thumb": None, "roi": None, "dets": None}
 _ROI_NAMES = {"top": (0, 0, 1, 0.34), "upper": (0, 0, 1, 0.5), "middle": (0, 0.25, 1, 0.75), "lower": (0, 0.5, 1, 1), "bottom": (0, 0.66, 1, 1)}
 
 
-def look(conf=0.25, path=None, roi=None, cache=True):
+def _matching_labels(detections, label):
+    return detections if not label else [d for d in detections if label in d["label"]]
+
+
+def look(conf=0.25, path=None, roi=None, cache=True, *, label=None):
     """视觉路径一步到位: shot()+ui_detect(). 返回检测列表, 每项附中心 x,y(整屏坐标, 可直接 tap), label=OCR 文字, cls=控件语义.
+    label: 可选 OCR 文字子串筛选，返回全部匹配项；多命中仍需消歧，不自动选择或点击。
     roi: 只检测屏幕的一部分 —— 'top'|'upper'|'middle'|'lower'|'bottom', 或 (x1,y1,x2,y2)(像素, 或 0~1 的比例). 知道目标在哪(排序条在上半屏/底栏在下方)
          就传 roi, 耗时按面积成比例下降(整屏 OCR 是主要成本, 自绘 App 整屏 look 约 6-8s).
     cache: 屏幕与上一次 look 几乎没变(缩略图差异 <0.3%) 且 roi 相同 → 直接返回上次结果(附 'cached': True), 不再跑模型. 刚做完动作想确认变化时它就是证据.
     path 给出则同时把截图存文件(给用户看/复核). dump 为空(自绘/SurfaceView/敏感置空)时用这个, 不要先 print 整个 ndarray."""
+    if label is not None and not isinstance(label, str):
+        raise TypeError('look label must be a string or None')
     try:
         conf = float(conf)
     except (TypeError, ValueError):
@@ -505,7 +512,7 @@ def look(conf=0.25, path=None, roi=None, cache=True):
             import copy
             dets = copy.deepcopy(c["dets"])
             for d in dets: d["cached"] = True
-            return dets
+            return _matching_labels(dets, label)
     dets = ui_detect(img[y1:y2, x1:x2], conf=conf)
     for d in dets:
         d["label"] = str(d.get("label") or "")
@@ -515,7 +522,7 @@ def look(conf=0.25, path=None, roi=None, cache=True):
     c.update(thumb=thumb, roi=(x1, y1, x2, y2), dets=[dict(d) for d in dets])
     if path:
         cv2.imwrite(path, img)
-    return dets
+    return _matching_labels(dets, label)
 
 
 def ask_vision(image_input, prompt="描述当前界面", **options):
