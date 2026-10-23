@@ -29,8 +29,8 @@
     img = droid.shot()              # BGR ndarray; droid.shot('/sdcard/a.png') 存文件
     els = droid.ui_detect(img)      # Android专调YOLO(21类)+OCR [{bbox,type:'icon'|'text',label,cls,confidence}]; cls=控件语义(Icon/Image/EditText/Switch/TextButton/Toolbar/Bottom_Navigation/Card...), 无文字图标的label回退为cls
     res = droid.ocr(img)            # [(box4x2, text, score), ...]
-    droid.sensitive_status()        # 零注入门禁(SENSITIVE_APPS 里 act="locked" 的 App, 如微信): 默认禁 tap/swipe/scroll/paste/key/panel, 只读走 shot()+ui_detect/ocr
-    droid.sensitive_unlock(pkg, actions=20, reason='用户明确要求的GUI任务')  # 当前明确授权任务的一次有限预算; 上限见 sensitive_status(), 不要求用户先手动导航
+    droid.sensitive_status()        # 微信 act="gui": 截图/识别/手势，无固定次数预算；不得读节点、节点输入或快捷回复
+    droid.sensitive_unlock(pkg, actions=20, reason="...")  # 仅兼容旧 locked 策略；微信 GUI 无需调用
     droid.sensitive_env_report()    # 只读环境自检: root/LSPosed/VPN 等会被微信计分的信号 + 用户侧建议; 用户问"为什么被风控/怎么防封"时先给这个
     droid.sensitive_risk_event(pkg, kind='verify|kicked|captcha', note='…')  # 屏幕上认出实名核验/账号状态异常/安全验证时**必调**再终止任务: 该 App 进入 7 天零注入冷却(unlock 也拒)
 输入三则: ①任何输入一律 paste(剪贴板), 没有逐键打字 API。最优路径=tap聚焦→paste(text)→读返回:

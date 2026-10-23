@@ -618,7 +618,8 @@ _direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 async def _post_json(url: str, timeout: float = 15):
     def request():
-        req = urllib.request.Request(url, data=b"", method="POST")
+        req = urllib.request.Request(url, data=b"", method="POST",
+                                     headers={"User-Agent": "GenericAgent-P2P/1.0"})
         with _direct_opener.open(req, timeout=timeout) as response:
             return json.load(response)
 
