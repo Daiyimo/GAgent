@@ -27,3 +27,9 @@ droid.tap(target_x, target_y, screen=frame['screen'])
 This is a geometry guard, not an atomic UI transaction. Content can change without resizing; Android cannot atomically capture and tap. Re-observe after keyboard, dialog, navigation or app changes. The adapter currently targets the default display and screenshot support requires Android API 30+. Physical fold hinges, external displays, different OEM systems and every accessibility implementation require their own device acceptance; synthetic dimension tests do not establish that coverage. Swipe margins are a conservative proportional heuristic, not measured OEM insets.
 
 这是几何防护，不能保证截图与点击原子执行；内容可能在宽高不变时变化。键盘、弹窗、导航或App变化后必须重新观察。当前适配默认显示屏，截图要求Android API30+。真实折叠铰链、外接屏、其他厂商系统与无障碍实现仍需各自实机验收，模拟尺寸测试不能代替；滑动边距是保守比例规则，并非所有系统的实测安全区。
+
+## Floating task status / 任务悬浮窗
+
+Running or waiting tasks restore the status overlay when the Activity moves to the background, provided overlay permission is granted. An explicit “always on” preference takes precedence over an app-specific automatic hide request. When the preference is off, existing visual-only app hide behavior remains. Overlay placement is clamped to the current display after drag, window resize or rotation. These decisions and placement calculations are pure functions; lifecycle callbacks and WindowManager perform the effects.
+
+运行中或等待回复的任务在Activity切后台时恢复状态悬浮窗，前提是已授予悬浮窗权限。用户明确开启“悬浮窗常开”后，该偏好优先于App自动隐藏策略；关闭常开时保留原有特定App自动隐藏行为。拖动、窗口大小或旋转变化后，把手约束在当前显示屏内。显示决策和位置计算使用纯函数，生命周期回调与WindowManager负责副作用。

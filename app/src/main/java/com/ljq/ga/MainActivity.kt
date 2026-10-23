@@ -1073,6 +1073,9 @@ class MainActivity : Activity() {
     override fun onStop() {
         super.onStop()
         isForeground = false
+        if (!isChangingConfigurations && !exec.isShutdown) {
+            exec.execute { permissionCoordinator.restoreBackgroundOverlay() }
+        }
         if (fgSince > 0) {   // 前台会话时长(app_open 只有起点没有长度): 会话长度分布 = 粘性/健康度基础指标
             val s = (System.currentTimeMillis() - fgSince) / 1000
             fgSince = 0

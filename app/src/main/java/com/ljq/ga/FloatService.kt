@@ -6,6 +6,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
@@ -132,7 +133,7 @@ class FloatService : Service() {
                                 Analytics.track("""{"event":"float_tap","props":{"mode":$mode}}""")
                             }
                         }
-                    } else { render(); if (mode == 0) tv.post { snapEdge() }          // 拖动释放: 竖丸态贴边吸附; 展开态(单行/近三步)停在释放处(自由定位)
+                    } else { render(); tv.post { constrainPosition(mode == 0) }
                         Analytics.track("""{"event":"float_drag","props":{"mode":$mode}}""") }
                     true
                 }
@@ -170,19 +171,31 @@ class FloatService : Service() {
 
     // 吸附到最近横向边(贴边): 用当前窗口宽(竖丸 mode0=固定 DOCK_W>0; 展开=取已测视图宽)算左/右贴边, 并夹 y 防竖丸超出屏幕上下。
     private fun snapEdge() {
+        constrainPosition(true)
+    }
+
+    private fun constrainPosition(dock: Boolean = false) {
         val w = if (lp.width > 0) lp.width else if (tv.width > 0) tv.width else (60 * resources.displayMetrics.density).toInt()
-        val sw = resources.displayMetrics.widthPixels
-        val sh = resources.displayMetrics.heightPixels
-        lp.x = if (lp.x + w / 2 < sw / 2) 0 else sw - w
+        val metrics = android.util.DisplayMetrics().also { wm.defaultDisplay.getRealMetrics(it) }
         val h = if (lp.height > 0) lp.height else tv.height
-        lp.y = lp.y.coerceIn(0, (sh - h).coerceAtLeast(0))
+        val (x, y) = overlayPosition(lp.x, lp.y, w, h, metrics.widthPixels, metrics.heightPixels, dock)
+        lp.x = x; lp.y = y
         runCatching { wm.updateViewLayout(tv, lp) }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (::tv.isInitialized && tv.isAttachedToWindow) {
+            tv.maxWidth = minOf((260 * resources.displayMetrics.density).toInt(), resources.displayMetrics.widthPixels)
+            tv.post { if (alive) constrainPosition(mode == 0) }
+        }
     }
     // 仅在尺寸变化时 updateViewLayout(loop 每秒 render → 避免无谓重排闪烁)。bg/text 是 View 属性, 设置即生效, 不经此。
     private fun setWinSize(w: Int, h: Int) {
         if (lp.width == w && lp.height == h) return
         lp.width = w; lp.height = h
         runCatching { wm.updateViewLayout(tv, lp) }
+        tv.post { if (alive) constrainPosition(mode == 0) }
     }
     // 给状态色叠加透明度(0..1)→ ARGB int(GradientDrawable.setColor 需 ARGB): 竖丸半透明用
     private fun withAlpha(c: Int, a: Float): Int =

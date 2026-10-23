@@ -1000,7 +1000,7 @@ def launch(pkg, wait=1.0):
     nofloat = bool(SENSITIVE_APPS.get(pkg, {}).get("nofloat"))
     ret = _act(op="launch", pkg=pkg, nofloat=nofloat); ret["fg"] = _wait_fg(pkg, wait)
     if nofloat:
-        ret["policy"] = "sensitive: nofloat" + (", act=locked(零注入, 见 droid.sensitive_status())" if SENSITIVE_APPS[pkg].get("act") == "locked" else "")
+        ret["policy"] = "sensitive: visual-only; overlay follows user preference" + (", act=locked(零注入, 见 droid.sensitive_status())" if SENSITIVE_APPS[pkg].get("act") == "locked" else "")
     return ret
 def pkgs(filter=""): return _act(op="pkgs", filter=filter)["apps"]  # 列可启动app[{pkg,label}], filter模糊匹配包名/应用名如'美团'
 def back(): return _act(op="back")

@@ -327,9 +327,9 @@ class BusA11yService : AccessibilityService() {
                 val intent = packageManager.getLaunchIntentForPackage(pkg)
                     ?: throw RuntimeException("no launch intent for: $pkg (not installed?)")
                 intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                if (req.optBoolean("nofloat", false)) {
-                    // 敏感 App(droid.SENSITIVE_APPS nofloat 策略, 如微信): 不起悬浮窗且收起已有的——TYPE_APPLICATION_OVERLAY 会让目标 App
-                    // 收到 FLAG_WINDOW_IS_OBSCURED 触摸并可被枚举, 是"自动化工具在场"的旁证; 该 App 前台期间 GA 状态只在应用内看。
+                val alwaysFloat = getSharedPreferences("ga", MODE_PRIVATE).getBoolean("float_always_on", false)
+                if (req.optBoolean("nofloat", false) && !alwaysFloat) {
+                    // Automatic hide requests must not override the user's explicit always-on preference.
                     runCatching { stopService(android.content.Intent(this, FloatService::class.java)) }
                 } else if (android.provider.Settings.canDrawOverlays(this)) {
                     // 切走前自动起悬浮窗(有overlay权限时), 让用户能看到GA仍在工作

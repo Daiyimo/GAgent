@@ -3,11 +3,37 @@ package com.ljq.ga
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
+import org.json.JSONObject
 
 class PermissionCoordinator(
     private val activity: MainActivity,
     private val webCallbacks: WebCallbacks,
 ) {
+    /** Called off the UI thread after the Activity leaves; the task snapshot is read-only. */
+    fun restoreBackgroundOverlay() {
+        if (!Py.ready) return
+        val snapshot = runCatching { JSONObject(Py.call("poll_all", "-1")) }.getOrNull() ?: return
+        val sessions = snapshot.optJSONArray("sessions") ?: return
+        val busy = (0 until sessions.length()).any {
+            val session = sessions.optJSONObject(it)
+            session != null && (session.optBoolean("running") || session.optJSONObject("ask") != null)
+        }
+        activity.runOnUiThread {
+            if (MainActivity.live !== activity || activity.isDestroyed) return@runOnUiThread
+            val always = activity.getSharedPreferences("ga", Context.MODE_PRIVATE).getBoolean("float_always_on", false)
+            val suppressed = BusA11yService.instance?.foregroundPkg() == "com.tencent.mm"
+            if (!needsBackgroundOverlay(Settings.canDrawOverlays(activity), MainActivity.isForeground,
+                    busy, always, suppressed) || FloatService.live != null) return@runOnUiThread
+            val intent = Intent(activity, FloatService::class.java).putExtra("trigger", "background")
+            runCatching {
+                if (android.os.Build.VERSION.SDK_INT >= 26) activity.startForegroundService(intent)
+                else activity.startService(intent)
+            }.onFailure {
+                FloatService.lastError = it.javaClass.simpleName + ": " + it.message.orEmpty()
+            }
+        }
+    }
+
     // 悬浮窗授权往返闭环: 用户从系统授权页返回 → 上报 float_perm_result(ok/from/secs, 补齐 denied 之后的漏斗断点)。
     //   授权成功自动接续原动作: button→直接进悬浮窗模式(完成用户原意图); always_on→补落开关+回推前端(免二次手点)。
     //   必须在下方 alwaysOn 读取之前处理: 补落的 SP 值要在同一趟 onResume 里生效(服务由既有分支拉起)。
