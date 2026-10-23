@@ -940,7 +940,8 @@ def test_paste_jittered_wechat_foreground_stays_gated(monkeypatch):
 
 
 def test_paste_requery_recovers_normal_dump_path(monkeypatch):
-    seq = iter([droid._SELF_PKG, "com.android.settings"])
+    from itertools import chain, repeat
+    seq = chain([droid._SELF_PKG], repeat("com.android.settings"))
     calls = {"dump": 0}
     def _dump(full=False):
         calls["dump"] += 1

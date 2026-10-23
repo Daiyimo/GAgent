@@ -125,4 +125,4 @@
 - 实证：亮度最低 9 轮/80s · 亮度+自动+闹钟 26–28 轮/284–339s。
 
 ## 敏感 / 只读视觉
-### 微信 `com.tencent.mm` — 在册敏感，`dump()` 恒 `[]`，默认禁一切注入（见 phone_use §5 / gandroid-wechat-yolo）；淘宝 `com.taobao.taobao` dump 空壳走视觉；京东冷启即安全验证 → 停手。
+### 微信 `com.tencent.mm` — 在册敏感，`dump()` 恒 `[]`，纯截图/GUI，正常导航无固定动作预算（见 phone_use §5）；淘宝 `com.taobao.taobao` dump 空壳走视觉；京东冷启即安全验证 → 停手。

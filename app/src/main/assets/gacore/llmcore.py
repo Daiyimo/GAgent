@@ -918,8 +918,7 @@ Follow these steps to think and act:
                 try:
                     data = tryparse(json_str)
                     func_name = data.get('name') or data.get('function') or data.get('tool')
-                    args = data.get('arguments') or data.get('args') or data.get('params') or data.get('parameters')
-                    if args is None: args = data
+                    args = _tool_arguments(data)
                     if func_name: tool_calls.append(MockToolCall(func_name, args))
                 except json.JSONDecodeError:
                     errors.append(f'Failed to parse tool_use JSON: {json_str[:200]}')
@@ -929,6 +928,17 @@ Follow these steps to think and act:
                 for e in errors:
                     print(f"[Warn] {e}"); tool_calls.append(MockToolCall('bad_json', {'msg': e}))
         return MockResponse(thinking, remaining_text.strip(), tool_calls, text)
+
+def _tool_arguments(data):
+    """Preserve explicit argument objects, including empty ones, or flat tool fields."""
+    for key in ('arguments', 'args', 'input', 'params', 'parameters'):
+        if key in data:
+            value = data[key]
+            if not isinstance(value, dict):
+                raise ValueError('Tool arguments must be an object')
+            return value
+    return {k: v for k, v in data.items() if k not in ('name', 'function', 'tool', 'id')}
+
 
 def _parse_text_tool_calls(content):
     """Fallback: extract tool calls from text when model doesn't use native tool_use blocks."""
@@ -942,11 +952,11 @@ def _parse_text_tool_calls(content):
             return tcs, content[:idx].strip()
         except: pass
     # try XML tags: <tool_call>{"name":..., "arguments":...}</tool_call>
-    _xp = r"<(?:tool_use|tool_call)>((?:(?!<(?:tool_use|tool_call)>).){15,}?)</(?:tool_use|tool_call)>"
+    _xp = r"<(?:tool_use|tool_call)>((?:(?!<(?:tool_use|tool_call)>).){15,}?)(?:</(?:tool_use|tool_call)>|(?=\s*```))"
     for s in re.findall(_xp, content, re.DOTALL):
         try:
             d = tryparse(s.strip()); name = d.get('name')
-            args = d.get('arguments') or d.get('args') or d.get('input') or {}
+            args = _tool_arguments(d)
             if name: tcs.append(MockToolCall(name, args))
         except: pass
     if tcs: content = re.sub(_xp, "", content, flags=re.DOTALL).strip()

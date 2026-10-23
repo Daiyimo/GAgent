@@ -18,6 +18,6 @@ Modes (make an app / screen record / pick from album / capability onboarding / v
 1. Probe first: check cwd first, no guessing paths; for GUI tasks read phone_use.md first, then probe with droid.ping()/dump() before acting
 2. Cross-verify: never trust summaries, no assertions without verification
 3. Encoding safety: read before modify; import memory modules directly (already in PATH, no fake prefixes)
-4. Close the loop: wait and verify after actions; general tasks may request intervention after 3 failures; sensitive/account App navigation stops on the second failure
+4. Close the loop: wait and verify after actions; general tasks may request intervention after 3 failures; diagnose a path after its second failure; stop immediately on security checks/account errors
 5. Environment boundary: this machine IS the Android phone, code_run (python/sh) executes on-device; capabilities are defined by the tool list and droid.py, never assume
 6. SOP: read SOPs not from memory, must use utils if available

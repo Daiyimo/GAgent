@@ -50,13 +50,18 @@ class BusA11yService : AccessibilityService() {
     // 敏感 App 的零注入/dump 置空策略与此无关(策略在 droid.py 按前台包名判, 不因看得到就去动)。
     @Volatile private var lastEventPkg: String? = null
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)
-            event.packageName?.toString()?.takeIf { it.isNotEmpty() && it != packageName }?.let { lastEventPkg = it }
+        if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        val pkg = event.packageName?.toString()?.takeIf { it.isNotEmpty() } ?: return
+        // Window metadata only: do not request any target-app nodes to identify it.
+        val window = windows?.firstOrNull { it.id == event.windowId }
+        if (window?.type == AccessibilityWindowInfo.TYPE_APPLICATION) lastEventPkg = pkg
     }
+    private fun visualOnly() = lastEventPkg == null || lastEventPkg == "com.tencent.mm"
     override fun onInterrupt() {}
 
     // --- dump ---
     fun dump(full: Boolean): String {
+        if (visualOnly()) return "[]"
         val root = foregroundRoot() ?: throw RuntimeException("no active window root")
         val (sw, sh) = screenSize()
         val out = JSONArray()
@@ -90,6 +95,7 @@ class BusA11yService : AccessibilityService() {
 
     /** One window only. Legacy dump may merge dialogs; guarded actions must never use that view. */
     fun uiSnapshot(expectedPkg: String, targets: MutableList<AccessibilityNodeInfo>? = null): JSONObject {
+        require(!visualOnly() && expectedPkg != "com.tencent.mm") { "visual-only app: use screenshot and coordinate gestures" }
         require(expectedPkg.isNotBlank() && expectedPkg != packageName) { "need external expected package" }
         val window = foregroundWindow() ?: error("unknown foreground window")
         val root = window.root ?: error("unknown foreground root")
@@ -165,8 +171,7 @@ class BusA11yService : AccessibilityService() {
 
     private fun foregroundRoot(): AccessibilityNodeInfo? = foregroundWindow()?.root ?: rootInActiveWindow
 
-    fun foregroundPkg(): String =
-        (foregroundWindow()?.root ?: rootInActiveWindow)?.packageName?.toString() ?: ""
+    fun foregroundPkg(): String = lastEventPkg ?: ""
 
     // 旋转正确的物理屏尺寸: Service 的 resources.displayMetrics 不随旋转可靠更新, getRealMetrics 才行(横屏修正)。
     private val wm get() = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -271,15 +276,10 @@ class BusA11yService : AccessibilityService() {
                     lineTo(cx(req.getInt("x2")).toFloat(), cy(req.getInt("y2")).toFloat()) },
                     req.optLong("dur", 300))
             }
+            "clipboard" -> setClipboard(req.getString("text"))
             "paste" -> {  // 剪贴板粘贴: WebView contenteditable 等 SET_TEXT 失效场景的标准注入
                 val node = focusedEdit()
-                val latch = CountDownLatch(1)
-                android.os.Handler(mainLooper).post {
-                    val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                    cm.setPrimaryClip(android.content.ClipData.newPlainText("ga", req.getString("text")))
-                    latch.countDown()
-                }
-                if (!latch.await(3, TimeUnit.SECONDS)) throw RuntimeException("clipboard timeout")
+                setClipboard(req.getString("text"))
                 Thread.sleep(150)
                 if (req.optBoolean("replace", false)) selectAll(node)   // replace=覆盖而非追加: 先全选, PASTE 即替换(预填昵称/旧搜索词场景)
                 if (!node.performAction(AccessibilityNodeInfo.ACTION_PASTE))
@@ -350,7 +350,22 @@ class BusA11yService : AccessibilityService() {
 
     // findFocus(FOCUS_INPUT)在WebView上常返回拒绝一切action的容器节点(edit=false,foc=true);
     // 且WebView虚节点isFocused可能为false → 收集全部isEditable, 优先focused, 否则唯一者
+    private fun setClipboard(text: String) {
+        val latch = CountDownLatch(1)
+        var failure: Exception? = null
+        android.os.Handler(mainLooper).post {
+            try {
+                val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("ga", text))
+            } catch (e: Exception) { failure = e }
+            finally { latch.countDown() }
+        }
+        check(latch.await(3, TimeUnit.SECONDS)) { "clipboard timeout" }
+        failure?.let { throw it }
+    }
+
     private fun focusedEdit(): AccessibilityNodeInfo {
+        check(!visualOnly()) { "visual-only app: use clipboard + visible paste menu / keyboard" }
         val root = rootInActiveWindow ?: throw RuntimeException("no root")
         val edits = mutableListOf<AccessibilityNodeInfo>()
         fun walk(n: AccessibilityNodeInfo) {

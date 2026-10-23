@@ -81,7 +81,7 @@ def _cfg(key):
 def _call_claude(b64, prompt, timeout, max_tokens=1024):
     cfg = _cfg(CLAUDE_CONFIG_KEY)
     resp = requests.post(
-        cfg['apibase'] + '/v1/messages',
+        __import__('llmcore').auto_make_url(cfg['apibase'], 'messages'),
         json={'model': cfg['model'], 'max_tokens': max_tokens, 'messages': [{
             'role': 'user',
             'content': [
@@ -93,7 +93,9 @@ def _call_claude(b64, prompt, timeout, max_tokens=1024):
         timeout=timeout
     )
     resp.raise_for_status()
-    return resp.json()['content'][0]['text']
+    text = '\n'.join(b.get('text', '') for b in resp.json().get('content', []) if b.get('type') == 'text')
+    if not text.strip(): raise ValueError('Vision response contains no text; increase max_tokens or disable thinking')
+    return text
 
 def _call_openai_compat(b64, prompt, timeout, *, apibase, apikey, model, proxy=None):
     proxies = {'https': proxy, 'http': proxy} if proxy else None

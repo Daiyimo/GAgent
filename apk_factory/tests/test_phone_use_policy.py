@@ -24,12 +24,12 @@ EN_ROUTE = (
 )
 ZH_FAILURE_RULE = (
     "4. 闭环: 操作后等待并验证; 一般任务3次失败后可请求干预; "
-    "敏感/账号App导航第2次失败即停止"
+    "同一路径第2次失败先诊断，验证码/账号异常立即停止"
 )
 EN_FAILURE_RULE = (
     "4. Close the loop: wait and verify after actions; general tasks may "
-    "request intervention after 3 failures; sensitive/account App navigation "
-    "stops on the second failure"
+    "request intervention after 3 failures; diagnose a path after its second failure; stop immediately "
+    "on security checks/account errors"
 )
 
 

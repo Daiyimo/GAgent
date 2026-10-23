@@ -77,3 +77,5 @@ in this Android distribution.
 [Official modules and credential boundaries](docs/OFFICIAL_MODULES.md)
 
 [Dependency review before public release](docs/DEPENDENCY_SECURITY.md)
+
+Optional YOLO button/icon detection can be downloaded, verified and installed by the user; see [installation and licensing](docs/OPTIONAL_YOLO.md). Default builds retain OCR.
