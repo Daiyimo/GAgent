@@ -562,7 +562,11 @@ def look(conf=0.25, path=None, roi=None, cache=True, *, label=None):
 
 def ask_vision(image_input, prompt="描述当前界面", **options):
     """Use the configured vision adapter without eager imports for non-visual tasks."""
-    from vision_api import ask_vision as invoke
+    try:
+        from vision_api import ask_vision as invoke
+    except ImportError:
+        raise RuntimeError("视觉模型未配置(找不到 vision_api 模块): 不要重试 ask_vision —— 立即改用 droid.look()/droid.ocr 读屏; "
+                           "确需看图问答时, 先按 memory/vision_sop.md 配置 vision_api 再继续") from None
     return invoke(image_input, prompt, **options)
 
 
