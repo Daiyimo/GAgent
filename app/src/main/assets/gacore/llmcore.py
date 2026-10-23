@@ -952,7 +952,7 @@ def _parse_text_tool_calls(content):
             return tcs, content[:idx].strip()
         except: pass
     # try XML tags: <tool_call>{"name":..., "arguments":...}</tool_call>
-    _xp = r"<(?:tool_use|tool_call)>((?:(?!<(?:tool_use|tool_call)>).){15,}?)(?:</(?:tool_use|tool_call)>|(?=\s*```))"
+    _xp = r"<(?:tool_use|tool_call)>((?:(?!<(?:tool_use|tool_call)>).){15,}?)(?:</(?:tool_use|tool_call)>|(?=\r?\n[ \t]*```[ \t]*(?:\r?\n|$)))"
     for s in re.findall(_xp, content, re.DOTALL):
         try:
             d = tryparse(s.strip()); name = d.get('name')

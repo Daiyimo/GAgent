@@ -42,6 +42,12 @@ class ToolArgumentsTest(unittest.TestCase):
             '```<tool_use>\n{"name":"file_read","path":"two"}\n```')
         self.assertEqual([json.loads(t.function.arguments)['path'] for t in result.tool_calls], ['one', 'two'])
 
+    def test_fence_inside_script_does_not_end_tool_json(self):
+        client = object.__new__(ToolClient)
+        value = {'name': 'code_run', 'script': "print('```')"}
+        result = client._parse_mixed_response('```<tool_use>\n' + json.dumps(value) + '\n```')
+        self.assertEqual(json.loads(result.tool_calls[0].function.arguments)['script'], value['script'])
+
 
 class VisionResponseTest(unittest.TestCase):
     def test_thinking_before_text_is_not_treated_as_missing_answer(self):

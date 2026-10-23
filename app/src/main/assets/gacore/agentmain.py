@@ -76,8 +76,11 @@ else:
         # 标记串缺失才替换 → 幂等; 存量 L1 漏枚举时 bench 实测「用 X 查一下」三次都 T1 直开官网, 改 L3 SOP 无效, 只有 L1 生效。
         try:
             _tpl = open(os.path.join(script_dir, f'assets/global_mem_insight_template{lang_suffix}.txt'), encoding='utf-8').read().split('\n')
-            _sync = ((('Channel choice:', 'naming an app'), ('Modes (', 'express delivery SF/Cainiao')) if lang_suffix == '_en'
+            _sync = ((('Channel choice:', 'named app'), ('Modes (', 'express delivery SF/Cainiao')) if lang_suffix == '_en'
                      else (('通道选择:', '点名 App'), ('模式(', '快递顺丰菜鸟')))
+            # Upgrade only the built-in failure rule; preserve all user memory lines.
+            _sync += ((('4. Close the loop:', 'diagnose a path') if lang_suffix == '_en'
+                       else ('4. 闭环:', '先诊断')),)
             for _prefix, _marker in _sync:
                 _new = next((x for x in _tpl if x.startswith(_prefix)), None)
                 if _new:
