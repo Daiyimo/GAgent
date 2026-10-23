@@ -117,6 +117,21 @@ class FloatService : Service() {
             }
             Unit
         }
+        fun failed(e: Exception) { failure = e; ready.countDown() }
+        fun commitInputFrame() {
+            try {
+                check(alive && tv.isAttachedToWindow) { "overlay detached before input commit" }
+                if (Build.VERSION.SDK_INT >= 33 && tv.isHardwareAccelerated) {
+                    SurfaceControl.Transaction().use { transaction ->
+                        transaction.addTransactionCommittedListener(mainExecutor) { ready.countDown() }
+                        check(tv.rootSurfaceControl?.applyTransactionOnDraw(transaction) == true) {
+                            "overlay input transaction rejected"
+                        }
+                    }
+                    tv.invalidate()
+                } else ready.countDown()
+            } catch (e: Exception) { failed(e) }
+        }
         ui.post {
             try {
                 check(alive && tv.isAttachedToWindow) { "overlay detached before gesture" }
@@ -127,14 +142,15 @@ class FloatService : Service() {
                     try {
                         check(alive && tv.isAttachedToWindow) { "overlay detached before frame commit" }
                         if (Build.VERSION.SDK_INT >= 29 && tv.isHardwareAccelerated) {
-                            tv.viewTreeObserver.registerFrameCommitCallback { ready.countDown() }
+                            // Submission alone is too early on asynchronous window updates.
+                            tv.viewTreeObserver.registerFrameCommitCallback { ui.post { commitInputFrame() } }
                             tv.invalidate()
                         } else {
                             tv.postOnAnimation { ui.post { ready.countDown() } }
                         }
-                    } catch (e: Exception) { failure = e; ready.countDown() }
+                    } catch (e: Exception) { failed(e) }
                 } }
-            } catch (e: Exception) { failure = e; ready.countDown() }
+            } catch (e: Exception) { failed(e) }
         }
         try {
             check(ready.await(3, TimeUnit.SECONDS)) { "overlay gesture preparation timeout" }
