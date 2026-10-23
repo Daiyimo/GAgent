@@ -1941,6 +1941,12 @@ def _pc_cmd(arg):
     import ganet
     sub = (arg or '').strip()
     def _wrap(msg='', convo_id=None, **extra):
+        import service_config
+        if not service_config.load_config().get('ganet'):   # 未配置: 静默空态。聊天输入栏每次载入都会轮询 /pc status,
+                                                            # 直接抛 ValueError 会在欢迎页弹原始报错(真机实测), 且违背
+                                                            # "未配置模块不请求服务"; 显式失败留给主动 bind/use 时。
+            return json.dumps({'ok': True, 'active_convo': _pub_cid(_focus_cid) or '',
+                               'current': None, 'devices': [], 'msg': msg, 'not_configured': True}, ensure_ascii=False)
         try:
             devs = ganet.list_devices()
             if convo_id:
