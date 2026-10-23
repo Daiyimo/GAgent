@@ -25,7 +25,11 @@ android {
         }
     }
     buildTypes {
-        debug { applicationIdSuffix ".debug"; versionNameSuffix "-debug" }
+        debug {
+            applicationIdSuffix ".debug"; versionNameSuffix "-debug"
+            // CI upgrades must retain the installed app's signing identity.
+            if (System.getenv('GAGENT_KEYSTORE_PATH')) signingConfig signingConfigs.release
+        }
         release {
             minifyEnabled false
             shrinkResources false
