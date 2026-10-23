@@ -94,18 +94,27 @@ your selected service; task text, screenshots and tool output may also be sent.
 
 1. Open **Settings → Accessibility** in GAgent, then **Enable** or **Enable
    accessibility manually**. In Android's accessibility settings, select the
-   intended GAgent variant and enable its service; return to GAgent and confirm
+   **GAgent OSS** (release) or **GAgent OSS Debug** and enable its service; return to GAgent and confirm
    it reports enabled. If Android blocks a sideloaded app with *Restricted
    settings*, review the app's origin and Android's on-screen instructions. The
    user must make that trust decision; an agent should not bypass it.
 2. Enable **Settings → Always-on floating window**. Follow the prompt to allow
    **Display over other apps**, then return and check the switch is on.
-3. Allow task notifications when requested. Grant microphone, camera, shared-file
-   or sensing access only when using the corresponding feature.
+3. Allow task notifications when requested. The current preview may also open
+   the all-files settings page or request microphone access on launch. You can
+   return without granting these for text chat and basic screenshot/gesture tasks.
+   Grant microphone, camera, shared-file or sensing access when you need it; if
+   voice reports a permission denial, enable Microphone in Android app permissions.
 
 「设置 → 无障碍权限 → 去开启／手动开启无障碍」进入系统页，为**本次安装的 GAgent**授权后返回；
 再开「悬浮窗常开」，按引导授予「显示在其他应用上」。遇 Android「受限设置」先核实安装来源，
-由你本人按照系统提示决定是否允许。通知用于显示任务状态，其他权限按功能需要授予。
+由你本人按照系统提示决定是否允许。系统列表中选择 **GAgent OSS**（调试版为 **GAgent OSS Debug**），
+避免与原有闭源版混淆。通知用于显示任务状态；当前预览首启可能提前打开「所有文件访问」或申请
+录音，纯文本与基础截图/手势可先返回或拒绝。使用语音若提示拒绝录音，再到系统应用权限开启麦克风。
+
+On Meizu / Flyme, the accessibility shortcut can first open **Auxiliary features**;
+scroll to **Accessibility → Downloaded apps → GAgent OSS**. Labels vary across ROMs.
+魅族 Flyme 可能先进入「辅助功能」总页：向下找到「无障碍 → 已下载的应用 → GAgent OSS」。
 
 Wireless debugging and accessibility auto-keep are advanced options. You can begin
 with manually enabled accessibility; self-ADB is not a prerequisite for ordinary

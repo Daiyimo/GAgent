@@ -454,9 +454,10 @@ def remove_computer(device_id):
 
 def list_devices(token=None, fresh=False):
     """List computers paired with this phone; the server is not a device directory."""
-    if token is None:
+    computers = _load_computers()
+    if computers and token is None:
         token = read_token()
-    devs = [_refresh_pairing(d, token) for d in _load_computers().values()]
+    devs = [_refresh_pairing(d, token) for d in computers.values()]
     devs = [d for d in devs if d.get("pairingState") == "paired"]
     _DEV_CACHE["at"] = time.time()
     _DEV_CACHE["devs"] = devs
@@ -522,8 +523,6 @@ def unbind_device(convo_id=None):
 
 def current_device(token=None, convo_id=None):
     """Return one conversation's explicitly selected computer, if any."""
-    if token is None:
-        token = read_token()
     devs = list_devices(token)
     cid = convo_id or _active_convo() or "_default"
     stored = _bind_store().get(cid)

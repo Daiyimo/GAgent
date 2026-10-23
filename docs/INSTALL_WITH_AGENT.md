@@ -171,3 +171,15 @@ security gates or copy a maintainer's signing secrets to resolve build failures.
 源码构建以所选提交的 CI 为准；Windows/WSL 与 macOS 适配不能写成已完成的跨平台实测。
 先生成 AAR 与 wheels，再运行 Gradle。依赖错误按责任层修复，不关闭 TLS、不跳安全检查，
 不读取或复制维护者私钥。构建通过后仍须完成手机端验收。
+
+## System labels / 系统名称
+
+Choose **GAgent OSS** for the release APK and **GAgent OSS Debug** for the debug APK
+in the launcher, app permissions and accessibility list. The package IDs remain
+`io.github.shenhaostu.gagent` and `io.github.shenhaostu.gagent.debug`; existing data
+and signing requirements are unchanged. On Flyme, follow the additional
+[accessibility navigation](GETTING_STARTED.md#permissions). Do not enable a different
+installation just because its name is similar.
+
+启动器及系统权限中，正式变体显示 **GAgent OSS**，调试变体显示 **GAgent OSS Debug**。
+包名不变；保留原有闭源版本，不替它修改权限。Flyme 的额外入口见安装指南。
