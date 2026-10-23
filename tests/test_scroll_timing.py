@@ -58,3 +58,29 @@ def test_scroll_segments_do_not_cancel_each_other_without_verification(asynchron
     assert asynchronous_screen['now'] >= asynchronous_screen['ends_at']
     assert result['performed'] is True
     assert result['verified'] is False
+
+
+@pytest.mark.parametrize('finger,view,axis,sign', [
+    ('up', 'down', 'y', -1), ('down', 'up', 'y', 1),
+    ('left', 'right', 'x', -1), ('right', 'left', 'x', 1),
+])
+@pytest.mark.parametrize('verified', [True, False])
+def test_scroll_feedback_distinguishes_finger_and_view_direction(
+        asynchronous_screen, finger, view, axis, sign, verified):
+    result = droid.scroll(finger, verify=verified)
+    action = asynchronous_screen['actions'][0]
+    assert (action[axis + '2'] - action[axis + '1']) * sign > 0
+    assert result['finger_direction'] == finger
+    assert result['view_direction'] == view
+    # Direction is dispatch metadata, not proof of progress.
+    if not verified:
+        assert result['verified'] is False
+
+
+def test_uncertain_scroll_still_reports_dispatched_direction(asynchronous_screen, monkeypatch):
+    monkeypatch.setattr(droid, 'dump', lambda: [])
+    monkeypatch.setattr(droid, 'shot', lambda **kwargs: None)
+    result = droid.scroll('down')
+    assert result['scrolled'] is False and result['uncertain'] is True
+    assert result['finger_direction'] == 'down'
+    assert result['view_direction'] == 'up'

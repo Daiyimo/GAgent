@@ -7,6 +7,7 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.SystemClock
 import android.util.DisplayMetrics
 import android.view.Display
@@ -457,10 +458,22 @@ class BusA11yService : AccessibilityService() {
     }
 
     private fun gesture(p: Path, dur: Long, expected: ScreenGeometry? = null) {
-        require(expected == null || expected == screenGeometry()) { "screen geometry changed before gesture dispatch" }
-        val ok = dispatchGesture(GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(p, 0, dur)).build(), null, null)
-        if (!ok) throw RuntimeException("dispatchGesture rejected")
+        val restore = FloatService.live?.passThroughGesture() ?: {}
+        val handler = Handler(mainLooper)
+        val fallback = Runnable { restore() }
+        fun finish() { handler.removeCallbacks(fallback); restore() }
+        var accepted = false
+        try {
+            require(expected == null || expected == screenGeometry()) { "screen geometry changed before gesture dispatch" }
+            val callback = object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription) = finish()
+                override fun onCancelled(gestureDescription: GestureDescription) = finish()
+            }
+            handler.postDelayed(fallback, dur + 1000)
+            accepted = dispatchGesture(GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(p, 0, dur)).build(), callback, handler)
+            check(accepted) { "dispatchGesture rejected" }
+        } finally { if (!accepted) finish() }
     }
 
     // --- shot ---

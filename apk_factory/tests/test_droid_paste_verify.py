@@ -531,7 +531,8 @@ def test_scroll_verify_false_never_claims_success(monkeypatch):
     monkeypatch.setattr(droid, "ping", lambda: {"w": W, "h": H, "pkg": "x"})
     monkeypatch.setattr(droid, "swipe", lambda *a, **kw: {"ok": 1})
     ret = droid.scroll("up", verify=False)
-    assert ret == {"ok": 1, "performed": True, "verified": False}
+    assert ret == {"ok": 1, "performed": True, "verified": False,
+                   "finger_direction": "up", "view_direction": "down"}
 
 
 def test_scroll_base_exception_propagates(monkeypatch):

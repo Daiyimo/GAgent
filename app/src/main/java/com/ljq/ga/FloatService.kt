@@ -12,6 +12,7 @@ import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.InsetDrawable
+import android.hardware.input.InputManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -20,6 +21,8 @@ import android.view.*
 import android.widget.TextView
 import org.json.JSONObject
 import java.util.concurrent.Executors
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import android.text.InputType
 import android.view.inputmethod.InputMethodManager
@@ -28,7 +31,7 @@ import android.widget.LinearLayout
 import org.json.JSONArray
 
 // 可拖动状态悬浮窗(还原原版): 点击循环三态(小球→单行→近三步), 长按>450ms 回主界面, 可拖到角落。
-// 不再触摸穿透(用户要求): 自主驱动他 App 时建议把它拖到不挡操作区的角落。运行态着色: 待命墨黑/运行蓝/完成绿
+// 用户可点击/拖动；Agent 派发手势期间保持可见并暂时穿透，避免手势拖动自己的浮窗。
 class FloatService : Service() {
     private lateinit var wm: WindowManager
     private lateinit var tv: TextView
@@ -36,6 +39,29 @@ class FloatService : Service() {
     private val ui = Handler(Looper.getMainLooper())
     private val exec = Executors.newSingleThreadExecutor()
     private var alive = true
+    private var gestureWindowFlags = 0
+    private var gestureWindowAlpha = 1f
+    private val gestureLeases = OverlayGestureLeases { active ->
+        if (alive && ::tv.isInitialized && tv.isAttachedToWindow) {
+            val oldFlags = lp.flags
+            val oldAlpha = lp.alpha
+            if (active) {
+                check(askView == null) { "answer panel open; finish or dismiss it before gestures" }
+                val limit = if (Build.VERSION.SDK_INT >= 31)
+                    getSystemService(InputManager::class.java).maximumObscuringOpacityForTouch else 1f
+                check(limit > 0f) { "system does not allow visible overlay touch passthrough" }
+                gestureWindowFlags = oldFlags
+                gestureWindowAlpha = oldAlpha
+                lp.flags = oldFlags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                lp.alpha = minOf(oldAlpha, limit)
+            } else {
+                lp.flags = gestureWindowFlags
+                lp.alpha = gestureWindowAlpha
+            }
+            try { wm.updateViewLayout(tv, lp) }
+            catch (e: Exception) { lp.flags = oldFlags; lp.alpha = oldAlpha; throw e }
+        }
+    }
     private var mode = 1   // 三态循环(点浮窗切换): 0=竖丸(贴边 vertical pill, 最小态, 取代旧小球) / 1=单行(S号·摘要) / 2=近三步多行
     private var last: JSONObject? = null                 // 当前聚合焦点会话，供既有渲染/语言逻辑复用
     private var lastPollSnap: JSONObject? = null         // poll_all 的 1s 聚合快照
@@ -76,6 +102,35 @@ class FloatService : Service() {
         @Volatile var lastError: String? = null
     }
 
+    /** Called off the UI thread, before dispatch. Wait for the input-window flags' frame. */
+    fun passThroughGesture(): () -> Unit {
+        check(Looper.myLooper() != Looper.getMainLooper()) { "gesture preparation needs a worker thread" }
+        val ready = CountDownLatch(1)
+        var release: (() -> Unit)? = null
+        var failure: Exception? = null
+        val finish = {
+            ui.post {
+                runCatching { release?.invoke() }.onFailure {
+                    lastError = "overlay input restore failed: ${it.javaClass.simpleName}"
+                    stopSelf()
+                }
+            }
+            Unit
+        }
+        ui.post {
+            try {
+                check(alive && tv.isAttachedToWindow) { "overlay detached before gesture" }
+                release = gestureLeases.acquire()
+                tv.postOnAnimation { ui.post { ready.countDown() } }
+            } catch (e: Exception) { failure = e; ready.countDown() }
+        }
+        try {
+            check(ready.await(3, TimeUnit.SECONDS)) { "overlay gesture preparation timeout" }
+            failure?.let { throw it }
+        } catch (e: Exception) { finish(); throw e }
+        return finish
+    }
+
     private var shownTracked = false
     // 浮窗弹出埋点: trigger=manual(用户点「悬浮窗」按钮) / auto(A11y 切到别的 App 时自动弹)。
     // 放 onStartCommand(能拿到 Intent extra)而非 onCreate, 仅首次上报一次。
@@ -107,7 +162,7 @@ class FloatService : Service() {
         lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT       // 可触摸+可拖动(不再穿透): 拖到角落避开 agent 操作区
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT
         ).apply { gravity = Gravity.TOP or Gravity.START; x = (10 * d).toInt(); y = (200 * d).toInt() }
         var sx = 0; var sy = 0; var tx = 0f; var ty = 0f; var t0 = 0L; var panelOpenAtDown = false
         tv.setOnTouchListener { _, e ->

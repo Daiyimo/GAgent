@@ -12,7 +12,7 @@
   ④顶部(状态栏下~400px)点击防劫持: 重新 dump/shot 后立即 tap; tap 后前台变成非预期 App→立即 back 撤出。
 用法:
     import droid
-    droid.ping()                    # {ver, a11y, pkg:真实前台包名, rot:旋转0..3, w/h:物理屏宽高, loaded}; GA 状态浮窗触摸穿透, 不拦截点击
+    droid.ping()                    # {ver, a11y, pkg:真实前台包名, rot:旋转0..3, w/h:物理屏宽高, loaded}; Agent 手势期间浮窗触摸穿透，结束后恢复用户交互
     els = droid.dump()              # 屏幕元素 [{t,d,x,y,click,edit,...}], full=True 含全部节点
     droid.find('好评优先')           # 按 t/d 子串找节点(exact=True 全等; clickable=True 只要可点), 每项带中心 x,y —— 别再手写列表推导
     droid.tap_text('好评优先')       # find→唯一命中→tap; 多命中抛 ValueError 列候选(用 exact/idx), 0 命中抛 LookupError(转 look())
@@ -578,9 +578,18 @@ def _scroll_shot():
         return shot(q=45)
     except Exception:
         return None
+
+
+def _scroll_feedback(direction, result):
+    """Expose gesture intent without changing the observation verdict."""
+    view = {"up": "down", "down": "up", "left": "right", "right": "left"}
+    return dict(result, finger_direction=direction, view_direction=view[direction])
+
+
 def scroll(direction="up", frac=0.35, dur=600, times=1, verify=True, settle=0.5):
     """安全滚动: 从本次屏幕尺寸推出居中坐标; 派发时尺寸/旋转必须仍一致, 朝 direction 滚一屏的 frac。
     direction = 手指移动方向: 'up'(看下面内容) | 'down'(看上面) | 'left' | 'right'。
+    返回 finger_direction 与相反的 view_direction；它们描述本次意图，不替代 scrolled/evidence 核验。
     默认短距离、低速度，保留相邻观察的内容重叠；需要快速遍历时显式传 frac/dur。
     verify=True: 内容区像素稳态复核 + dump 文本对比(真机实测: Flyme设置/WebView 同窗滚动后 a11y 树会滞后);
     调用方必须检查 scrolled/evidence/uncertain; uncertain=True 表示观察不可用/结论不确定,
@@ -634,7 +643,7 @@ def scroll(direction="up", frac=0.35, dur=600, times=1, verify=True, settle=0.5)
     if not verify:
         ret = dict(action or {})
         ret.update(performed=True, verified=False)
-        return ret
+        return _scroll_feedback(direction, ret)
 
     after_txt, after_img = None, None
     if not sensitive:
@@ -715,45 +724,45 @@ def scroll(direction="up", frac=0.35, dur=600, times=1, verify=True, settle=0.5)
         }
         if not pkg_before or not pkg_after:
             ret["error"] = "; ".join(dict.fromkeys(errors))[:160]
-        return ret
+        return _scroll_feedback(direction, ret)
 
     if _shape_changed(before_img, after_img, stable_img):
         errors.append("evidence:ShapeChanged")
-        return {
+        return _scroll_feedback(direction, {
             "scrolled": False,
             "pkg": pkg_after,
             "evidence": "none",
             "uncertain": True,
             "error": "; ".join(dict.fromkeys(errors))[:160],
             "hint": "截图形态在证据窗内变化(旋转/折叠?)，无法判定是否滚动，请重新读取当前页面。",
-        }
+        })
     if stable_unavailable:
-        return {
+        return _scroll_feedback(direction, {
             "scrolled": False,
             "pkg": pkg_after,
             "evidence": "none",
             "uncertain": True,
             "error": "; ".join(dict.fromkeys(errors))[:160],
             "hint": "滚动稳态截图观察失败，无法确认像素变化是滚动还是回弹。",
-        }
+        })
     if text_ratio is None and first_pixel_pct is None:
         error = "; ".join(dict.fromkeys(errors))[:160]
-        return {
+        return _scroll_feedback(direction, {
             "scrolled": False,
             "pkg": pkg_after,
             "evidence": "none",
             "uncertain": True,
             "error": error or "observation:Unavailable",
             "hint": "滚动观察失败，无法判断页面是否滚动；请重新读取当前页面后再试。",
-        }
+        })
     moved = evidence != "none"
-    return {
+    return _scroll_feedback(direction, {
         "scrolled": moved,
         "pkg": pkg_after,
         "evidence": evidence,
         "hint": None if moved else
                 "内容区画面与可见文本均未稳定变化: 已到底/顶, 或该 App 对合成滚动不敏感。",
-    }
+    })
 def _boxes(nodes, key=None):
     """full dump 节点的 bbox [[l,t,r,b],...]; key 过滤(如 'edit' 只取可编辑框)。"""
     out = []
