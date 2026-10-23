@@ -207,13 +207,15 @@ class BusHttpd(port: Int, private val auth: LocalBusAuth) : NanoHTTPD("127.0.0.1
     // 未命中路径落 else 分支返回 HELP（404 即文档，行为不变）。
     private val routes: Map<String, (IHTTPSession, Map<String, String>) -> Response> = linkedMapOf(
         "/ping" to { _: IHTTPSession, _: Map<String, String> ->
+            val service = BusA11yService.instance
+            val geometry = service?.screenGeometry()
             json(JSONObject()
                 .put("ver", Bus.VER)
-                .put("a11y", BusA11yService.instance != null)
-                .put("pkg", BusA11yService.instance?.foregroundPkg() ?: "")
-                .put("rot", BusA11yService.instance?.rotation() ?: 0)
-                .put("w", BusA11yService.instance?.screenW() ?: 0)
-                .put("h", BusA11yService.instance?.screenH() ?: 0)
+                .put("a11y", service != null)
+                .put("pkg", service?.foregroundPkg() ?: "")
+                .put("rot", geometry?.rot ?: 0)
+                .put("w", geometry?.w ?: 0)
+                .put("h", geometry?.h ?: 0)
                 .put("loaded", JSONArray(Onnx.loaded())).toString())
         },
         "/onnx/info" to { _, p ->

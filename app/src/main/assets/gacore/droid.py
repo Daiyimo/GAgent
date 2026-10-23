@@ -356,14 +356,48 @@ def _img_diff_str(before, after):
     return "diff: %.3f%% bbox=%s" % (pct, bbox)
 
 
-def tap(x, y, verify=True, wait=1.0, human=False):
+def _screen_geometry(info):
+    geometry = {key: int(info[key]) for key in ('w', 'h', 'rot')}
+    if geometry['w'] <= 0 or geometry['h'] <= 0 or geometry['rot'] not in range(4):
+        raise ValueError('invalid screen geometry')
+    return geometry
+
+
+def _gesture_screen(info, points, expected=None):
+    current = _screen_geometry(info)
+    if expected is not None and _screen_geometry(expected) != current:
+        raise RuntimeError('screen geometry changed; capture and locate the target again')
+    for x, y in points:
+        if not (0 <= x < current['w'] and 0 <= y < current['h']):
+            raise ValueError('coordinate outside the current screen')
+    return current
+
+
+def capture(q=None):
+    """Explicit image + screen observation; pass its screen to tap/swipe after locating a target."""
+    before = _screen_geometry(ping())
+    img = shot(q=q)
+    after = _screen_geometry(ping())
+    if before != after:
+        raise RuntimeError('screen geometry changed during capture; capture again')
+    if img is None or img.shape[:2] != (before['h'], before['w']):
+        raise RuntimeError('screenshot geometry does not match the display')
+    return {'image': img, 'screen': before}
+
+
+def tap(x, y, verify=True, wait=1.0, human=False, *, screen=None):
     """human=True only adds small motor-tolerance jitter; it is not an anti-abuse bypass.
     Sensitive apps must use state-driven waits and stop on security checks."""
+    geometry = _gesture_screen(ping(), [(x, y)], screen)
     before = shot() if verify else None
-    ret = _act(op="tap", x=int(x), y=int(y), human=bool(human)); ret.pop("ok", None)
+    ret = _act(op="tap", x=int(x), y=int(y), human=bool(human), expected_screen=geometry); ret.pop("ok", None)
     if not verify: return ret
     time.sleep(wait)
-    diff = _img_diff_str(before, shot()); ret["diff"] = diff
+    after = shot()
+    diff = _img_diff_str(before, after); ret["diff"] = diff
+    if _shape_changed(before, after):
+        ret.update(verified=False, uncertain=True, hint='屏幕尺寸变化；重新截图定位，不复用旧坐标。', fg=_fg())
+        return ret
     try: pct = float(diff.split("%", 1)[0].split()[-1])
     except Exception: pct = 0.0
     if pct < 0.05:
@@ -401,7 +435,9 @@ def click_text(text, *, package, timeout=8.0):
     return jev_ui.tap_target(sys.modules[__name__], text, package, timeout, use_jev=False)
 
 
-def swipe(x1, y1, x2, y2, dur=300): return _act(op="swipe", x1=int(x1), y1=int(y1), x2=int(x2), y2=int(y2), dur=int(dur))
+def swipe(x1, y1, x2, y2, dur=300, *, screen=None):
+    geometry = _gesture_screen(ping(), [(x1, y1), (x2, y2)], screen)
+    return _act(op="swipe", x1=int(x1), y1=int(y1), x2=int(x2), y2=int(y2), dur=int(dur), expected_screen=geometry)
 
 
 # ---------------- 定位便捷层(v2.33): 把 agent 每轮手写的「dump→列表推导→取中心」收成三个纯函数, 少写代码=少报错少浪费轮 ----------------
@@ -542,7 +578,7 @@ def _scroll_shot():
     except Exception:
         return None
 def scroll(direction="up", frac=0.55, dur=260, times=1, verify=True, settle=0.5):
-    """安全滚动: 由屏幕尺寸(不变量)推出避开系统手势带的居中坐标, 朝 direction 滚一屏的 frac。
+    """安全滚动: 从本次屏幕尺寸推出居中坐标; 派发时尺寸/旋转必须仍一致, 朝 direction 滚一屏的 frac。
     direction = 手指移动方向: 'up'(看下面内容) | 'down'(看上面) | 'left' | 'right'。
     verify=True: 内容区像素稳态复核 + dump 文本对比(真机实测: Flyme设置/WebView 同窗滚动后 a11y 树会滞后);
     调用方必须检查 scrolled/evidence/uncertain; uncertain=True 表示观察不可用/结论不确定,
@@ -574,6 +610,7 @@ def scroll(direction="up", frac=0.55, dur=260, times=1, verify=True, settle=0.5)
     cx, cy = w // 2, h // 2; sv = int(h * frac) // 2; sh_ = int(w * frac) // 2
     seg = {"up": (cx, cy + sv, cx, cy - sv), "down": (cx, cy - sv, cx, cy + sv),
            "left": (cx + sh_, cy, cx - sh_, cy), "right": (cx - sh_, cy, cx + sh_, cy)}.get(direction, (cx, cy + sv, cx, cy - sv))
+    seg = tuple(min(max(v, 0), (w if i % 2 == 0 else h) - 1) for i, v in enumerate(seg))
     before_txt, before_img = None, None
     if verify:
         if not sensitive:
@@ -589,7 +626,7 @@ def scroll(direction="up", frac=0.55, dur=260, times=1, verify=True, settle=0.5)
 
     action = {}
     for _ in range(times):
-        action = swipe(*seg, dur=dur)
+        action = swipe(*seg, dur=dur, screen=p)
         time.sleep(settle)
     if not verify:
         ret = dict(action or {})

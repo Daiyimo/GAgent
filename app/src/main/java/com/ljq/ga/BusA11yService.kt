@@ -188,12 +188,15 @@ class BusA11yService : AccessibilityService() {
 
     // 旋转正确的物理屏尺寸: Service 的 resources.displayMetrics 不随旋转可靠更新, getRealMetrics 才行(横屏修正)。
     private val wm get() = getSystemService(WINDOW_SERVICE) as WindowManager
+    fun screenGeometry(): ScreenGeometry {
+        val display = wm.defaultDisplay
+        val m = DisplayMetrics(); display.getRealMetrics(m)
+        return ScreenGeometry(m.widthPixels, m.heightPixels, display.rotation)
+    }
     private fun screenSize(): Pair<Int, Int> {
-        val m = DisplayMetrics(); wm.defaultDisplay.getRealMetrics(m); return m.widthPixels to m.heightPixels
+        val g = screenGeometry(); return g.w to g.h
     }
     fun rotation(): Int = wm.defaultDisplay.rotation
-    fun screenW(): Int = screenSize().first
-    fun screenH(): Int = screenSize().second
 
     private fun collect(node: AccessibilityNodeInfo, sw: Int, sh: Int, out: JSONArray, depth: Int,
                         full: Boolean, guarded: Boolean = false, visited: IntArray? = null,
@@ -275,22 +278,32 @@ class BusA11yService : AccessibilityService() {
     }
 
     private fun actInner(req: JSONObject): String {
+        val geometry = if (req.getString("op") in listOf("tap", "swipe") && !req.has("expected_ui")) {
+            val current = screenGeometry()
+            req.optJSONObject("expected_screen")?.let {
+                require(current == ScreenGeometry(it.getInt("w"), it.getInt("h"), it.getInt("rot"))) {
+                    "screen geometry changed; capture and locate the target again"
+                }
+            }
+            current
+        } else null
         when (val op = req.getString("op")) {
             "tap" -> if (req.has("expected_ui")) return observedTap(req)
-                else if (req.optBoolean("human", false)) humanTap(req)
-                else gesture(Path().apply {
-                    moveTo(req.getInt("x").toFloat(), req.getInt("y").toFloat()) }, 100)
+                else {
+                    val g = requireNotNull(geometry)
+                    g.requirePoint(req.getDouble("x").toFloat(), req.getDouble("y").toFloat())
+                    if (req.optBoolean("human", false)) humanTap(req, g)
+                    else gesture(Path().apply {
+                        moveTo(req.getInt("x").toFloat(), req.getInt("y").toFloat()) }, 100, g)
+                }
             "swipe" -> {   // 端点夹到"安全带"内, 避开系统手势区(底部 home/recents 带、侧边返回带、顶部状态栏)→ 实测从底部快滑会被系统当成回桌面/最近而切走 App
-                val (sw, sh) = screenSize()
-                val mx = (sw * 0.04f).toInt().coerceAtLeast(24)
-                val mt = (sh * 0.05f).toInt().coerceAtLeast(48)
-                val mb = (sh * 0.06f).toInt().coerceAtLeast(60)
-                fun cx(v: Int) = v.coerceIn(mx, maxOf(mx, sw - mx))
-                fun cy(v: Int) = v.coerceIn(mt, maxOf(mt, sh - mb))
+                val g = requireNotNull(geometry)
+                g.requirePoint(req.getDouble("x1").toFloat(), req.getDouble("y1").toFloat())
+                g.requirePoint(req.getDouble("x2").toFloat(), req.getDouble("y2").toFloat())
+                val (x1, y1) = g.swipePoint(req.getInt("x1"), req.getInt("y1"))
+                val (x2, y2) = g.swipePoint(req.getInt("x2"), req.getInt("y2"))
                 gesture(Path().apply {
-                    moveTo(cx(req.getInt("x1")).toFloat(), cy(req.getInt("y1")).toFloat())
-                    lineTo(cx(req.getInt("x2")).toFloat(), cy(req.getInt("y2")).toFloat()) },
-                    req.optLong("dur", 300))
+                    moveTo(x1, y1); lineTo(x2, y2) }, req.optLong("dur", 300), g)
             }
             "clipboard" -> setClipboard(req.getString("text"))
             "paste" -> {  // 剪贴板粘贴: WebView contenteditable 等 SET_TEXT 失效场景的标准注入
@@ -424,7 +437,7 @@ class BusA11yService : AccessibilityService() {
             throw RuntimeException("ACTION_SET_SELECTION rejected (field not selectable; fallback: tap the field's ✕ clear button or ask the user)")
     }
 
-    private fun humanTap(req: JSONObject) {
+    private fun humanTap(req: JSONObject, geometry: ScreenGeometry) {
         val x = req.getDouble("x").toFloat()
         val y = req.getDouble("y").toFloat()
         val jitter = req.optDouble("jitter", 1.0).toFloat().coerceIn(0f, 2f)
@@ -432,14 +445,17 @@ class BusA11yService : AccessibilityService() {
         val dy = Random.nextDouble(-jitter.toDouble(), jitter.toDouble()).toFloat()
         val wiggle = req.optDouble("wiggle", 0.6).toFloat().coerceIn(0f, 1.5f)
         val dur = req.optLong("dur", Random.nextLong(80, 121)).coerceIn(50L, 180L)
+        fun cx(v: Float) = v.coerceIn(0f, (geometry.w - 1).toFloat())
+        fun cy(v: Float) = v.coerceIn(0f, (geometry.h - 1).toFloat())
         gesture(Path().apply {
-            moveTo(x + dx, y + dy)
-            lineTo(x + dx + Random.nextDouble(-wiggle.toDouble(), wiggle.toDouble()).toFloat(),
-                y + dy + Random.nextDouble(-wiggle.toDouble(), wiggle.toDouble()).toFloat())
-        }, dur)
+            moveTo(cx(x + dx), cy(y + dy))
+            lineTo(cx(x + dx + Random.nextDouble(-wiggle.toDouble(), wiggle.toDouble()).toFloat()),
+                cy(y + dy + Random.nextDouble(-wiggle.toDouble(), wiggle.toDouble()).toFloat()))
+        }, dur, geometry)
     }
 
-    private fun gesture(p: Path, dur: Long) {
+    private fun gesture(p: Path, dur: Long, expected: ScreenGeometry? = null) {
+        require(expected == null || expected == screenGeometry()) { "screen geometry changed before gesture dispatch" }
         val ok = dispatchGesture(GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(p, 0, dur)).build(), null, null)
         if (!ok) throw RuntimeException("dispatchGesture rejected")
