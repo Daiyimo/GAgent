@@ -4,13 +4,12 @@ import java.util.concurrent.ConcurrentHashMap
 
 /** Package names come from events only, never from another app's node tree. */
 internal class WindowPackages {
-    @Volatile private var application = ""
-    private val system = ConcurrentHashMap<Int, String>()
+    private val packages = ConcurrentHashMap<Int, String>()
 
-    fun applicationChanged(pkg: String) { application = pkg }
-    fun systemChanged(id: Int, pkg: String) { system[id] = pkg }
-    fun retainSystem(ids: Set<Int>) { system.keys.retainAll(ids) }
+    fun record(id: Int, pkg: String) {
+        if (id >= 0 && pkg.isNotBlank()) packages[id] = pkg
+    }
+    fun removed(id: Int) { packages.remove(id) }
 
-    fun current(systemWindowId: Int?): String =
-        if (systemWindowId == null) application else system[systemWindowId] ?: ""
+    fun current(windowId: Int?): String = windowId?.let { packages[it] } ?: ""
 }

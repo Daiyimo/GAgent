@@ -566,13 +566,7 @@ def _scroll_error(stage, exc):
     )[:48] or "Exception"
     return ("%s:%s" % (stage, kind))[:80]
 def _scroll_shot():
-    """JPEG evidence capture; retry once only for the known code=3 throttle."""
-    try:
-        return shot(q=45)
-    except Exception as exc:
-        if str(exc).strip() != "takeScreenshot failed code=3":
-            return None
-    time.sleep(.35)
+    """Optional JPEG evidence; shot() owns capture throttling for every caller."""
     try:
         return shot(q=45)
     except Exception:
@@ -1041,7 +1035,15 @@ def _black_check(img):
 def shot(path=None, q=None):
     """截屏。path给出→写文件返回path(默认PNG, q=1~100则JPEG); 否则返回BGR ndarray。
     前台为防截屏窗口时(连续黑帧)抛 RuntimeError 而非返回黑图, 错误信息含降级路径。"""
-    data = _get("/a11y/shot", **({"q": q} if q else {}))
+    params = {"q": q} if q else {}
+    try:
+        data = _get("/a11y/shot", **params)
+    except RuntimeError as exc:
+        if str(exc).removeprefix("java.lang.RuntimeException: ") != "takeScreenshot failed code=3":
+            raise
+        # Android rejects rapid captures. Retry this read once, never reuse an old frame.
+        time.sleep(.35)
+        data = _get("/a11y/shot", **params)
     import cv2
     import numpy as np
     img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)

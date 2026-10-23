@@ -717,20 +717,23 @@ def test_scroll_invalid_geometry_does_not_swipe(monkeypatch, geometry):
 
 
 def test_scroll_shot_retries_known_code3_once(monkeypatch):
+    import cv2
     import time
 
-    image = object()
+    image = np.full((8, 12, 3), 128, dtype=np.uint8)
+    encoded = cv2.imencode('.png', image)[1].tobytes()
     calls, sleeps = [], []
 
-    def fake_shot(**kw):
+    def fake_get(path, **kw):
+        assert path == '/a11y/shot'
         calls.append(kw)
         if len(calls) == 1:
-            raise RuntimeError("takeScreenshot failed code=3")
-        return image
+            raise RuntimeError("java.lang.RuntimeException: takeScreenshot failed code=3")
+        return encoded
 
-    monkeypatch.setattr(droid, "shot", fake_shot)
+    monkeypatch.setattr(droid, "_get", fake_get)
     monkeypatch.setattr(time, "sleep", lambda sec: sleeps.append(sec))
-    assert droid._scroll_shot() is image
+    assert np.array_equal(droid._scroll_shot(), image)
     assert calls == [{"q": 45}, {"q": 45}]
     assert sleeps == [.35]
 

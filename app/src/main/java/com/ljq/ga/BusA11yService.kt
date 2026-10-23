@@ -51,18 +51,15 @@ class BusA11yService : AccessibilityService() {
     private val windowPackages = WindowPackages()
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-            event.eventType != AccessibilityEvent.TYPE_WINDOWS_CHANGED) return
-        val current = windows.orEmpty()
-        windowPackages.retainSystem(current.filter { it.type == AccessibilityWindowInfo.TYPE_SYSTEM }.map { it.id }.toSet())
-        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-        val pkg = event.packageName?.toString()?.takeIf { it.isNotEmpty() } ?: return
-        // Window metadata only: do not request any target-app nodes to identify it.
-        val window = current.firstOrNull { it.id == event.windowId }
-        when (window?.type) {
-            AccessibilityWindowInfo.TYPE_APPLICATION -> windowPackages.applicationChanged(pkg)
-            AccessibilityWindowInfo.TYPE_SYSTEM -> windowPackages.systemChanged(window.id, pkg)
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            if (event.windowChanges and AccessibilityEvent.WINDOWS_CHANGE_REMOVED != 0)
+                windowPackages.removed(event.windowId)
+            return
         }
+        val pkg = event.packageName?.toString()?.takeIf { it.isNotEmpty() } ?: return
+        // An event can precede its window's visibility in getWindows(). Keep the
+        // identity by ID; only current window metadata decides which one is foreground.
+        windowPackages.record(event.windowId, pkg)
     }
     private fun visualOnly() = foregroundPkg().let { it.isEmpty() || it == "com.tencent.mm" }
     override fun onInterrupt() {}
@@ -184,7 +181,12 @@ class BusA11yService : AccessibilityService() {
         it.type == AccessibilityWindowInfo.TYPE_SYSTEM && (it.isActive || it.isFocused)
     }?.maxByOrNull { it.layer }
 
-    fun foregroundPkg(): String = windowPackages.current(activeSystemWindow()?.id)
+    fun foregroundPkg(): String {
+        val foreground = activeSystemWindow() ?: windows?.filter {
+            it.type == AccessibilityWindowInfo.TYPE_APPLICATION && (it.isActive || it.isFocused)
+        }?.maxWithOrNull(compareBy({ it.isActive }, { it.isFocused }, { it.layer }))
+        return windowPackages.current(foreground?.id)
+    }
 
     // 旋转正确的物理屏尺寸: Service 的 resources.displayMetrics 不随旋转可靠更新, getRealMetrics 才行(横屏修正)。
     private val wm get() = getSystemService(WINDOW_SERVICE) as WindowManager
