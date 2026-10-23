@@ -19,7 +19,9 @@
     dets = droid.look()             # 视觉一步: shot+ui_detect, 每项带中心 x,y/label/cls; dump 为空(自绘/敏感)时用它, 不要 print 整个图像数组
     droid.look(roi='top')           # 只检测上 1/3 屏(排序条/搜索框在上面时): 耗时随面积降; roi 也可 'upper'|'middle'|'lower'|'bottom' 或 (x1,y1,x2,y2); 屏幕没变时自动返回缓存('cached':True)
     w, h = droid.screen()           # 当前朝向屏幕尺寸; 位置判断用比例(顶栏 <0.12h, 底栏 >0.9h), 绝不把绝对坐标写进记忆
-    droid.tap(x, y); droid.swipe(x1,y1,x2,y2,dur=300)  # 长按=swipe同点dur>=800(已验:弹快捷菜单); swipe端点已自动夹进安全带避开系统手势区
+    droid.tap(x, y); droid.swipe(x1,y1,x2,y2,dur=300)  # 长按=swipe同点dur>=800(已验:弹快捷菜单); swipe端点已自动夹进安全带避开系统手势区; 两者默认带前后截图 diff 后验(变化<0.05%→hint 点空/未滚成)
+    droid.tap_rel(500, 500)         # 0-1000 归一化坐标(左上原点, x右y下): 仅当目标本身就是相对区域(棋盘中心/四角/比例位)且 look()/dump() 均无目标时的最后一级; 不是给认不准的按钮猜坐标(红线①不变, 那种情况仍走 OCR/ask_user)
+    droid.scroll('up')              # 安全滚动(手指方向); 必须检查 scrolled/evidence/uncertain; uncertain=True=观察不可用/结论不确定, 不是已验证未滚动, 禁盲目重试
     droid.scroll_view('down')       # 安全滚动, 参数=浏览方向('down' 看下方内容/'up' 看上方); 必须检查 scrolled/evidence/uncertain; uncertain=True=观察不可用/结论不确定, 不是已验证未滚动, 禁盲目重试 (旧 scroll() 参数是手指方向, 与此相反)
     droid.back(); droid.home()
     droid.panel('right')            # 物理下拉控制中心(录屏/手电等磁贴; left/center=通知栏)。droid.quick_settings()/notifications()=AOSP 语义全局动作(部分 OEM 够不到控制中心→用 panel)
@@ -41,6 +43,7 @@
     按位置找: 退格在字母区右缘, 回车/搜索/发送在键盘右下角(图标随场景变), 各厂商键盘布局不同, 以当帧检测为准。
 ONNX: 任意模型 -> droid.ort_shim() 后 import onnxruntime 照常写, 推理在 APK 内 ORT 执行。
 ADB(本机自连无线调试, 补 A11y 外 shell 能力): 用户手动开无线调试后 → droid.adb_pair(code,port)(仅首次) → droid.adb_connect()(无参, 端口自动发现) → droid.adb_shell('input tap 500 800' | 'am start ...' | 'dumpsys ...')。
+AppFunction 原子能力(Android16+, 需 self-ADB 已连): droid.appfn_list() 枚举本机注册能力(各 OS 注册不同, 以实测返回为准, 不预设清单) → droid.appfn_call(包名, '类全名#方法', {参数}); 命中注册能力优先于 GUI(零轮次/无坐标漂移), 未注册回正常定位阶梯。
 定时唤起 agent(非用户起床铃): droid.alarm_set(id, at_ms, every_ms=0, prompt) / alarm_list() / alarm_del(id)。
   仅当目标是「到点让 GA 后台跑一段任务/新会话」时用; 用户说「设个闹钟/几点叫我」→走系统时钟 App(GUI), 不要用本 API。
   at=下次 epoch ms; every=0 一次, >0 周期 ms; 到期 call_once(prompt) 新会话进抽屉。
@@ -435,9 +438,27 @@ def click_text(text, *, package, timeout=8.0):
     return jev_ui.tap_target(sys.modules[__name__], text, package, timeout, use_jev=False)
 
 
-def swipe(x1, y1, x2, y2, dur=300, *, screen=None):
+def swipe(x1, y1, x2, y2, dur=300, verify=True, wait=0.6, *, screen=None):
+    """verify=True: 与 tap() 同款点空后验 —— 前后截图 diff, 滑动后屏幕几乎无变化≈没滚成/没拖动(或列表已在端点),
+    返回 hint 要求重新观察而非原样重发; 屏幕形态变化(旋转/折叠)置 uncertain。长按(同点 dur>=800)同样受益: 菜单没弹出=无变化=hint。
+    普通翻页滚动优先 scroll()(自带稳态证据+文本对比, 段内 swipe 已关此验证防重复截图); swipe 是按坐标精细滑/拖的底稿。"""
     geometry = _gesture_screen(ping(), [(x1, y1), (x2, y2)], screen)
-    return _act(op="swipe", x1=int(x1), y1=int(y1), x2=int(x2), y2=int(y2), dur=int(dur), expected_screen=geometry)
+    before = shot() if verify else None
+    ret = _act(op="swipe", x1=int(x1), y1=int(y1), x2=int(x2), y2=int(y2), dur=int(dur), expected_screen=geometry); ret.pop("ok", None)
+    if not verify: return ret
+    time.sleep(wait)
+    after = shot()
+    diff = _img_diff_str(before, after); ret["diff"] = diff
+    if _shape_changed(before, after):
+        ret.update(verified=False, uncertain=True, hint='屏幕尺寸变化；重新截图定位，不复用旧坐标。', fg=_fg())
+        return ret
+    try: pct = float(diff.split("%", 1)[0].split()[-1])
+    except Exception: pct = 0.0
+    if pct < 0.05:
+        ret["hint"] = "swipe后屏幕变化很小；可能没滚成/没拖动，或列表已在端点。请重新观察当前内容再决定下一步，勿原样重发同一手势。"
+        _track("droid_swipe_miss", {"diff_pct": round(pct, 3)})   # 与 droid_tap_miss 同款自限量上报, 配对算手势命中率
+    ret["fg"] = _fg()
+    return ret
 
 
 # ---------------- 定位便捷层(v2.33): 把 agent 每轮手写的「dump→列表推导→取中心」收成三个纯函数, 少写代码=少报错少浪费轮 ----------------
@@ -466,6 +487,20 @@ def tap_text(text, exact=False, idx=None, clickable=None, **tap_kw):
         raise ValueError(f"tap_text: {len(hits)} 个节点匹配 {text!r}: {cands} → 用 exact=True 或 idx=")
     h = hits[idx or 0]
     return tap(h["x"], h["y"], **tap_kw)
+
+
+def tap_rel(rx, ry, **tap_kw):
+    """0-1000 归一化坐标点击(左上原点, x 右 y 下, 各 0-1000): 按 ping 实测宽高换算成像素后走 tap()。
+    定位阶梯最后一级 —— look() 无检测框、dump() 空壳(canvas 游戏/纯背景), 而目标**本身就是相对区域**
+    (棋盘中心/屏幕四角/比例位)时用它表达位置; 它不是给识别不出的按钮猜坐标 —— 那种情况仍走 OCR 文字框 → ask_user(红线①)。
+    换算只用当帧 screen() 不缓存旧尺寸; 越界仍在 tap 内过几何校验。例: 盘面中心 tap_rel(500, 500); 底栏最右 tap_rel(960, 970)。"""
+    for name, v in (("rx", rx), ("ry", ry)):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= 1000:
+            raise ValueError("tap_rel(rx, ry): 两值各为 0-1000 的数(左上原点, x 右 y 下), %s=%r" % (name, v))
+    w, h = screen()
+    if w <= 0 or h <= 0:
+        raise RuntimeError("tap_rel: 屏幕尺寸未知(ping w/h 非正); 先 ping() 确认总线与前台状态")
+    return tap(int(round(rx / 1000.0 * (w - 1))), int(round(ry / 1000.0 * (h - 1))), **tap_kw)
 
 
 _LOOK_CACHE = {"thumb": None, "roi": None, "dets": None}
@@ -649,7 +684,7 @@ def scroll(direction="up", frac=0.35, dur=600, times=1, verify=True, settle=0.5)
 
     action = {}
     for _ in range(times):
-        action = swipe(*seg, dur=dur, screen=p)
+        action = swipe(*seg, dur=dur, verify=False, screen=p)   # scroll 自带稳态证据(前后 dump+JPEG); 段内 swipe 关掉自带后验, 否则 times 段=2×times 次多余截图
         # Native dispatch acknowledges acceptance before the gesture finishes.
         time.sleep(dur / 1000.0 + settle)
     if not verify:
@@ -1239,6 +1274,58 @@ def adb_shell_close(tag):
 def adb_status():
     """{connected:bool(libadb 派生真值,不再有假态), paired:bool(证书是否已持久化), error:上次错误, port:上次成功连接端口}"""
     return _get("/adb/status")
+
+
+# ====== AppFunction 原子能力(Android16+ 的 cmd app_function 服务; 经 self-ADB shell 通道) ======
+# EXECUTE_APP_FUNCTION 是 internal|role 权限: 第三方 App 直连被系统拒绝, shell(uid=2000)通道可用(实测结论)。
+# 各 OS/ROM 注册的能力不同(商店/天气/相机/支付代理等), 本层只提供枚举+直调+JSON 解析, 不预设任何清单。
+
+def _appfn_json(out, what):
+    """cmd app_function 输出解析: 整体或首个 JSON 体(dict/list)原样返回(前后可能混警告行);
+    解析不出则带原始片段报错 —— 解析失败与"空能力清单"必须可区分, 绝不伪造成空结果。"""
+    text = str(out or "").strip()
+    try:
+        return json.loads(text)
+    except ValueError:
+        m = re.search(r"[\[{].*[\]}]", text, re.S)
+        if m:
+            try: return json.loads(m.group(0))
+            except ValueError: pass
+    raise RuntimeError("app_function %s 返回不是 JSON(前 200 字符): %r; 以实际输出为准处理, 勿盲目重试" % (what, text[:200]))
+
+
+def appfn_list(user=None):
+    """列出本机注册的 AppFunction 原子能力。前置: Android 16+ 且 adb_connect() 已连接(未连会先报 ADB 状态错误)。
+    user 可选: 用户编号或 'current', 默认不带。返回 JSON(dict/list), 各字段以本机实测为准。
+    纪律: 枚举结果**经实测验证后**才可写入记忆(start_long_term_update), 并注明该能力替代不了什么(如商店搜索替代不了 GUI 浏览比较)。"""
+    cmd = "cmd app_function list-app-functions"
+    if user is not None:
+        u = str(user)
+        if not re.fullmatch(r"[0-9]+|current", u):
+            raise ValueError("appfn_list(user=): 只接受用户编号或 'current', 收到 %r" % u)
+        cmd += " --user " + u
+    return _appfn_json(adb_shell(cmd, timeout_ms=15000), "list-app-functions")
+
+
+def appfn_call(package, function, parameters=None):
+    """调用一个 AppFunction 原子能力。package=注册方完整包名; function=完整函数 ID '类全名#方法名'(# 在 shell 里是注释符, 已整体单引号包裹);
+    parameters=dict, 序列化为 JSON(中文转 \\uXXXX 转义, 纯 ASCII 过 shell 通道, 不依赖编码协商)。
+    例: droid.appfn_call('com.example.store', 'com.example.fn.StoreFunctions#searchApp', {'keyword': '日历'})
+    返回 JSON; 失败(未连接/函数不存在/参数被拒)按原错误抛出, **不自动重试同一调用**。
+    命中注册能力时优先本调用而非 GUI(零轮次/无坐标漂移); 未注册的 App 回正常定位阶梯, 不反复尝试。"""
+    package, function = str(package), str(function)
+    if not re.fullmatch(r"[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)+", package):
+        raise ValueError("appfn_call: package 须为完整包名(至少一段点分), 收到 %r" % package)
+    if not re.fullmatch(r"[A-Za-z0-9_.$]+#[A-Za-z0-9_]+", function):
+        raise ValueError("appfn_call: function 须为 '类全名#方法名'(含 #), 收到 %r" % function)
+    if parameters is None: parameters = {}
+    if not isinstance(parameters, dict):
+        raise ValueError("appfn_call: parameters 须为 dict(JSON 对象), 收到 %s" % type(parameters).__name__)
+    payload = json.dumps(parameters)   # ensure_ascii 默认 True: 中文转 \uXXXX, 纯 ASCII 过 shell 最稳
+    shell_arg = lambda s: "'" + str(s).replace("'", "'\\''") + "'"   # POSIX 单引号安全包裹: JSON 双引号原样保留, 内嵌单引号转义
+    cmd = "cmd app_function execute-app-function --package %s --function %s --parameters %s" % (
+        shell_arg(package), shell_arg(function), shell_arg(payload))
+    return _appfn_json(adb_shell(cmd, timeout_ms=30000), "execute-app-function")
 
 
 # ====== 通知读取/回复/控制 ======
