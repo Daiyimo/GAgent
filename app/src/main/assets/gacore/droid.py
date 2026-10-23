@@ -580,10 +580,21 @@ def _scroll_shot():
         return None
 
 
+_OPPOSITE_DIRECTIONS = {"up": "down", "down": "up", "left": "right", "right": "left"}
+
+
 def _scroll_feedback(direction, result):
     """Expose gesture intent without changing the observation verdict."""
-    view = {"up": "down", "down": "up", "left": "right", "right": "left"}
-    return dict(result, finger_direction=direction, view_direction=view[direction])
+    return dict(result, finger_direction=direction, view_direction=_OPPOSITE_DIRECTIONS[direction])
+
+
+def scroll_view(direction="down", **options):
+    """Browse toward content: 'down' sees lower items, 'up' sees earlier items.
+    Uses scroll's geometry, timing, verification and options; legacy scroll keeps finger directions.
+    """
+    if not isinstance(direction, str) or direction not in _OPPOSITE_DIRECTIONS:
+        raise ValueError("scroll_view direction must be up/down/left/right")
+    return scroll(_OPPOSITE_DIRECTIONS[direction], **options)
 
 
 def scroll(direction="up", frac=0.35, dur=600, times=1, verify=True, settle=0.5):

@@ -84,3 +84,31 @@ def test_uncertain_scroll_still_reports_dispatched_direction(asynchronous_screen
     assert result['scrolled'] is False and result['uncertain'] is True
     assert result['finger_direction'] == 'down'
     assert result['view_direction'] == 'up'
+
+
+@pytest.mark.parametrize('view,axis,sign', [
+    ('down', 'y', -1), ('up', 'y', 1),
+    ('right', 'x', -1), ('left', 'x', 1),
+])
+def test_scroll_view_moves_toward_requested_content(asynchronous_screen, view, axis, sign):
+    result = droid.scroll_view(view, dur=900, frac=.2)
+    action = asynchronous_screen['actions'][0]
+    assert (action[axis + '2'] - action[axis + '1']) * sign > 0
+    assert action['dur'] == 900
+    assert result['view_direction'] == view
+    assert result['scrolled'] is True
+    assert result['evidence'] == 'text'
+
+
+def test_scroll_view_keeps_missing_observation_uncertain(asynchronous_screen, monkeypatch):
+    monkeypatch.setattr(droid, 'dump', lambda: [])
+    monkeypatch.setattr(droid, 'shot', lambda **kwargs: None)
+    result = droid.scroll_view()
+    assert result['view_direction'] == 'down'
+    assert result['scrolled'] is False and result['uncertain'] is True
+
+
+def test_scroll_view_rejects_invalid_direction_before_dispatch(asynchronous_screen):
+    with pytest.raises(ValueError, match='direction'):
+        droid.scroll_view('diagonal')
+    assert asynchronous_screen['actions'] == []

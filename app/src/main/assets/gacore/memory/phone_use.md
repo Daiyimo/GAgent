@@ -32,7 +32,7 @@ Python 适合无手机 UI 依赖的计算或文件处理，不得用底层输入
 | 接口 | 返回与约束 |
 | --- | --- |
 | `ping()` / `screen()` | 前台包、无障碍、`w/h/rot` 等状态 / 当前 `(w,h)` |
-| `pkgs(关键词)` / `launch(包名)` | 已安装的可启动候选 / 启动并返回观测到的前台；不自动安装 App |
+| `pkgs(关键词)` / `launch(包名)` | 候选为 `[{"pkg":"包名","label":"应用名"}]`，向 `launch` 传其中的 `pkg` 字符串；启动并返回观测到的前台，不自动安装 App |
 | `dump()` / `dump(full=True)` | 节点列表，文字为 `t`/`d`，中心为 `x/y`；完整边界 `b` 是逗号分隔字符串，类名为 `cls` |
 | `find(text, exact=False)` | 返回全部匹配节点；优先使用已有 `x/y`，不必手工解析边界 |
 | `tap_text(text, exact=False, idx=None)` | 唯一匹配才点；多个候选须依据当前界面消歧，不能随意取第一项 |
@@ -40,7 +40,8 @@ Python 适合无手机 UI 依赖的计算或文件处理，不得用底层输入
 | `look(conf=0.25, path=None, roi=None, cache=True, *, label=None)` | 截图＋本地检测，返回列表；每项有 `label/cls/bbox/x/y`，坐标已还原到整屏。`label` 按 OCR 文字子串筛选全部匹配项；不自动点击 |
 | `ask_vision(shot(), question)` | 使用已配置的视觉模型解释图片或状态；`droid.ask_vision` 与预导入的 `ask_vision` 是同一入口 |
 | `tap(x,y)` / `swipe(x1,y1,x2,y2,dur=300)` | 使用当前屏幕像素坐标；屏幕尺寸/方向改变后重新观察 |
-| `scroll('up')` / `scroll('down')` | 参数是手指方向：向上划看下面内容，向下划看上面；默认 `frac=.35,dur=600` 保留相邻内容重叠，也支持 left/right |
+| `scroll_view('down')` / `scroll_view('up')` | 推荐按浏览方向调用：down 看更下方内容，up 看更上方；也支持 left/right。默认 `frac=.35,dur=600`，保留相邻内容重叠 |
+| `scroll('up')` / `scroll('down')` | 旧接口兼容，参数仍为**手指方向**，与浏览方向相反；新导航使用 `scroll_view`，无需自行换算 |
 | `paste(text, replace=False)` | 默认追加；替换搜索词、预填昵称等用 `replace=True`，随后回读内容 |
 | `key('ENTER')` / `back()` / `home()` | 回车 / 返回 / 桌面；`key` 不支持 BACK、BACKSPACE 或其他按键名 |
 | `quick_settings()` / `dismiss_shade()` | 展开 / 收起系统面板；不同系统表现需观察核验，返回成功不等于面板确已关闭 |
@@ -64,7 +65,7 @@ Python 适合无手机 UI 依赖的计算或文件处理，不得用底层输入
 - 设置滑条时使用当前节点的 `range`（min/max/current）与 `b` 边界，按当前比例操作后回读；无可靠读数时不声称达到精确值。
 - 滚动返回 `finger_direction`（手指方向）与 `view_direction`（意图浏览方向，两者相反）；方向元数据不证明已移动。
   检查 `scrolled/evidence/uncertain`；`uncertain=True` 表示观察不足，不是确认没有滚动。
-  `scroll()` 已采集文本/像素证据，默认 `times=1`；每次观察目标或边界，不无条件连续滑动。
+  `scroll_view()` 和旧 `scroll()` 共用文本/像素核验，默认 `times=1`；每次观察目标或边界，不无条件连续滑动。
   明确遍历才用 `times>1`；需要快速遍历可显式传 `frac/dur`。
 - 视觉未配置时按 `memory/vision_sop.md` 使用现有图片模型配置，引用配置变量名，不输出密钥。
   截断/超时的视觉回答不可作为操作依据。OCR 已内置；YOLO 是可选图标检测，不替代语义看图。
