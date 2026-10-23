@@ -97,6 +97,26 @@ class ToolArgumentsTest(unittest.TestCase):
 
 
 class VisionResponseTest(unittest.TestCase):
+    def test_openai_vision_accepts_the_same_base_urls_as_text(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('vision_template', CORE / 'memory/vision_api.template.py')
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        for base, expected in [
+            ('https://example.test', 'https://example.test/v1/chat/completions'),
+            ('https://example.test/v1/', 'https://example.test/v1/chat/completions'),
+            ('https://example.test/api/v4', 'https://example.test/api/v4/chat/completions'),
+            ('https://example.test/v1/chat/completions', 'https://example.test/v1/chat/completions'),
+            ('https://example.test/custom$', 'https://example.test/custom'),
+        ]:
+            with self.subTest(base=base), patch.object(module.requests, 'post') as post:
+                post.return_value.json.return_value = {'choices': [{'message': {'content': 'visible'}}]}
+                result = module._call_openai_compat('image', 'read', 10, apibase=base,
+                                                   apikey='fixture-credential', model='vision',
+                                                   proxy='http://127.0.0.1:7890')
+                self.assertEqual(result, 'visible')
+                self.assertEqual(post.call_args.args[0], expected)
+                self.assertEqual(post.call_args.kwargs['proxies']['https'], 'http://127.0.0.1:7890')
+
     def test_thinking_before_text_is_not_treated_as_missing_answer(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location('vision_template', CORE / 'memory/vision_api.template.py')

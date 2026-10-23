@@ -2687,7 +2687,7 @@ function closeCrop(){$('cropMask').classList.remove('on');crop=null;cropDone=nul
 
 /* ════════════ 服务商配置(多服务商) ════════════ */
 let provType='oai', editingId=null;
-function providerPayload(p){const model=(active&&active.pid===p.id&&active.model)||p.model||(p.models&&p.models[0]);
+function providerPayload(p,selectedModel){const model=selectedModel||(active&&active.pid===p.id&&active.model)||p.model||(p.models&&p.models[0]);
   const cfg={name:p.name,apikey:p.apikey,apibase:p.apibase,model,models:p.models||[],type:p.type};
   if(p.enabled===false)cfg.enabled=false;                                                // I6: 停用态落 mykey.py 块(单一真相源); 启用=不写该键(缺省即启用, 块干净) → 关闭保存不再被 /config 回弹
   if(p.label&&p.label!==p.name)cfg.label=p.label;                                        // 自定义显示名同落 mykey 块(同 I6); 与 name 相同不写键(受管字段, 缺失即删残留行) → 改名不再被 /config 回弹
@@ -2700,7 +2700,7 @@ function providerPayload(p){const model=(active&&active.pid===p.id&&active.model
   if(p.read_timeout!=null&&p.read_timeout!=='')cfg.read_timeout=+p.read_timeout;
   if(p.timeout!=null&&p.timeout!=='')cfg.timeout=+p.timeout;
   return cfg}
-function saveProvToMk(p){return GA.send('/provider.save '+JSON.stringify(providerPayload(p)))}
+function saveProvToMk(p,selectedModel){return GA.send('/provider.save '+JSON.stringify(providerPayload(p,selectedModel)))}
 function delProvFromMk(name){return GA.send('/provider.delete '+JSON.stringify({name}))}
 /* ════════════ 设置(kelivo 分组首页 + 子页栈式导航) ════════════ */
 const SET_PANELS=['homePanel','userForm','provListPanel','provEditPanel','dataPanel','statsPanel','filesPanel','memPanel','updatePanel','a11yPersistPanel','ganetPanel','ganetSetupPanel','ganetDevicePanel'];
@@ -3217,6 +3217,7 @@ function editProvider(id){GAT.emit('view_enter',{view:'provider_edit',edit:!!id}
   provType=p?p.type:'oai';setProvType(provType);
   $('pvName').value=p?provName(p):'';$('pvKey').value=p?p.apikey||'':'';$('pvKey').type='password';$('pvEye').style.color='';
   $('pvBase').value=p?p.apibase||'':'';$('pvProxy').value=p?p.proxy||'':'';$('pvMaxTok').value=p?(p.max_tokens||''):'';
+  $('pvModel').value=editing.model||(editing.models&&editing.models[0])||'';
   $('pvMaxRetries').value=p&&p.max_retries!=null?p.max_retries:'';$('pvReadTimeout').value=p&&p.read_timeout!=null?p.read_timeout:'';
   $('pvConnTimeout').value=p&&p.timeout!=null?p.timeout:'';$('pvUA').value=p?uaToVer(p.user_agent):'';   // 高级设置回显(需求#1)
   $('pvEnable').classList.toggle('on',p?p.enabled!==false:true);$('pvEnable').setAttribute('aria-checked',(p?p.enabled!==false:true));
@@ -3236,6 +3237,8 @@ function saveProvider(){if(runLocked())return;const v=id=>$(id).value.trim();
   const disp=v('pvName')||(provType==='claude'?'claude-native':'gpt-native');   // 显示名(label)
   const apikey=v('pvKey'),apibase=v('pvBase');
   if(!apikey||!apibase){toast(t('t_fillKeyBase'));return}
+  if(!v('pvModel')){toast(t('t_fillModel'));$('pvModel').focus();$('pvModel').scrollIntoView({block:'center'});return}
+  readModelDraft();
   const isMk=!!(editing&&editing.fromMk);
   const backendName=isMk?editing.name:disp;                       // fromMk: 后端 /llm 键不可改; 否则跟随显示名
   if(providers.some(p=>p.name===backendName&&p.id!==editingId)){toast(t('t_nameExists'));return}
@@ -3259,12 +3262,13 @@ function saveProvider(){if(runLocked())return;const v=id=>$(id).value.trim();
   const _num=id=>{const x=v(id);return x?+x:undefined};                                  // 高级设置(需求#1): 重试次数 / 读取·连接超时 / 透传 UA 版本
   p.max_retries=_num('pvMaxRetries');p.read_timeout=_num('pvReadTimeout');p.timeout=_num('pvConnTimeout');
   if(provType==='claude'&&$('pvFakeCC').classList.contains('on')){const _ua=verToUA(v('pvUA'));if(_ua)p.user_agent=_ua}
+  // Persist the draft first; a rejected write must not change selected/usable providers.
+  const r=saveProvToMk(p,p.model);
+  if(r&&/error|错误|失败|invalid/i.test(r)){toast(t('t_fetchFail')+r);GAT.emit('provider_save_failed',{cat:GAT.errCat(r),msg:GAT.errMsg(r),type:provType});return}
   if(editingId){const i=providers.findIndex(x=>x.id===editingId);providers[i]=p}else providers.push(p);
   LS.set('providers',providers);
-  if(p.model&&(!active||!providers.find(x=>x.id===active.pid))){active={pid:p.id,model:p.model};LS.set('active',active)}  // 无模型不设为活跃
-  ensureActiveEnabled();// 禁用当前活跃服务商时改指向已启用的; 下次发送重新应用
-  const r=saveProvToMk(p);
-  if(r&&/error|错误|失败|invalid/i.test(r)){toast(t('t_fetchFail')+r);GAT.emit('provider_save_failed',{cat:GAT.errCat(r),msg:GAT.errMsg(r),type:provType});return}
+  if(!active||active.pid===p.id||!providers.find(x=>x.id===active.pid)){active={pid:p.id,model:p.model};LS.set('active',active)}
+  ensureActiveEnabled();
   if(editing&&!isMk&&editing.name&&editing.name!==backendName){try{delProvFromMk(editing.name)}catch(e){}}   // 用户自建服务商改名: 删旧 name 块, 否则孤儿块下次 /config 回读成重复服务商
   if(commitStrip)commitStrip();                  // 后端已确认保存 → 才迁移 favs/active(剥 [1m])
   syncFromBackend();                             // 写后回读 /config(同 delete 路径): 唯一成功点清 cfgLoaded/cfgUnconfigured/cfgFailed 三态, 根治首配后 chip 卡「未配置模型」(#252)
@@ -3300,6 +3304,9 @@ function inferGroup(id){const s=id.toLowerCase();
   if(/mistral|mixtral|codestral/.test(s))return 'Mistral'; if(/llama|meta-/.test(s))return 'Llama';
   if(/embed/.test(s))return '嵌入'; return '其他'}
 function isReasoning(id){return /(think|reason|o1-|o3|o4|-r\b|\br1\b|deepseek-r|qwq)/i.test(id)}
+function readModelDraft(){if(!editing)return;
+  const model=$('pvModel').value.trim();editing.model=model;
+  if(model&&!(editing.models||[]).includes(model))editing.models=[...(editing.models||[]),model]}
 function updateModelCount(){const n=(editing&&editing.models||[]).length;$('pvModelCount').textContent=n+t('count');
   const ready=!!($('pvKey').value.trim()&&$('pvBase').value.trim());
   $('rowModels').classList.toggle('dim',!n&&!ready);
@@ -3312,6 +3319,7 @@ function fetchModelsInEditor(){if(!editing)return;   // 直接用表单当前值
   openModelListPage();fetchModels()}
 function openModelListPage(){
   if(!editing)return;
+  readModelDraft();
   const disp=$('pvName').value.trim()||(provType==='claude'?'claude-native':'gpt-native');   // 与 saveProvider 同一空值兜底, 杜绝 name/label 分叉
   editing.label=disp; if(!editing.fromMk)editing.name=disp;
   editing.apikey=$('pvKey').value.trim();
@@ -3320,7 +3328,7 @@ function openModelListPage(){
   $('mlFetch').classList.remove('spin');                       // 清掉上一个服务商遗留的转圈, 否则会卡住本页的获取
   $('mlTitle').textContent=provName(editing)||t('models'); $('mlSearch').value=''; renderModelList();
   $('modelv').classList.add('on'); $('modelv').setAttribute('aria-hidden','false')}
-function closeModelListPage(){$('modelv').classList.remove('on');$('modelv').setAttribute('aria-hidden','true');updateModelCount()}
+function closeModelListPage(){$('modelv').classList.remove('on');$('modelv').setAttribute('aria-hidden','true');$('pvModel').value=editing&&editing.model||'';updateModelCount()}
 function persistEditing(){updateModelCount();    // 模型增删=即时保存(仅提交模型/名称, 不含未保存的表单字段→杜绝半改泄漏)
   if(editingId){const i=providers.findIndex(x=>x.id===editingId);
     if(i>=0){providers[i].models=editing.models.slice();providers[i].model=editing.model;

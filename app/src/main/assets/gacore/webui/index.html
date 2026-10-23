@@ -550,6 +550,8 @@ try{var _th=JSON.parse(localStorage.getItem('ga.theme')||'"system"');
       <div class="field"><label for="pvKey" data-i18n="apiKey">API Key</label><div class="inputwrap"><input id="pvKey" type="password" placeholder="sk-…" autocomplete="off" autocapitalize="off" spellcheck="false" oninput="updateModelCount()">
         <button class="eye" id="pvEye" onclick="toggleEye()" aria-label="show/hide key"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></button></div></div>
       <div class="field"><label for="pvBase" data-i18n="apiBase">API Base URL</label><div class="inputwrap"><input id="pvBase" placeholder="https://api.openai.com/v1" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url" oninput="updateModelCount()"></div></div>
+      <div class="field"><label for="pvModel" data-i18n="defaultModelId">默认模型 ID</label><div class="inputwrap"><input id="pvModel" placeholder="model-id" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="pvModelHint"></div>
+        <p class="hint" id="pvModelHint" style="margin-top:7px" data-i18n="modelIdHint">填入服务商提供的完整模型名即可保存，无需先获取模型列表。</p></div>
       <div class="field"><label for="pvProxy" data-i18n="proxyOpt">代理 Proxy（可空）</label><div class="inputwrap"><input id="pvProxy" placeholder="http://127.0.0.1:10809" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url"></div>
         <p class="hint" style="margin-top:7px" data-i18n="proxyFieldHint">留空＝直连。手机用 VPN 时，在代理软件（如 v2rayNG、Clash 等）中开启「本地 HTTP 代理」并填此处，可修复「无法解析主机名」。</p></div>
       <div class="secLbl"><span data-i18n="models">模型</span></div>
@@ -563,7 +565,7 @@ try{var _th=JSON.parse(localStorage.getItem('ga.theme')||'"system"');
           <span class="v"><span id="pvModelCount">0</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>
         </button>
       </div>
-      <p class="hint" data-i18n="fetchHint">填好 Key 与 Base URL 即可直接获取，无需先保存。</p>
+      <p class="hint" data-i18n="fetchHint">可选：获取列表或管理多个模型。获取失败时，仍可填写上方模型 ID 后保存。</p>
       <div class="adv" id="advWrap">
         <button class="advHead" onclick="document.getElementById('advWrap').classList.toggle('open')">
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg><span data-i18n="advanced">高级选项</span></button>

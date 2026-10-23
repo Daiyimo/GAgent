@@ -104,7 +104,7 @@ def _call_claude(b64, prompt, timeout, max_tokens=1024):
 def _call_openai_compat(b64, prompt, timeout, *, apibase, apikey, model, proxy=None):
     proxies = {'https': proxy, 'http': proxy} if proxy else None
     resp = requests.post(
-        apibase.rstrip('/') + '/v1/chat/completions',
+        __import__('llmcore').auto_make_url(apibase, 'chat/completions'),
         json={'model': model, 'messages': [{
             'role': 'user',
             'content': [
