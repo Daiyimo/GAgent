@@ -1,7 +1,8 @@
 # phone_use — 手机 GUI 操作总规程
 
 可选加速：用户已配置 Jev 时，当前屏幕的单步导航目标可用 `droid.tap_target(target, package=包名)`；首次先读 `memory/jev_phone_use.md`。它只选当前候选，不生成坐标或规划整段任务；无配置保持原流程，目标核验与授权规则不变。
-纯 GUI / 微信任务的最短路径：读完本节后直接 `droid.launch(包名)` → `shot()` / `ocr()` 观察。用户明确要求的导航任务直接执行，无微信固定动作预算或解锁步骤；无图标模型时按 vision_sop.md 用已配置的 ask_vision 查看截图，不猜图标坐标。不要为了开局把全部章节和所有 App 档案读完。
+纯 GUI / 微信任务的最短路径：读完本节后直接 `droid.launch(包名)` → `look()` 观察。用户明确要求的导航任务直接执行，无微信固定动作预算或解锁步骤；无图标模型时按 vision_sop.md 用已配置的 ask_vision 查看截图，不猜图标坐标。不要为了开局把全部章节和所有 App 档案读完。
+视觉观察用 `print([(d.get("label"), d.get("cls"), d["x"], d["y"]) for d in droid.look()])`，保留全部紧凑候选，避免截断后漏掉关闭图标。`shot()` 返回像素数组，不是模型可见图片；不要打印数组或使用不存在的 `save=True` 参数。弹窗遮罩上，先用已配置的 `ask_vision(droid.shot(), "是否有弹窗？描述关闭按钮，不提供坐标")` 确认语义，再匹配当帧候选框操作；不要点击遮罩后的正文。
 
 ## §-1 开局最短路径（r28 起；130+ 真机 run 统计：开局阅读占 14% 轮数、忘 import 与重复找节点占 15%，这一节就是为了把它们清零）
 1. **只读两份**：本文 + `memory/app_cards.md`（各 App 通用操作手册·速查卡，含约束账本三步与设备无关规则）。卡片写「见长档案」或遇到卡片没覆盖的弹窗/风控时，才 `file_read memory/app_scenarios_sop.md` 并只搜该 App 名那一行。`app_ops_sop.md` / `modes_index.md` 不必再读（账本纪律已并入卡片 §A；路由=点名 App 即锁定 App）。

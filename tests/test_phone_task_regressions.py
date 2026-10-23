@@ -54,11 +54,12 @@ class VisionResponseTest(unittest.TestCase):
         import importlib.util
         spec = importlib.util.spec_from_file_location('vision_template', CORE / 'memory/vision_api.template.py')
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-        cfg = {'apibase': 'https://example.test/anthropic', 'apikey': 'test-placeholder', 'model': 'test'}
+        cfg = {'apibase': 'https://example.test/anthropic', 'apikey': 'test-placeholder', 'model': 'test', 'thinking_type': 'disabled'}
         with patch.object(module, '_cfg', return_value=cfg), patch.object(module.requests, 'post') as post:
             post.return_value.json.return_value = {'content': [
                 {'type': 'thinking', 'thinking': 'internal'}, {'type': 'text', 'text': 'visible answer'}]}
             self.assertEqual(module._call_claude('fakeimage', 'locate button', 10), 'visible answer')
+            self.assertEqual(post.call_args.kwargs['json']['thinking'], {'type': 'disabled'})
 
 
 class TaskBudgetTest(unittest.TestCase):

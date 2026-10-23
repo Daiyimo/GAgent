@@ -80,15 +80,17 @@ def _cfg(key):
 
 def _call_claude(b64, prompt, timeout, max_tokens=1024):
     cfg = _cfg(CLAUDE_CONFIG_KEY)
-    resp = requests.post(
-        __import__('llmcore').auto_make_url(cfg['apibase'], 'messages'),
-        json={'model': cfg['model'], 'max_tokens': max_tokens, 'messages': [{
+    payload = {'model': cfg['model'], 'max_tokens': max_tokens, 'messages': [{
             'role': 'user',
             'content': [
                 {'type': 'image', 'source': {'type': 'base64', 'media_type': 'image/jpeg', 'data': b64}},
                 {'type': 'text', 'text': prompt}
             ]
-        }]},
+        }]}
+    if cfg.get('thinking_type') == 'disabled':
+        payload['thinking'] = {'type': 'disabled'}
+    resp = requests.post(
+        __import__('llmcore').auto_make_url(cfg['apibase'], 'messages'), json=payload,
         headers={'x-api-key': cfg['apikey'], 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
         timeout=timeout
     )
