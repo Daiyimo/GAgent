@@ -1,4 +1,6 @@
 """Regressions reproduced with GLM and the Android GUI task budget."""
+import io
+from contextlib import redirect_stdout
 import json
 from pathlib import Path
 import sys
@@ -62,6 +64,51 @@ class VisionResponseTest(unittest.TestCase):
             self.assertEqual(post.call_args.kwargs['json']['thinking'], {'type': 'disabled'})
 
 
+    def test_claude_vision_uses_provider_proxy(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('vision_template', CORE / 'memory/vision_api.template.py')
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        cfg = {'apibase': 'https://example.test/anthropic', 'apikey': 'test-placeholder',
+               'model': 'test', 'proxy': 'http://127.0.0.1:7890'}
+        with patch.object(module, '_cfg', return_value=cfg), patch.object(module.requests, 'post') as post:
+            post.return_value.json.return_value = {'content': [{'type': 'text', 'text': 'OK'}]}
+            module._call_claude('fakeimage', 'read', 10)
+            self.assertEqual(post.call_args.kwargs.get('proxies'),
+                             {'http': cfg['proxy'], 'https': cfg['proxy']})
+
+
+class VisionEntryTest(unittest.TestCase):
+    def test_code_run_exposes_lazy_vision_entry(self):
+        import subprocess
+        script = """
+import sys, types
+from pathlib import Path
+header = Path(sys.argv[1]).read_text()
+ns = {'__file__': '/tmp/ga/temp/_code_run.py'}
+exec(compile(header, 'code_run_header.py', 'exec'), ns)
+assert callable(ns.get('ask_vision')), 'code_run must expose ask_vision'
+vision = types.ModuleType('vision_api')
+vision.ask_vision = lambda image, prompt, **kw: (image, prompt, kw)
+sys.modules['vision_api'] = vision
+assert ns['ask_vision']('image', 'read', timeout=15) == ('image', 'read', {'timeout': 15})
+"""
+        result = subprocess.run([sys.executable, '-c', script, str(CORE / 'assets/code_run_header.py')],
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class VisualObservationTest(unittest.TestCase):
+    def test_icon_labels_are_safe_to_filter_as_text(self):
+        import numpy as np
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        detections = [{'bbox': [10, 20, 30, 40], 'label': None, 'cls': 'Icon'},
+                      {'bbox': [40, 50, 60, 70], 'label': '搜索', 'cls': 'Text'}]
+        with patch.object(droid, 'shot', return_value=frame), patch.object(droid, 'ui_detect', return_value=detections):
+            result = droid.look(cache=False)
+        self.assertEqual([d['label'] for d in result], ['', '搜索'])
+        self.assertEqual([d['label'] for d in result if '搜索' in d['label']], ['搜索'])
+
+
 class TaskBudgetTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -88,8 +135,11 @@ class TaskBudgetTest(unittest.TestCase):
         with self.assertRaises(RuntimeError): droid._gate_injection('tap', 'com.tencent.mm')
 
     def test_visual_only_paste_never_calls_node_paste(self):
-        with patch.object(droid, '_sensitive_fg', return_value=True), patch.object(droid, '_act', return_value={'ok': True}) as act:
+        output = io.StringIO()
+        with patch.object(droid, '_sensitive_fg', return_value=True), patch.object(droid, '_act', return_value={'ok': True}) as act, redirect_stdout(output):
             result = droid.paste('search query')
+        self.assertIn('尚未输入', output.getvalue())
+        self.assertNotIn('search query', output.getvalue())
         self.assertEqual(act.call_args.kwargs['op'], 'clipboard')
         self.assertFalse(result['hit'])
         self.assertTrue(result['needs_gui_paste'])

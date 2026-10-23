@@ -31,3 +31,9 @@ try:
     import droid  # noqa: F401
 except Exception:
     pass
+
+
+def ask_vision(image_input, prompt="描述当前界面", **options):
+    """Use the configured vision adapter without eager imports for non-visual tasks."""
+    from vision_api import ask_vision as invoke
+    return invoke(image_input, prompt, **options)

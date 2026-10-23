@@ -80,6 +80,8 @@ def _cfg(key):
 
 def _call_claude(b64, prompt, timeout, max_tokens=1024):
     cfg = _cfg(CLAUDE_CONFIG_KEY)
+    proxy = cfg.get('proxy')
+    proxies = {'http': proxy, 'https': proxy} if proxy else None
     payload = {'model': cfg['model'], 'max_tokens': max_tokens, 'messages': [{
             'role': 'user',
             'content': [
@@ -92,7 +94,7 @@ def _call_claude(b64, prompt, timeout, max_tokens=1024):
     resp = requests.post(
         __import__('llmcore').auto_make_url(cfg['apibase'], 'messages'), json=payload,
         headers={'x-api-key': cfg['apikey'], 'anthropic-version': '2023-06-01', 'content-type': 'application/json'},
-        timeout=timeout
+        timeout=timeout, proxies=proxies
     )
     resp.raise_for_status()
     text = '\n'.join(b.get('text', '') for b in resp.json().get('content', []) if b.get('type') == 'text')

@@ -1,8 +1,11 @@
 # phone_use — 手机 GUI 操作总规程
 
 可选加速：用户已配置 Jev 时，当前屏幕的单步导航目标可用 `droid.tap_target(target, package=包名)`；首次先读 `memory/jev_phone_use.md`。它只选当前候选，不生成坐标或规划整段任务；无配置保持原流程，目标核验与授权规则不变。
-纯 GUI / 微信任务的最短路径：读完本节后直接 `droid.launch(包名)` → `look()` 观察。用户明确要求的导航任务直接执行，无微信固定动作预算或解锁步骤；无图标模型时按 vision_sop.md 用已配置的 ask_vision 查看截图，不猜图标坐标。不要为了开局把全部章节和所有 App 档案读完。
-视觉观察用 `print([(d.get("label"), d.get("cls"), d["x"], d["y"]) for d in droid.look()])`，保留全部紧凑候选，避免截断后漏掉关闭图标。`shot()` 返回像素数组，不是模型可见图片；不要打印数组或使用不存在的 `save=True` 参数。弹窗遮罩上，先用已配置的 `ask_vision(droid.shot(), "是否有弹窗？描述关闭按钮，不提供坐标")` 确认语义，再匹配当帧候选框操作；不要点击遮罩后的正文。
+纯 GUI / 微信开局：`droid.launch(包名)` 后先 `print(ask_vision(droid.shot(), "描述当前可交互层：是否有弹窗、关闭按钮在哪里、可执行的下一步是什么？"))`。`code_run` 已提供 `ask_vision`，无需导入或猜模块名；未配置时按 `memory/vision_sop.md` 配置。进入新小程序或点击后页面未变时也先做这一视觉检查。
+定位用 `print([(d.get("label"), d.get("cls"), d["x"], d["y"]) for d in droid.look()])`；保留全部紧凑候选，匹配视觉确认的按钮与当帧坐标，再操作。弹窗存在时只操作最上层，不能点击遮罩后正文；不要用 `back()` 猜测关闭弹窗，它可能退出小程序。
+微信的 `dump/find/tap_text` 依赖被禁止的节点树，不能用它们判断按钮是否存在；文字按钮也从 `look()` 的 `label` 匹配。`ocr_text` 接受图片裁剪数组，不接受搜索词；`shot()` 返回像素数组，不能打印给模型看或使用不存在的 `save=True`。
+常用签名：`tap(x, y)`；`paste(text, replace=False)`（微信仅放剪贴板，必须继续点可见粘贴菜单/键盘候选，不能反复调用当作输入）；`swipe(x1,y1,x2,y2,dur=300)`。没有 `droid.input`；不调用 shell/广播输入。`look()` 默认整屏；roi名称只有 top/upper/middle/lower/bottom，其他区域传矩形元组。普通App的 `find(text)` 返回列表。
+用户明确要求的导航直接执行，无固定动作预算或解锁步骤。结束前重新观察停点；「去结算」不等于「提交订单」，没有提交授权就停在确认页。
 
 ## §-1 开局最短路径（r28 起；130+ 真机 run 统计：开局阅读占 14% 轮数、忘 import 与重复找节点占 15%，这一节就是为了把它们清零）
 1. **只读两份**：本文 + `memory/app_cards.md`（各 App 通用操作手册·速查卡，含约束账本三步与设备无关规则）。卡片写「见长档案」或遇到卡片没覆盖的弹窗/风控时，才 `file_read memory/app_scenarios_sop.md` 并只搜该 App 名那一行。`app_ops_sop.md` / `modes_index.md` 不必再读（账本纪律已并入卡片 §A；路由=点名 App 即锁定 App）。

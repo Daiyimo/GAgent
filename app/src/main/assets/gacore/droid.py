@@ -466,6 +466,7 @@ def look(conf=0.25, path=None, roi=None, cache=True):
             return dets
     dets = ui_detect(img[y1:y2, x1:x2], conf=conf)
     for d in dets:
+        d["label"] = str(d.get("label") or "")
         bx1, by1, bx2, by2 = d["bbox"]
         d["bbox"] = [bx1 + x1, by1 + y1, bx2 + x1, by2 + y1]
         d["x"], d["y"] = int((bx1 + bx2) / 2 + x1), int((by1 + by2) / 2 + y1)
@@ -791,15 +792,16 @@ def paste(text, verify=True, replace=False):
     此时 dump 验证按「框内文本 == text」判 hit(追加模式是包含匹配)。框不支持选区时 a11y 侧抛错(不会静默变成追加)。
     hit=True=已确认上屏; hit=False, uncertain=True=验证不可用/结论不确定, 禁止重复输入或盲目降级。
     ime_label 仅为元数据; 只有 ime_hint 可点击。
-    敏感 App(SENSITIVE_APPS 注册表, 如微信)或前台未解析(ping 抖动)时自动跳过 a11y dump(读控件树=封号元凶), 仅走 shot()+OCR;
-    此时无 edit 框锚点, 常返回 uncertain=True → 按 §5 停下改用 shot+ui_detect 人工核对, 勿盲目重试。"""
+    敏感 App 或前台未解析时只设置剪贴板，不调用节点输入；返回 needs_gui_paste=True 并输出提示。
+    调用方须通过可见GUI粘贴，再用截图验证上屏；不能把剪贴板已设置当成输入成功。"""
     text = str(text)
     if not text:
         raise ValueError("paste text must not be empty")
     if _sensitive_fg():
         _act(op="clipboard", text=text)
-        return {"hit": False, "uncertain": True, "needs_gui_paste": True,
-                "hint": "文本已放入剪贴板，尚未输入。用截图定位输入框，长按后点击可见的粘贴菜单或键盘剪贴板提示；替换时先通过GUI清空/全选。"}
+        hint = "文本已放入剪贴板，尚未输入。用截图定位输入框，长按后点击可见的粘贴菜单或键盘剪贴板提示；替换时先通过GUI清空/全选。"
+        print("[GUI input] " + hint)
+        return {"hit": False, "uncertain": True, "needs_gui_paste": True, "hint": hint}
     ret = _act(op="paste", text=text, replace=bool(replace)); ret.pop("ok", None)
     if not verify:
         return ret

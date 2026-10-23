@@ -70,3 +70,5 @@ iOS 与 ESP32 的开发继续留在原工作目录，本次 Android 分发不包
 [公开前的依赖安全审查](docs/DEPENDENCY_SECURITY.md)
 
 可选 YOLO 按钮/图标检测支持用户自行下载、核验和安装，详见 [安装与许可说明](docs/OPTIONAL_YOLO.md)。默认包保留 OCR。
+
+[手机模型接口与代理排障](docs/NETWORK.md)

@@ -80,3 +80,5 @@ in this Android distribution.
 [Dependency review before public release](docs/DEPENDENCY_SECURITY.md)
 
 Optional YOLO button/icon detection can be downloaded, verified and installed by the user; see [installation and licensing](docs/OPTIONAL_YOLO.md). Default builds retain OCR.
+
+[Phone-side model networking and proxy troubleshooting](docs/NETWORK.md)
