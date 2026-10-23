@@ -48,15 +48,23 @@ class BusA11yService : AccessibilityService() {
     //    scrim 却能关掉——scrim 不在标记子树里); uiautomator/UiAutomation 天然按工具处理, 所以同刻看得到也点得动。
     //    Files by Google 把重命名/删除等对话框整体标了 dataSensitive。声明为工具后行为与 uiautomator 一致。
     // 敏感 App 的零注入/dump 置空策略与此无关(策略在 droid.py 按前台包名判, 不因看得到就去动)。
-    @Volatile private var lastEventPkg: String? = null
+    private val windowPackages = WindowPackages()
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
+        if (event == null) return
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            event.eventType != AccessibilityEvent.TYPE_WINDOWS_CHANGED) return
+        val current = windows.orEmpty()
+        windowPackages.retainSystem(current.filter { it.type == AccessibilityWindowInfo.TYPE_SYSTEM }.map { it.id }.toSet())
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
         val pkg = event.packageName?.toString()?.takeIf { it.isNotEmpty() } ?: return
         // Window metadata only: do not request any target-app nodes to identify it.
-        val window = windows?.firstOrNull { it.id == event.windowId }
-        if (window?.type == AccessibilityWindowInfo.TYPE_APPLICATION) lastEventPkg = pkg
+        val window = current.firstOrNull { it.id == event.windowId }
+        when (window?.type) {
+            AccessibilityWindowInfo.TYPE_APPLICATION -> windowPackages.applicationChanged(pkg)
+            AccessibilityWindowInfo.TYPE_SYSTEM -> windowPackages.systemChanged(window.id, pkg)
+        }
     }
-    private fun visualOnly() = lastEventPkg == null || lastEventPkg == "com.tencent.mm"
+    private fun visualOnly() = foregroundPkg().let { it.isEmpty() || it == "com.tencent.mm" }
     override fun onInterrupt() {}
 
     // --- dump ---
@@ -157,6 +165,7 @@ class BusA11yService : AccessibilityService() {
     // 改用 getWindows()(需 flagRetrieveInteractiveWindows)确定性地取真前台窗口: 优先 active/focused,
     // 再偏好 App 窗口而非系统栏, 最后取最高层; 排除输入法与 GA 自身(让真 App/弹窗胜出, GA 在前台时仍能 dump 自己)。
     private fun foregroundWindow(): AccessibilityWindowInfo? {
+        activeSystemWindow()?.let { return it }
         val wins = try { windows } catch (_: Exception) { null }
         if (wins.isNullOrEmpty()) return null
         val me = packageName
@@ -171,7 +180,11 @@ class BusA11yService : AccessibilityService() {
 
     private fun foregroundRoot(): AccessibilityNodeInfo? = foregroundWindow()?.root ?: rootInActiveWindow
 
-    fun foregroundPkg(): String = lastEventPkg ?: ""
+    private fun activeSystemWindow(): AccessibilityWindowInfo? = windows?.filter {
+        it.type == AccessibilityWindowInfo.TYPE_SYSTEM && (it.isActive || it.isFocused)
+    }?.maxByOrNull { it.layer }
+
+    fun foregroundPkg(): String = windowPackages.current(activeSystemWindow()?.id)
 
     // 旋转正确的物理屏尺寸: Service 的 resources.displayMetrics 不随旋转可靠更新, getRealMetrics 才行(横屏修正)。
     private val wm get() = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -199,19 +212,22 @@ class BusA11yService : AccessibilityService() {
             val rawDesc = node.contentDescription?.toString() ?: ""
             val click = node.isClickable
             val isEdit = node.isEditable
+            val range = node.rangeInfo
             val desc = if (isMeaningfulDesc(rawDesc)) {
                 if (txt.isNotEmpty() && rawDesc == txt) "" else rawDesc
             } else ""
-            val hasInfo = txt.isNotEmpty() || desc.isNotEmpty() || isEdit || click
+            val hasInfo = txt.isNotEmpty() || desc.isNotEmpty() || isEdit || click || range != null
             if (hasInfo || full) {
                 val obj = JSONObject()
                 if (txt.isNotEmpty()) obj.put("t", txt)
                 if (desc.isNotEmpty()) obj.put("d", desc)
                 obj.put("x", (r.left + r.right) / 2); obj.put("y", (r.top + r.bottom) / 2)
                 obj.put("l", depth)
-                if (full || (txt.isEmpty() && desc.isEmpty() && click))
+                if (full || range != null || (txt.isEmpty() && desc.isEmpty() && click))
                     obj.put("b", "${r.left},${r.top},${r.right},${r.bottom}")
-                if (full) obj.put("cls", node.className?.toString()?.substringAfterLast('.') ?: "")
+                if (full || range != null) obj.put("cls", node.className?.toString()?.substringAfterLast('.') ?: "")
+                if (range != null) obj.put("range", JSONObject().put("min", range.min)
+                    .put("max", range.max).put("current", range.current).put("type", range.type))
                 if (full && !node.isEnabled) obj.put("disabled", 1)
                 if (full && !node.isVisibleToUser) obj.put("hidden", 1)
                 if (full && node.isCheckable) obj.put("checkable", 1)
@@ -253,7 +269,7 @@ class BusA11yService : AccessibilityService() {
     // Analytics 本地队列(MAX_QUEUE=500)并挤掉低频关键事件。只记 op 枚举/前台包名/成败, 不碰坐标与文本。
     fun act(req: JSONObject): String {
         val op = runCatching { req.getString("op") }.getOrDefault("?")
-        val pkg = lastEventPkg   // 统计用途只要大概前台: 被动事件缓存, 不再每次动作向前台 App 拉根节点(见 lastEventPkg 注释)
+        val pkg = foregroundPkg()   // Event package plus system-window metadata; no app nodes.
         return try { actInner(req).also { ActStats.hit(op, pkg, true) } }
         catch (e: Exception) { ActStats.hit(op, pkg, false); throw e }
     }
