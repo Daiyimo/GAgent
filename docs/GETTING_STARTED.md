@@ -101,16 +101,17 @@ your selected service; task text, screenshots and tool output may also be sent.
 2. Enable **Settings → Always-on floating window**. Follow the prompt to allow
    **Display over other apps**, then return and check the switch is on.
 3. Allow task notifications when requested. The current preview may also open
-   the all-files settings page or request microphone access on launch. You can
-   return without granting these for text chat and basic screenshot/gesture tasks.
-   Grant microphone, camera, shared-file or sensing access when you need it; if
+   the all-files settings page on launch. You can return without granting it for
+   text chat and basic screenshot/gesture tasks. Microphone access is requested
+   when voice capture needs it. Grant camera, shared-file or sensing access when
+   you need it; if
    voice reports a permission denial, enable Microphone in Android app permissions.
 
 「设置 → 无障碍权限 → 去开启／手动开启无障碍」进入系统页，为**本次安装的 GAgent**授权后返回；
 再开「悬浮窗常开」，按引导授予「显示在其他应用上」。遇 Android「受限设置」先核实安装来源，
 由你本人按照系统提示决定是否允许。系统列表中选择 **GAgent OSS**（调试版为 **GAgent OSS Debug**），
-避免与原有闭源版混淆。通知用于显示任务状态；当前预览首启可能提前打开「所有文件访问」或申请
-录音，纯文本与基础截图/手势可先返回或拒绝。使用语音若提示拒绝录音，再到系统应用权限开启麦克风。
+避免与原有闭源版混淆。通知用于显示任务状态；当前预览首启可能提前打开「所有文件访问」，
+纯文本与基础截图/手势可先返回。麦克风在语音采集需要时申请；若已永久拒绝，到系统应用权限开启。
 
 On Meizu / Flyme, the accessibility shortcut can first open **Auxiliary features**;
 scroll to **Accessibility → Downloaded apps → GAgent OSS**. Labels vary across ROMs.

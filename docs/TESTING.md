@@ -68,6 +68,30 @@ reset script or automatically retry an action after its outcome becomes unknown.
 | Upgrade | Package ID, source commit, certificate, installed APK digest and retained configuration |
 | Cancellation or reconnect | No stale-session result or duplicate external action |
 
+<a id="passive-observation"></a>
+### Observe without interrupting accessibility / 避免观察工具干扰无障碍
+
+While GAgent runs a task, use passive observation such as `adb -s SERIAL exec-out
+screencap -p` and read-only `dumpsys activity` / `dumpsys accessibility`. Keep the
+screenshots and logs private. Do not run UIAutomator-based inspection alongside
+the task: `inspect --screenshot` still reads the hierarchy, and `inspect --backend
+native` uses `uiautomator dump`; neither is a screenshot-only observer.
+
+Android's `UiAutomation` defaults to flags `0`, which can temporarily suppress
+GAgent's accessibility service even though its permission remains enabled. The
+service may recover after the observer exits. Stop the task before using
+UIAutomator, or ensure the observer sets
+[`FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES` (`1`)](https://developer.android.com/reference/android/app/UiAutomation#FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+**before its first connection**, preserving it on reconnection. Setting it after
+connection leaves an initial suppression window. Repeat a suspected accessibility
+failure without that observer before classifying it as a product defect.
+
+GAgent 运行任务时，只用 `adb screencap`、只读 `dumpsys` 等被动方式观察；截图和日志保留在本地。
+不要并行执行 UIAutomator 检查：`inspect --screenshot` 仍读取节点，`inspect --backend native`
+仍调用 `uiautomator dump`，都不是纯截图观察。默认 flags `0` 会暂时抑制 GAgent 的无障碍服务，
+系统权限可能仍显示已开启，观察器退出后服务又恢复。需要 UIAutomator 时先停止任务，或确保
+它在**首次连接前**设置保留无障碍的标志 `1`，重连也保持。先排除观察器干扰，再判断产品缺陷。
+
 WeChat acceptance uses screenshots, visual tools and gestures only. Any test-only
 CDP connection is limited to GAgent's own WebView, never a target app. Stop before
 messages, purchases, account changes or other real-world effects unless the test's

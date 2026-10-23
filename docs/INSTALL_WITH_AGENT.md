@@ -149,6 +149,15 @@ phone networking. Ask before an additional chargeable or account-changing action
 if not already within the user's scope. Leave orders, login, messages and payments
 out of a basic install test. Physical USB unplug is only passed after observation.
 
+Observe running tasks with passive `adb screencap` / read-only `dumpsys`, not
+UIAutomator-based `inspect` or `uiautomator dump`: their default automation session
+can suppress GAgent's accessibility service. Stop the task first, or use an
+observer that preserves other services from its first connection.
+[Observation requirements](TESTING.md#passive-observation).
+
+任务运行中只用被动截图和只读状态检查，不要同时运行 UIAutomator 的 `inspect` 或 `dump`。
+其默认连接会抑制 GAgent 无障碍；先停任务，或确保观察器从首次连接起就保留其他服务，避免误报故障。
+
 交付时记录：提交和 CI、APK 摘要与签名验证来源、包名、设备/Android/方向、各项通过或未测、
 下一步最小修复。未连接设备就明确只完成了下载与静态检查，不宣称安装或使用通过。
 

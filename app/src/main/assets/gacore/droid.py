@@ -627,7 +627,8 @@ def scroll(direction="up", frac=0.55, dur=260, times=1, verify=True, settle=0.5)
     action = {}
     for _ in range(times):
         action = swipe(*seg, dur=dur, screen=p)
-        time.sleep(settle)
+        # Native dispatch acknowledges acceptance before the gesture finishes.
+        time.sleep(dur / 1000.0 + settle)
     if not verify:
         ret = dict(action or {})
         ret.update(performed=True, verified=False)
