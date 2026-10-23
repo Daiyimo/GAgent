@@ -101,7 +101,7 @@ task, screenshots and retries. Measure those inputs on your own tasks. [Implemen
 
 | Try asking | Setup / recorded result |
 | --- | --- |
-| “Find videos on my topic, sort by most played, and list titles and creators.” | Recorded Bilibili simple sort passed; combined date/duration filters remained partial. |
+| “Find videos on my topic, sort by most played, and list titles and creators.” | Simple-sort passes and a later Meizu timeout are recorded; combined date/duration filters remained partial. |
 | “Read the driving time and distance; don't start navigation.” | Recorded Amap route readback passed with matching history available. |
 | “Browse McDonald's in WeChat using GUI only; stop before submitting and at any login.” | Reached meal selection and phone login; no confirmed cart, checkout or payment. |
 | “Use my signed-in website in the background and save a summary.” | Recipe: sign in through GAgent's browser; verify session reuse and saved output. |
@@ -109,8 +109,9 @@ task, screenshots and retries. Measure those inputs on your own tasks. [Implemen
 | “Make me a study timer app with a task list and local history.” | Recipe: generate/review the project, configure APK Factory, then test the returned APK. |
 
 Recipes are examples, not new test results. See [cases and evidence](docs/CASES.md)
-and [AndroidBench](https://androidbench.gaagent.ai/). Current physical evidence is
-Pixel 10 / Android 16; foldables and other OEMs still need their own acceptance.
+and [AndroidBench](https://androidbench.gaagent.ai/). [Physical validation](docs/VALIDATION.md)
+covers Pixel 10 and MEIZU 21 on Android 16, including failed and blocked trials;
+foldables and other OEMs still need their own acceptance.
 
 ## 🗺️ Roadmap & News
 

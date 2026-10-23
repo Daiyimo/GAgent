@@ -1,10 +1,12 @@
 # Validation snapshot / 验收快照
 
-**Date:** 2026-10-23
+Latest update: [Meizu GUI and overlay regression, 2026-10-24](#meizu-gui-regression).
+
+**Initial Pixel snapshot:** 2026-10-23
 
 **Android baseline:** 2.33.3 / 136
 
-**Open-source device-build commit:** `6c4683a1a36ccc7b3b9a121099b81ef2d1d75422`
+**Initial Pixel device-build commit:** `6c4683a1a36ccc7b3b9a121099b81ef2d1d75422`
 
 This is a bounded engineering record, not a certification or overall accuracy
 claim. Later commits need checks appropriate to their changes; they do not
@@ -110,6 +112,73 @@ entirely unassisted setup. Microphone access was denied; voice was not tested.
 这是带诊断指引、保留页面状态的重试，不是完整 benchmark。通知与文件权限部分状态可能有
 机主协助；未实测物理拔线、语音、折叠屏或横屏。任务运行期间仅用被动截图观察，
 UIAutomator 抑制无障碍的干扰另见 [Testing](TESTING.md#passive-observation)。
+
+<a id="meizu-gui-regression"></a>
+
+## Meizu GUI and overlay regression / 魅族 GUI 与浮窗回归
+
+**Date:** 2026-10-24. MEIZU 21 / Android 16, portrait, GLM-5.3-flash
+through the Anthropic-compatible endpoint. The release APK from `dd49e39`
+matched its [passing CI artifact](https://github.com/shenhao-stu/GAgent/actions/runs/40029121947);
+installed bytes and runtime guide/tool hashes were checked. The GA planning core
+was unchanged. Changes belong to foreground identity, capture, gesture handling,
+visual responses and the Android tool guide.
+
+Each trial used a fresh conversation and an unchanged query. Accounts, search
+history and unrelated agent memory were retained. Selected target processes
+were stopped before the final trials; no data was cleared. Earlier compact-guide
+trials used the `809f6c4` APK with exact `62679db` / `cb2fd3e` guide assets,
+backups and hash checks. Their Bilibili run retained its page/search state and
+restored an official App guide after an earlier failure had written incorrect
+filter advice. The vision adapter was configured during iteration. No optional
+YOLO detector or self-ADB was added; the provider proxy was empty and there was
+no ADB reverse transport. These are host-observed completion intervals, not
+statistically established speedups or a cold-start A/B experiment.
+
+| Check / 项目 | Observed result / 实际结果 |
+| --- | --- |
+| Display-page navigation / 显示页 | `dd49e39`: **81–90 s, 8 turns**, passed; one recovered tuple/dictionary misuse. Same original query: baseline `c5f1bf7` 180–188 s; earlier compact-guide trial 37–46 s; `8e692d9` repeat 203–212 s after wrong-direction scrolling and a wrong-page detour. The fastest trial did not establish stable latency |
+| Sound-page navigation / 声音页 | `dd49e39`: **54–63 s, 7 turns**, passed with no tool errors. The preceding `8e692d9` run took 45–54 s with one recovered package-list shape error; the earlier compact-guide run exceeded 240 s and exposed the overlay collision |
+| Battery-page navigation / 电池页 | `5a254ff`: 144–153 s, 9 turns, passed. Control center was already open; the agent recovered through its visible Settings entry |
+| Bilibili `v9_video_L1` | Latest `8e692d9` repeat: **partial, exceeded 240 s / 13 turns**. Sort selection was visually confirmed, but Back left the results page and caused a repeat search. An earlier compact-guide run passed in 208–217 s / 11 turns; its title was visually truncated and its extra claim of backgrounding the App was wrong. Earlier timeouts and a 583–592 s web fallback remain failed App trials |
+| Idlefish / 闲鱼 `v9_used_L1` | `5a254ff`: blocked by login; no login or purchase |
+| Meeting / 腾讯会议 `v9_meet_L1` | `5a254ff`: blocked by expired login; no login or meeting join |
+| Two floating handles / 双浮窗 | Each retained App owned one: closed-source and OSS. Turned off the closed App's own always-on setting; one OSS overlay remained at Home, during tasks and after completion. Both installs, data and permissions preserved |
+
+A separate native defect let an injected swipe drag GAgent's expanded capsule
+while the Settings list stayed still. The capsule's movement produced 8.483%
+pixel change, falsely counted as progress. Candidates `d8c9fab` and `0c1190b`
+passed CI but failed physical collision checks; those failures are retained.
+The fix keeps the overlay visible, temporarily passes gesture input through it,
+waits for compositor commit where supported, then restores touch handling.
+Overlapping gestures use leases so an older cancellation cannot unlock a newer gesture.
+
+On the exact `8e692d9` APK, three normal-path top-boundary swipes left the capsule
+stationary and returned `scrolled=False`; another swipe moved Settings while the
+capsule stayed in place. Flags and opacity returned to their prior values, and a
+manual click changed the capsule's display mode. No extra pre-held lease or
+preparation delay was used. The final `dd49e39` keeps that native implementation
+and adds `scroll_view`, which expresses the desired browsing direction while
+preserving the legacy `scroll` finger-direction contract. Older Android and
+software-rendering fallbacks were not physically exercised on this device.
+
+The final local suite passed **267 tests and 10 subtests**; CI also passed Kotlin
+tests and both APK builds. Seven literal prose-matching checks were retired during
+guide cleanup; runtime guards for visual-only input, unresolved foregrounds,
+clipboard verification and geometry remain. This is author verification, not
+an independent security audit or a full AndroidDailyBench score.
+
+显示页、声音页的标题由截图独立核验，未修改设置。最快一次不能代表稳定体验：B站复测仍超时，
+闲鱼和腾讯会议受登录状态阻塞，均未算通过。双浮窗来自两个独立安装的 App，已关闭闭源版
+的常驻浮窗；另一个“手势拖动自身浮窗”的缺陷在 Android 层修复。新滚动接口按浏览方向表达
+意图，保留旧接口兼容，不包含机型、任务或固定坐标特例。
+
+This remains a small engineering sample. Model direction/shape mistakes, stale
+node choices and popup navigation still caused detours; floating status text can
+also appear in OCR candidates. Broadly fluent operation is not established.
+Physical unplug, landscape/foldables on this Meizu, voice and optional services
+were not tested. Private screenshots/traces are not published; uninstrumented
+zero token fields do not mean zero usage.
 
 ## Not established / 尚未证明
 

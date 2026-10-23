@@ -62,6 +62,7 @@ reset script or automatically retry an action after its outcome becomes unknown.
 | --- | --- |
 | Text, tool and image request | Protocol, success/failure, elapsed time; no credentials or personal payloads |
 | Background task → Home → app → Home | Task remains live, overlay state, permission and always-on setting |
+| Gesture starts inside the floating capsule | Target content moves or a real boundary is reported; capsule stays in place; manual touch returns after completion/cancellation. If two handles appear, identify each owning package before changing settings |
 | 0°, 90°, 180°, 270° rotation | Screenshot dimensions, rotation, stale-coordinate rejection, valid fresh gesture |
 | Resize, keyboard or dialog | Fresh observation and target verification; identical dimensions alone are insufficient |
 | Permission denied/revoked | Explicit capability error; no silent success |
