@@ -123,11 +123,19 @@ class VisionResponseTest(unittest.TestCase):
 
 
 class VisionEntryTest(unittest.TestCase):
+    def test_droid_vision_entry_loads_user_adapter_only_when_called(self):
+        from types import SimpleNamespace
+        adapter = SimpleNamespace(ask_vision=lambda image, prompt, **kw: (image, prompt, kw))
+        with patch.dict(sys.modules, {'vision_api': adapter}):
+            self.assertEqual(droid.ask_vision('image', 'read', timeout=15),
+                             ('image', 'read', {'timeout': 15}))
+
     def test_code_run_exposes_lazy_vision_entry(self):
         import subprocess
         script = """
 import sys, types
 from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).resolve().parents[1]))
 header = Path(sys.argv[1]).read_text()
 ns = {'__file__': '/tmp/ga/temp/_code_run.py'}
 exec(compile(header, 'code_run_header.py', 'exec'), ns)

@@ -482,6 +482,12 @@ def look(conf=0.25, path=None, roi=None, cache=True):
     return dets
 
 
+def ask_vision(image_input, prompt="描述当前界面", **options):
+    """Use the configured vision adapter without eager imports for non-visual tasks."""
+    from vision_api import ask_vision as invoke
+    return invoke(image_input, prompt, **options)
+
+
 def screen():
     """(w, h): 当前朝向的屏幕像素尺寸(来自 ping). 相对布局判断用: y < 0.12h 顶栏区, y > 0.9h 底栏区, 0.28h-0.34h 常见 GA 状态胶囊带; 禁止把任何绝对坐标写进记忆."""
     p = ping()

@@ -29,11 +29,6 @@ sys.excepthook = lambda t, v, tb: (sys.__excepthook__(t, v, tb), print(f"\n[Agen
 # 上一轮的变量不在了」, 每次浪费一整轮(~10-30s). 导入失败(PC 侧/总线未起)静默跳过, 不影响纯计算脚本.
 try:
     import droid  # noqa: F401
+    from droid import ask_vision  # noqa: F401
 except Exception:
     pass
-
-
-def ask_vision(image_input, prompt="描述当前界面", **options):
-    """Use the configured vision adapter without eager imports for non-visual tasks."""
-    from vision_api import ask_vision as invoke
-    return invoke(image_input, prompt, **options)
