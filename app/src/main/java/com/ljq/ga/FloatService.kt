@@ -102,7 +102,7 @@ class FloatService : Service() {
         @Volatile var lastError: String? = null
     }
 
-    /** Called off the UI thread, before dispatch. Wait for the input-window flags' frame. */
+    /** Called off the UI thread, before dispatch. Keep the lease until gesture completion. */
     fun passThroughGesture(): () -> Unit {
         check(Looper.myLooper() != Looper.getMainLooper()) { "gesture preparation needs a worker thread" }
         val ready = CountDownLatch(1)
@@ -121,7 +121,19 @@ class FloatService : Service() {
             try {
                 check(alive && tv.isAttachedToWindow) { "overlay detached before gesture" }
                 release = gestureLeases.acquire()
-                tv.postOnAnimation { ui.post { ready.countDown() } }
+                // An animation callback can precede the new input window. After layout,
+                // submit a drawn frame before dispatching a gesture through this overlay.
+                tv.postOnAnimation { ui.post {
+                    try {
+                        check(alive && tv.isAttachedToWindow) { "overlay detached before frame commit" }
+                        if (Build.VERSION.SDK_INT >= 29 && tv.isHardwareAccelerated) {
+                            tv.viewTreeObserver.registerFrameCommitCallback { ready.countDown() }
+                            tv.invalidate()
+                        } else {
+                            tv.postOnAnimation { ui.post { ready.countDown() } }
+                        }
+                    } catch (e: Exception) { failure = e; ready.countDown() }
+                } }
             } catch (e: Exception) { failure = e; ready.countDown() }
         }
         try {
