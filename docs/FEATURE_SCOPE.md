@@ -1,6 +1,6 @@
 # Feature scope / 功能去留清单
 
-Reviewed on 2026-10-23; application source updated to `e82ea0bbf05930acdd3ef7e07ce695b1a4efc959` (2.33.2 / 135).
+Reviewed on 2026-10-23; 2.33.3 / 136 candidate builds on the 2.33.2 GUI policy. Exact build and device results are recorded in release notes.
 This describes the private open-source candidate, not a public launch. “Removed”
 means removed from this distribution; the original projects remain intact.
 
