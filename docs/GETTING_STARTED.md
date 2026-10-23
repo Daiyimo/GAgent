@@ -20,8 +20,8 @@ Gradle、Docker 或 Shizuku。YOLO、self-ADB、跨设备服务、语音和 APK 
   unless needed; `127.0.0.1` on the phone is **the phone**, not your computer.
 
 准备 arm64、Android 11+ 手机与自己的模型配置。确认手机能独立访问接口。
-普通使用无需 USB、无线 ADB 或 `adb reverse`。当前实机证据为 Pixel 10 / Android 16；
-其他 OEM、折叠屏和 16 KB 页大小配置仍需单独验收，见[范围](VALIDATION.md)。
+普通使用无需 USB、无线 ADB 或 `adb reverse`。当前有限实机证据包括 Pixel 10 与魅族 21 / Android 16；
+更多 OEM、折叠屏和 16 KB 页大小配置仍需单独验收，见[范围](VALIDATION.md)。
 
 <a id="download"></a>
 ## 1. Download and install / 下载与安装

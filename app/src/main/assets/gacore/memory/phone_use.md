@@ -121,7 +121,7 @@
 - launch 后 fg 未变≠失败: app 可能被 resume 到遗留虚拟屏/分屏→先 `vdisplay.vd_status()` 或 `dumpsys activity activities` 看 display 归属再诊断, 勿在主屏反复 launch/tap。
 - 长按 = swipe 同点 dur>=800。
 - ⚠`droid.scroll` 只吃**方向/比例**: `scroll('up'|'down'|'left'|'right', times<=10)`, **不是 `swipe(x1,y1,x2,y2,dur)`**——误当 swipe 传坐标(如 scroll(900,1850,...))会被夹取成少量有界滚动(已护栏防失控狂滑), 要按坐标精细滑请用 `droid.swipe`。
-- 滚动优先 `droid.scroll('up'/'down'/'left'/'right', times=1)`；方向是手指方向：`up` 看下方内容，`down` 看上方。`scrolled=True` 只确认内容变化，不代表目标已找到或动画已结束；`scrolled=False` 且无 uncertain 表示有效证据未见滚动；`uncertain=True` 表示观察失败，必须重新读取当前页面，禁盲目重复。
+- 滚动优先 `droid.scroll('up'/'down'/'left'/'right', times=1)`；方向是手指方向：`up` 看下方内容，`down` 看上方。scroll() 自己负责文本/像素证据；`scrolled=True` 只确认内容变化，不代表目标已找到或动画已结束；`scrolled=False` 且无 uncertain 表示有效证据未见滚动；`uncertain=True` 表示观察失败，必须重新读取当前页面，禁盲目重复。
 - 交互目标查找固定使用 `scroll(..., times=1)`, 每步后重新 dump/shot 观察再决定下一步; times>1 仅用于明确遍历, 且可能跳过目标。
 - 一次过冲就缩小幅度并减速，例如 `scroll(direction, frac=0.15, dur=800, times=1)`；参数随当前列表响应调整，不在两个端点反复快滑。重新截图确认当前位置；若节点文字与画面矛盾，该界面改用 `look()`/OCR，不继续沿陈旧节点导航。
 - 裸 swipe 端点已夹进安全带；按内容选择幅度与时长，等待手势及动画结束后重新观察，不能用派发返回 `ok` 代表到达目标。
