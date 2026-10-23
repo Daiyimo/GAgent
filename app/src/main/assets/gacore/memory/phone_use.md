@@ -1,5 +1,7 @@
 # phone_use — 手机 GUI 操作总规程
 
+系统设置优先 GUI：亮度/音量/显示等任务无需为此连接 ADB；亮度可先 `droid.quick_settings()`，用完 `droid.dismiss_shade()`。控件位置和值必须现场读取，不能凭“手势返回 ok”或亮度条标签宣布完成。
+两种观察格式不同：`dump()` 的文字键是 `t` / `d`，需要类名和完整边界时 `dump(full=True)`；`look()` 才使用 `label` / `cls`。不要用 `label` 过滤 `dump()` 后把缺失键误判为无文字。
 可选加速：用户已配置 Jev 时，当前屏幕的单步导航目标可用 `droid.tap_target(target, package=包名)`；首次先读 `memory/jev_phone_use.md`。它只选当前候选，不生成坐标或规划整段任务；无配置保持原流程，目标核验与授权规则不变。
 纯 GUI / 微信开局：`droid.launch(包名)` 后先 `print(ask_vision(droid.shot(), "描述当前可交互层：是否有弹窗、关闭按钮在哪里、可执行的下一步是什么？"))`。`code_run` 已提供 `ask_vision`，无需导入或猜模块名；未配置时按 `memory/vision_sop.md` 配置。进入新小程序或点击后页面未变时也先做这一视觉检查。
 定位用 `print([(d.get("label"), d.get("cls"), d["x"], d["y"]) for d in droid.look()])`；保留全部紧凑候选，匹配视觉确认的按钮与当帧坐标，再操作。弹窗存在时只操作最上层，不能点击遮罩后正文；不要用 `back()` 猜测关闭弹窗，它可能退出小程序。

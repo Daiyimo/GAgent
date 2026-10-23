@@ -11,7 +11,7 @@ from unittest.mock import patch
 CORE = Path(__file__).resolve().parents[1] / 'app/src/main/assets/gacore'
 sys.path.insert(0, str(CORE))
 import droid
-from llmcore import ToolClient
+from llmcore import ToolClient, _parse_text_tool_calls
 
 
 class ToolArgumentsTest(unittest.TestCase):
@@ -49,6 +49,51 @@ class ToolArgumentsTest(unittest.TestCase):
         value = {'name': 'code_run', 'script': "print('```')"}
         result = client._parse_mixed_response('```<tool_use>\n' + json.dumps(value) + '\n```')
         self.assertEqual(json.loads(result.tool_calls[0].function.arguments)['script'], value['script'])
+
+    def test_malformed_tool_json_requests_repair_instead_of_final(self):
+        text = '<tool_use>{"name":"code_run","arguments":{"script":"print(1)"}\n</tool_use>'
+        calls, _ = _parse_text_tool_calls(text)
+        self.assertEqual([c.function.name for c in calls], ['bad_json'])
+
+    def test_truncated_tool_call_is_not_a_final_answer(self):
+        calls, _ = _parse_text_tool_calls('<tool_use>{"name":"code_run","arguments":')
+        self.assertEqual([c.function.name for c in calls], ['bad_json'])
+
+    def test_malformed_batch_executes_nothing_before_repair(self):
+        text = ('<tool_use>{"name":"code_run","arguments":{"script":"print(1)"}}</tool_use>'
+                '<tool_use>{"name":"code_run","arguments":null}</tool_use>')
+        calls, _ = _parse_text_tool_calls(text)
+        self.assertEqual([c.function.name for c in calls], ['bad_json'])
+
+    def test_tool_tag_documentation_remains_plain_text(self):
+        text = '工具调用使用 <tool_use> 标签。'
+        self.assertEqual(_parse_text_tool_calls(text), ([], text))
+
+    def test_loop_repairs_malformed_call_then_executes_once(self):
+        from types import SimpleNamespace
+        from agent_loop import BaseHandler, StepOutcome, agent_runner_loop, exhaust
+        replies = iter([
+            '<tool_use>{"name":"code_run","arguments":{"script":"print(1)"}</tool_use>',
+            '<tool_use>{"name":"code_run","arguments":{"script":"print(1)"}}</tool_use>',
+            '完成',
+        ])
+        class Client:
+            def chat(self, **kwargs):
+                if False: yield
+                return object.__new__(ToolClient)._parse_mixed_response(next(replies))
+        class Handler(BaseHandler):
+            parent = SimpleNamespace(task_dir='')
+            _done_hooks = []
+            calls = 0
+            def do_code_run(self, args, response):
+                self.calls += 1
+                return StepOutcome('executed', next_prompt='verify result')
+            def do_no_tool(self, args, response):
+                return StepOutcome(response.content)
+        handler = Handler()
+        outcome = exhaust(agent_runner_loop(Client(), '', 'test', handler, [], max_turns=3))
+        self.assertEqual(handler.calls, 1)
+        self.assertEqual(outcome, {'result': 'CURRENT_TASK_DONE', 'data': '完成'})
 
 
 class VisionResponseTest(unittest.TestCase):

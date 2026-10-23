@@ -952,13 +952,18 @@ def _parse_text_tool_calls(content):
             return tcs, content[:idx].strip()
         except: pass
     # try XML tags: <tool_call>{"name":..., "arguments":...}</tool_call>
-    _xp = r"<(?:tool_use|tool_call)>((?:(?!<(?:tool_use|tool_call)>).){15,}?)(?:</(?:tool_use|tool_call)>|(?=\r?\n[ \t]*```[ \t]*(?:\r?\n|$)))"
+    _xp = r"<(?:tool_use|tool_call)>\s*(\{(?:(?!<(?:tool_use|tool_call)>).)*?)(?:</(?:tool_use|tool_call)>|(?=\r?\n[ \t]*```[ \t]*(?:\r?\n|$))|$)"
     for s in re.findall(_xp, content, re.DOTALL):
         try:
             d = tryparse(s.strip()); name = d.get('name')
             args = _tool_arguments(d)
-            if name: tcs.append(MockToolCall(name, args))
-        except: pass
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError('Tool name must be a nonempty string')
+            tcs.append(MockToolCall(name, args))
+        except (ValueError, TypeError, AttributeError):
+            # Never execute a partial batch: a repair could repeat its side effects.
+            error = 'Malformed tool-call JSON. No tools in this reply were executed. Resend the complete calls with valid JSON objects and closing braces.'
+            return [MockToolCall('bad_json', {'msg': error})], content
     if tcs: content = re.sub(_xp, "", content, flags=re.DOTALL).strip()
     return tcs, content
 
