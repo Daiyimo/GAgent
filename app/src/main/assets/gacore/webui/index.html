@@ -435,6 +435,10 @@ try{var _th=JSON.parse(localStorage.getItem('ga.theme')||'"system"');
       </div>
       <div class="secLbl"><span data-i18n="configured">已配置服务商</span></div>
       <div id="provList"></div>
+      <button class="addProv" onclick="addProviderPreset()" style="color:var(--acc)">
+        <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2 L4.5 13.5 H11 L10 22 L19.5 9.5 H13 Z"/></svg>
+        <span data-i18n="stepfunQuickStart">用 StepFun 快速开始</span>
+      </button>
       <button class="addProv" onclick="editProvider(null)">
         <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         <span data-i18n="addProvider">添加服务商</span>
@@ -540,10 +544,10 @@ try{var _th=JSON.parse(localStorage.getItem('ga.theme')||'"system"');
     </div>
     <!-- editor panel -->
     <div id="provEditPanel" style="display:none">
-      <div class="secLbl"><span data-i18n="provType">供应商类型</span></div>
-      <div class="seg" id="pvSeg">
-        <button data-t="oai" class="on" onclick="setProvType('oai')" data-i18n="oaiCompat">OpenAI 兼容</button>
-        <button data-t="claude" onclick="setProvType('claude')" data-i18n="claudeCompat">Anthropic 兼容</button>
+      <div class="secLbl"><span data-i18n="endpointPick">StepFun 端点(二选一)</span></div>
+      <div class="seg" id="pvEpSeg">
+        <button type="button" onclick="pickStepEndpoint(0)" data-i18n="epPlan">Plan 推理 (step_plan)</button>
+        <button type="button" onclick="pickStepEndpoint(1)" data-i18n="epStd">标准 (/v1)</button>
       </div>
       <div class="secLbl"><span data-i18n="manage">管理</span></div>
       <div class="card">
@@ -554,7 +558,7 @@ try{var _th=JSON.parse(localStorage.getItem('ga.theme')||'"system"');
       <div class="field"><label for="pvName" data-i18n="name">名称</label><div class="inputwrap"><input id="pvName" placeholder="gpt-native" autocomplete="off" autocapitalize="off"></div></div>
       <div class="field"><label for="pvKey" data-i18n="apiKey">API Key</label><div class="inputwrap"><input id="pvKey" type="password" placeholder="sk-…" autocomplete="off" autocapitalize="off" spellcheck="false" oninput="updateModelCount()">
         <button class="eye" id="pvEye" onclick="toggleEye()" aria-label="show/hide key"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></button></div></div>
-      <div class="field"><label for="pvBase" data-i18n="apiBase">API Base URL</label><div class="inputwrap"><input id="pvBase" placeholder="https://api.openai.com/v1" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url" oninput="updateModelCount()"></div></div>
+      <div class="field"><label for="pvBase" data-i18n="apiBase">API Base URL</label><div class="inputwrap"><input id="pvBase" placeholder="https://api.openai.com/v1" list="pvBasePresets" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url" oninput="updateModelCount()"><datalist id="pvBasePresets"><option value="https://api.stepfun.com/step_plan/v1">StepFun Plan</option><option value="https://api.stepfun.com/v1">StepFun</option></datalist></div></div>
       <div class="field"><label for="pvModel" data-i18n="defaultModelId">默认模型 ID</label><div class="inputwrap"><input id="pvModel" placeholder="model-id" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="pvModelHint"></div>
         <p class="hint" id="pvModelHint" style="margin-top:7px" data-i18n="modelIdHint">填入服务商提供的完整模型名即可保存，无需先获取模型列表。</p></div>
       <div class="field"><label for="pvProxy" data-i18n="proxyOpt">代理 Proxy（可空）</label><div class="inputwrap"><input id="pvProxy" placeholder="http://127.0.0.1:10809" autocomplete="off" autocapitalize="off" spellcheck="false" inputmode="url"></div>

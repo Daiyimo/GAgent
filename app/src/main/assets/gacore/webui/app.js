@@ -3255,7 +3255,7 @@ function editProvider(id){GAT.emit('view_enter',{view:'provider_edit',edit:!!id}
   $('pvConnTimeout').value=p&&p.timeout!=null?p.timeout:'';$('pvUA').value=p?uaToVer(p.user_agent):'';   // 高级设置回显(需求#1)
   $('pvEnable').classList.toggle('on',p?p.enabled!==false:true);$('pvEnable').setAttribute('aria-checked',(p?p.enabled!==false:true));
   $('pvResp').classList.toggle('on',!!(p&&p.api_mode==='responses'));$('pvFakeCC').classList.toggle('on',p?!!p.fake_cc:false);   // 新建默认开启透传CC(命中 getoken GA 指纹; 仅 claude 生效)
-  updateModelCount();updateUARow();
+  updateModelCount();updateUARow();syncEndpointSeg();
   $('setv').classList.add('on');$('setv').setAttribute('aria-hidden','false')}
 function uaToVer(ua){const m=/claude-cli\/([0-9][0-9.]*)/.exec(ua||'');return m?m[1]:''}                 // 'claude-cli/2.1.85 (external, cli)' → '2.1.85'
 function verToUA(v){v=(v||'').trim();return v?('claude-cli/'+v+' (external, cli)'):''}                    // 版本号 → 透传 CC 的完整 UA(llmcore native_ua 同款格式)
@@ -3264,6 +3264,10 @@ function setProvType(t){provType=t;document.querySelectorAll('#pvSeg button').fo
   if($('setvBrand').style.display!=='none')$('setvBrand').innerHTML=provGlyph({type:t,name:$('pvName').value.trim(),model:(editing&&editing.model)||''});
   const oai=t==='oai';$('rowResp').style.display=oai?'flex':'none';$('rowFakeCC').style.display=oai?'none':'flex';
   $('pvName').placeholder=oai?'gpt-native':'claude-native';$('pvBase').placeholder=oai?'https://api.openai.com/v1':'https://api.anthropic.com';updateUARow()}
+const STEP_ENDPOINTS=['https://api.stepfun.com/step_plan/v1','https://api.stepfun.com/v1'];   // StepFun 官方 OpenAI 兼容双端点: Plan 推理专属路径 + 标准路径; 只填表单, 不内置/不上传任何 key
+function pickStepEndpoint(i){if(runLocked())return;$('pvBase').value=STEP_ENDPOINTS[i];if(!$('pvName').value.trim())$('pvName').value='StepFun';setProvType('oai');syncEndpointSeg();updateModelCount()}
+function syncEndpointSeg(){const b=$('pvBase').value.trim();document.querySelectorAll('#pvEpSeg button').forEach((el,i)=>el.classList.toggle('on',b===STEP_ENDPOINTS[i]))}   // 高亮=Base URL 命中的端点; 自定义 URL 则全不亮
+function addProviderPreset(){editProvider(null);pickStepEndpoint(0)}   // 欢迎页快速开始: 开空白编辑器并选 StepFun Plan 端点, 用户只差粘 key
 function toggleSw(e){const on=e.classList.toggle('on');e.setAttribute('aria-checked',on?'true':'false')}
 function toggleEye(){const i=$('pvKey'),on=i.type==='password';i.type=on?'text':'password';$('pvEye').style.color=on?'var(--acc)':''}
 function saveProvider(){if(runLocked())return;const v=id=>$(id).value.trim();
