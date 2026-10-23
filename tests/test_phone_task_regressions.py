@@ -143,6 +143,12 @@ assert ns['ask_vision']('image', 'read', timeout=15) == ('image', 'read', {'time
 
 
 class VisualObservationTest(unittest.TestCase):
+    def test_look_rejects_prompts_before_capturing_a_frame(self):
+        with patch.object(droid, 'shot') as shot:
+            with self.assertRaisesRegex(ValueError, 'ask_vision'):
+                droid.look('read the first two cards')
+        shot.assert_not_called()
+
     def test_icon_labels_are_safe_to_filter_as_text(self):
         import numpy as np
         frame = np.zeros((100, 100, 3), dtype=np.uint8)

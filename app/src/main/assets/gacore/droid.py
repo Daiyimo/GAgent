@@ -442,6 +442,12 @@ def look(conf=0.25, path=None, roi=None, cache=True):
          就传 roi, 耗时按面积成比例下降(整屏 OCR 是主要成本, 自绘 App 整屏 look 约 6-8s).
     cache: 屏幕与上一次 look 几乎没变(缩略图差异 <0.3%) 且 roi 相同 → 直接返回上次结果(附 'cached': True), 不再跑模型. 刚做完动作想确认变化时它就是证据.
     path 给出则同时把截图存文件(给用户看/复核). dump 为空(自绘/SurfaceView/敏感置空)时用这个, 不要先 print 整个 ndarray."""
+    try:
+        conf = float(conf)
+    except (TypeError, ValueError):
+        raise ValueError('look(conf=0.25, ...) 返回检测框，不接受问题；看图问答请用 ask_vision(droid.shot(), "问题")') from None
+    if not 0 <= conf <= 1:
+        raise ValueError('look conf must be between 0 and 1')
     import cv2
     import numpy as np
     img = shot()

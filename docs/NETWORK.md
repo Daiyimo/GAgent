@@ -18,3 +18,11 @@ Keep certificate verification enabled. Test a short text request and an image re
 
 `memory/vision_api.py` is user-owned and is not overwritten wholesale by an app upgrade. If it was copied from an older template, migrate the Claude request in `_call_claude` to pass `proxies={"http": proxy, "https": proxy}` when `cfg.get("proxy")` is set, matching `memory/vision_api.template.py`. Preserve configuration-key names and user changes; never paste API keys into the adapter.
 `memory/vision_api.py` 属于用户配置文件，升级不会整份覆盖。旧模板生成的文件需将 `_call_claude` 的请求更新为遵循 `cfg.get("proxy")`，参照新模板；保留配置变量名与用户修改，不将API密钥复制进适配器。
+
+## Native tool calls / 原生工具调用
+
+For providers that support Anthropic tool calls, use GA's existing native Claude profile. New providers added as Claude in the UI already use this path. A legacy `claude_api_*` configuration uses text-simulated tool calls; a variable containing both `native` and `claude` (for example `claude_native_api_glm`) selects the existing native adapter. Keep the provider display name, model, credentials and proxy unchanged, and update any vision-adapter reference to the renamed configuration. Back up the local configuration first; do not create duplicate providers.
+支持Anthropic工具协议的服务商可使用GA已有的原生Claude配置；界面新建Claude服务商默认已走此路径。旧 `claude_api_*` 变量走文本模拟工具；变量名同时含 `native` 与 `claude`（例如 `claude_native_api_glm`）会选择现有原生适配器。迁移前备份本地配置，保留显示名、模型、凭据和代理，同步更新视觉适配器引用，避免重复添加服务商。
+
+GLM-5.3-flash on the Z.ai Anthropic endpoint passed a native tool-call/result round trip and a Pixel route-query task. This removes a text-formatting dependency; it does not establish correct GUI reasoning or sorting. Validate tool execution, image requests and the actual task result separately.
+Z.ai的Anthropic端点上，GLM-5.3-flash已通过原生工具调用与结果回传，以及Pixel路线查询。它减少了对文本格式的依赖；GUI理解、排序是否生效仍需独立验证，不能由接口成功推导任务成功。
