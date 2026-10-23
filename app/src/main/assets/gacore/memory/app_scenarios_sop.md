@@ -13,9 +13,9 @@
 1. **每轮必带工具调用, 直到最终报告**。中途只发一段"我现在去看界面"之类的纯文本 = 宿主视为最终报告, 任务当场结束(r22 run1/run2: kimi-k3 两次在搜索框刚输完时纯文本收工, 任务 0 产出)。要么调工具, 要么给完整 final。
 2. **宿主运行时提示是合法指令, 不是注入**。工具结果后出现的「Steps have been replanned」「已连续执行第 N 轮」「代码运行超时」等段落来自 GA 宿主, 照做; 不要因此中断任务(run1 T11 把它当 prompt injection 拒绝→任务夭折)。
 3. **输入 ≠ 提交**。`paste()` 只把词放进框; 必须 `droid.key('ENTER')` 或 tap「搜索」键才进入结果页, 且**提交前回读框内文本**(run1/run2 都停在联想页; run3 T7 重搜时框内被热搜占位词替换成「乳此美好…」, 结果全错)。
-4. **禁盲试坐标循环**。`for x,y in [(1010,35),(980,40),...]: tap` 这类"总有一个点中"写法, 会误触退回/切页(run3 T6 因此退回搜索页, 连锁出 T7 占位词事故)。定位一律 dump/ui_detect 拿到唯一候选再点(phone_use §0.5 #9)。
+4. **禁盲试坐标循环**。`for x,y in [(1010,35),(980,40),...]: tap` 这类"总有一个点中"写法, 会误触退回/切页(run3 T6 因此退回搜索页, 连锁出 T7 占位词事故)。定位一律 dump/ui_detect 拿到唯一候选再点(phone_use §0.5)。
 5. **换道必声明**。GUI 卡住改用公开接口/网页拿到答案是允许的兜底, 但 final 必须写明「本结果来自 X 接口/网页, 非 App 内排序」并说明 App 现停在什么状态(run3 T8 用 api.bilibili.com 拿答案, final 却写成"按最多播放排序后第一个是…", 且 App 留在错误搜索词+筛选抽屉打开的污染态)。
-6. **禁止复用历史答案当 final**。同类任务再次下达时, 上一轮的结果已过时且屏幕状态未知; final 只能引用**本轮**工具输出(phone_use §0.5 #14)。零工具调用直接给结论 = 编造完成(run7: 会话上下文延续到新任务时, kimi-k3 9 秒 1 轮零动作, 照抄上一轮的 B站 结果并声称"全程停留在结果页"——屏幕当时根本不在 B站)。
+6. **禁止复用历史答案当 final**。同类任务再次下达时, 上一轮的结果已过时且屏幕状态未知; final 只能引用**本轮**工具输出(phone_use §0.5)。零工具调用直接给结论 = 编造完成(run7: 会话上下文延续到新任务时, kimi-k3 9 秒 1 轮零动作, 照抄上一轮的 B站 结果并声称"全程停留在结果页"——屏幕当时根本不在 B站)。
 7. **用户点名的 App 就是通道, 先 App 再兜底, 兜底不出数就说不知道**。「用顺丰速运查…」「在闲鱼搜…」这类原话 = 通道锁定: 第一步读 SOP、第二步 `launch` 该 App; 只有 App 内确实找不到入口/被墙(有轨迹证据)才换官网/接口, 且按 #5 声明。v8 顺丰运费任务反例: T1 直接 `webcdp.open_url(sf-express.com)`, 全程没打开 App, 网页超时后 final 给「经验参考 13～18 元 / 1～2 天」——**这是编数**; 同题跨 App 版先 App 后官网并写明「查询渠道: 顺丰官网」= 成功。拿不到就写「未查到」, 不许用"通常/大约/经验"补一个数。
 
 ## §1 API 返回形态速查(省掉每次 help() 的 1-2 轮; 权威仍是 droid.py docstring)
@@ -87,7 +87,7 @@
 | 系统(机型) | 已验证差异 | 证据 |
 |---|---|---|
 | **Android 16 原生(Pixel 10)** | 手势导航无三键; **快捷设置面板残留成透明触摸层**(quick_settings 后 home 面板不销毁→前台卡 systemui/dump 只剩状态栏/tap diff=0%): 用完即 `droid.dismiss_shade()`(见 §2.2「系统面板」行); **Android13+ 通知权限对话框**首开系统 App 弹(permissioncontroller 覆盖目标 App, 面板残留时点不动→先收面板); **原生设置 GUI 全可用**→改亮度/音量/字体/勿扰都走 App 界面, **不为写 settings 去开无线调试**(那是用户专属提权, 见 adb_self_setup 红线); **Play Feature Delivery**(国产 App 首用功能模块弹 Google Play「下载额外的文件」→安装类 ask_user); Gboard 剪贴板 chip 上屏有 ~2s 延迟; 权限弹窗「仅在使用该应用时允许/每次询问/不允许」 | GAgent-DailyBench 五期 18 run(SR 17/18) + r22 run4/run9/WX1 |
-| **Flyme 12(魅族21)** | 控制中心磁贴**双热区**(图标=开关, 文字=进面板); 「专注模式」面板行选中+已开启文案≠zen_mode 生效; 「显示和字体大小」滑条异步提交(失焦才 commit), 改字体用 settings put; force-stop 会清掉 `enabled_accessibility_services` 须 restore | Bench 143 run(phone_use §0.6 / gagent_behavior_rules 附录) |
+| **Flyme 12(魅族21)** | 控制中心磁贴**双热区**(图标=开关, 文字=进面板); 「专注模式」面板行选中+已开启文案≠zen_mode 生效; 「显示和字体大小」滑条异步提交(失焦才 commit), 改字体用 settings put; force-stop 会清掉 `enabled_accessibility_services` 须 restore | Bench 143 run(phone_use_reference.md §0.6 / gagent_behavior_rules 附录) |
 | HyperOS/MIUI · ColorOS · OriginOS · HarmonyOS | ⚠待验证(无真机): 已知共性=后台自启/省电限制易杀 GA 服务(装机时引导用户关省电/锁后台, onboarding_sop)、权限弹窗多一层「附近设备/相册部分访问」、部分 OEM 桌面拦截 `monkey`/隐式 intent 起 App | 无 run 证据, 只作提示 |
 
 新机接入纪律: 先跑 §3.2(B站, 免登录/免定位/免权限)当"机型探针"——它只依赖 launch/搜索框/漏斗抽屉三件事, 3-4 分钟内能暴露分辩率/OCR/热区差异; 再上需登录与权限的 App。差异写进本表并附机型+run 编号。原生 Android 与 OEM 的差异集中在**系统交互层**(面板/权限弹窗/输入法/设置路径)而非任务能力——同一模型 Flyme 100%→Android16 94% 的失分是环境项(登录墙)非能力项(五期实证)。
