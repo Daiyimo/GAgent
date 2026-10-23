@@ -67,6 +67,14 @@ not prove a separate data migration was performed.
 
 旧版、开源正式包与调试包数据独立。签名不匹配先核对来源，保留原安装和数据；不要默认卸载重装。
 
+**Use one active phone controller.** Each installation has its own floating-window
+setting. If two edge handles appear, open the unused installation and turn off
+**Settings → Always-on floating window** there. Keep its app and data; switching
+controllers does not require uninstalling it or revoking its permissions.
+
+**同一时间使用一个手机控制器。** 两版都有独立的悬浮窗开关；若边缘出现两个浮条，
+进入暂不使用的那一版，在「设置」关闭「悬浮窗常开」。保留安装和数据，无需卸载或撤销权限。
+
 ## 2. Configure a model / 配置模型
 
 Open **Settings → Providers & Models → Add provider**:

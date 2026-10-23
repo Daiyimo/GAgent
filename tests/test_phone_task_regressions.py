@@ -97,6 +97,32 @@ class ToolArgumentsTest(unittest.TestCase):
 
 
 class VisionResponseTest(unittest.TestCase):
+    def test_claude_vision_uses_the_configured_output_budget(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('vision_template', CORE / 'memory/vision_api.template.py')
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        cfg = {'apibase': 'https://example.test/anthropic', 'apikey': 'test-placeholder',
+               'model': 'test', 'max_tokens': 4096}
+        with patch.object(module, '_cfg', return_value=cfg), patch.object(module.requests, 'post') as post:
+            post.return_value.json.return_value = {'content': [{'type': 'text', 'text': 'OK'}]}
+            module._call_claude('fakeimage', 'read', 10)
+            self.assertEqual(post.call_args.kwargs['json']['max_tokens'], 4096)
+            module._call_claude('fakeimage', 'read', 10, max_tokens=2048)
+            self.assertEqual(post.call_args.kwargs['json']['max_tokens'], 2048)
+
+    def test_truncated_vision_answer_is_not_a_completed_observation(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('vision_template', CORE / 'memory/vision_api.template.py')
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        cfg = {'apibase': 'https://example.test/anthropic', 'apikey': 'test-placeholder', 'model': 'test'}
+        with patch.object(module, '_cfg', return_value=cfg), patch.object(module.requests, 'post') as post:
+            for content in ([{'type': 'thinking', 'thinking': 'incomplete'}],
+                            [{'type': 'text', 'text': 'The selected option is'}]):
+                with self.subTest(content_type=content[0]['type']):
+                    post.return_value.json.return_value = {'stop_reason': 'max_tokens', 'content': content}
+                    with self.assertRaisesRegex(ValueError, 'truncated'):
+                        module._call_claude('fakeimage', 'read', 10)
+
     def test_openai_vision_accepts_the_same_base_urls_as_text(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location('vision_template', CORE / 'memory/vision_api.template.py')

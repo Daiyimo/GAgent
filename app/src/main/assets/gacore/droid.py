@@ -571,9 +571,10 @@ def _scroll_shot():
         return shot(q=45)
     except Exception:
         return None
-def scroll(direction="up", frac=0.55, dur=260, times=1, verify=True, settle=0.5):
+def scroll(direction="up", frac=0.35, dur=600, times=1, verify=True, settle=0.5):
     """安全滚动: 从本次屏幕尺寸推出居中坐标; 派发时尺寸/旋转必须仍一致, 朝 direction 滚一屏的 frac。
     direction = 手指移动方向: 'up'(看下面内容) | 'down'(看上面) | 'left' | 'right'。
+    默认短距离、低速度，保留相邻观察的内容重叠；需要快速遍历时显式传 frac/dur。
     verify=True: 内容区像素稳态复核 + dump 文本对比(真机实测: Flyme设置/WebView 同窗滚动后 a11y 树会滞后);
     调用方必须检查 scrolled/evidence/uncertain; uncertain=True 表示观察不可用/结论不确定,
     不是已验证未滚动, 不得据此盲目重试。

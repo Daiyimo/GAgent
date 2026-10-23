@@ -78,8 +78,14 @@ def _cfg(key):
     mk = llmcore.mykeys
     return mk[key] if isinstance(mk, dict) else getattr(mk, key)
 
-def _call_claude(b64, prompt, timeout, max_tokens=1024):
+def _call_claude(b64, prompt, timeout, max_tokens=None):
     cfg = _cfg(CLAUDE_CONFIG_KEY)
+    if max_tokens is None:
+        max_tokens = cfg.get('max_tokens')
+    if max_tokens is None:
+        max_tokens = 8192
+    if type(max_tokens) is not int or max_tokens <= 0:
+        raise ValueError('max_tokens must be a positive integer')
     proxy = cfg.get('proxy')
     proxies = {'http': proxy, 'https': proxy} if proxy else None
     payload = {'model': cfg['model'], 'max_tokens': max_tokens, 'messages': [{
@@ -97,8 +103,11 @@ def _call_claude(b64, prompt, timeout, max_tokens=1024):
         timeout=timeout, proxies=proxies
     )
     resp.raise_for_status()
-    text = '\n'.join(b.get('text', '') for b in resp.json().get('content', []) if b.get('type') == 'text')
-    if not text.strip(): raise ValueError('Vision response contains no text; increase max_tokens or disable thinking')
+    data = resp.json()
+    if data.get('stop_reason') == 'max_tokens':
+        raise ValueError(f'Vision response truncated (max_tokens={max_tokens}); increase provider max_tokens')
+    text = '\n'.join(b.get('text', '') for b in data.get('content', []) if b.get('type') == 'text')
+    if not text.strip(): raise ValueError('Vision response contains no text')
     return text
 
 def _call_openai_compat(b64, prompt, timeout, *, apibase, apikey, model, proxy=None):

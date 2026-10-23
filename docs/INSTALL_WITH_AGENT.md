@@ -192,3 +192,14 @@ installation just because its name is similar.
 
 启动器及系统权限中，正式变体显示 **GAgent OSS**，调试变体显示 **GAgent OSS Debug**。
 包名不变；保留原有闭源版本，不替它修改权限。Flyme 的额外入口见安装指南。
+
+When installations coexist, check the owner of each visible overlay before
+diagnosing duplicate windows. Each package can run its own floating service.
+Use one controller for acceptance; within the user's authorized scope, turn off
+the unused app's **Always-on floating window** setting. Preserve its data and
+permissions. Verify only the selected controller's overlay remains after Home,
+during a task and after completion.
+
+并装时先核对每个悬浮窗所属包名：两版各显示一个，与同一服务重复创建窗口是不同故障。
+验收只运行一个控制器；在用户授权范围内关闭闲置版本的「悬浮窗常开」，保留数据和权限。
+回桌面、任务运行中和完成后，分别确认只剩当前测试版本的悬浮窗。
