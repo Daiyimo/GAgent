@@ -270,6 +270,13 @@ try{var _th=JSON.parse(localStorage.getItem('ga.theme')||'"system"');
           <span class="k" data-i18n="adbSelfTitle">无线调试自连</span>
           <span class="v"><span id="adbVal" class="a11yValOff" data-i18n="adbOff">未连接</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>
         </button>
+        <!-- Shizuku 第二条 shell 通道(stepOS 全屏启动用; 与无线调试自连等价, 只是来源不同):
+             未就绪时磁贴角标红点; 点击弹引导面板(装管理器/授权/跳管理器), 状态由 refreshShizuku 刷新(结构仿 adbRow)。 -->
+        <button class="row rowBtn" id="szRow" onclick="openShizukuPanel()">
+          <span class="rowIco ic-graphite"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v6c0 5 3.8 8.4 9 9 5.2-.6 9-4 9-9V7l-9-5z"/><polyline points="9 12 11.5 14.5 15.5 10"/></svg><span class="statDot" id="szDot" hidden></span></span>
+          <span class="k" data-i18n="szTitle">Shizuku 授权</span>
+          <span class="v"><span id="szVal" class="a11yValOff" data-i18n="szOff">未授权</span><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>
+        </button>
         <div class="row sliderRow">
           <div class="sliderTop"><span class="rowIco ic-purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.7S6 8.4 6 13a6 6 0 0 0 12 0c0-4.6-6-10.3-6-10.3z"/></svg></span><span class="k" data-i18n="floatOpacity">悬浮窗透明度</span><span id="opacityVal" class="rngVal"></span></div>
           <input type="range" id="opacityRange" class="rng" min="30" max="100" step="5" data-i18n-aria="floatOpacity" aria-label="悬浮窗透明度" oninput="onOpacityInput(this.value)">

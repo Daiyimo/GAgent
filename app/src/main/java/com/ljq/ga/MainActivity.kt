@@ -410,6 +410,16 @@ class MainActivity : Activity() {
         // 厂商自启动管理页尽力而为(组件名随版本漂移), resolveActivity 预检+runCatching 逐个尝试, 兜底通用页(同 openAdbDevSettings 先例)。
         @JavascriptInterface fun openAppSysSettings(which: String): Boolean = sysBridge.openAppSysSettings(which)
 
+        // ── Shizuku 第二条 shell 通道(stepOS 全屏启动用; 与 self-ADB 等价, 只是来源不同) ──
+        // 状态由前端轮询/首帧读取, 单一真值源全在 Kotlin(实时读 Shizuku binder + 权限), 前端零缓存。
+        @JavascriptInterface fun shizukuStatus(): String = sysBridge.shizukuStatus()
+        // 请求授权(弹系统对话框)。Shizuku 内部要求主线程, 故 runOnUiThread 转入; 结果经回调回推 JS 刷新。
+        @JavascriptInterface fun shizukuRequest() {
+            runOnUiThread { ShizukuShell.requestPermission { webCallbacks.onShizuku() } }
+        }
+        // 跳 Shizuku 管理器(未安装/服务未启动时引导用户去那边操作)。返回是否真的拉起了管理器页面。
+        @JavascriptInterface fun openShizukuManager(): Boolean = sysBridge.openShizukuManager()
+
         // 悬浮窗透明度(0.3~1.0): 存 SharedPreferences, FloatService 显示时读取并设到窗口 alpha。
         @JavascriptInterface fun setFloatOpacity(v: String) {
             val f = (v.toFloatOrNull() ?: 0.9f).coerceIn(0.3f, 1f)

@@ -3678,6 +3678,39 @@ window.gaFloatAnswer=function(ans,cid){      // Float ask panel answer bridge；
   startTask(ans);
 };
 window.gaOnAdb=function(){try{refreshAdb()}catch(e){}};                            // 原生 onResume 回推; 无参, JS 侧自己重读 adbSelfStatus, 单一真值源
+/* ════════════ Shizuku 第二条 shell 通道(stepOS 全屏启动用; 与无线调试自连等价, 只是来源不同) ════════════
+   状态来源: GA.shizukuStatus()(原生实时读 Shizuku binder + API_V23 权限), 前端零缓存零镜像。
+   授权结果经原生 gaOnShizuku() 回推刷新; 引导面板区分「未装管理器/装了未授权/已就绪」三态,
+   每态至多一个主 CTA(结构仿 a11yPersistPage 的英雄卡, 但轻量——只是一个面板不成页)。*/
+function szStatus(){try{return JSON.parse(GA.shizukuStatus())}catch(e){return null}}
+function szOn(){const s=szStatus();return !!(s&&s.ready)}                        // 桥缺失/解析异常时视为已就绪, 不误报红点
+function refreshShizuku(){
+  const on=szOn();
+  const dot=$('szDot');if(dot)dot.hidden=on;
+  refreshGearDot();
+  const v=$('szVal');if(v){v.textContent=t(on?'szOn':'szOff');v.className=on?'a11yValOn':'a11yValOff'}
+}
+window.gaOnShizuku=function(){try{refreshShizuku()}catch(e){}};                  // 原生授权结果回推; 无参, JS 侧重读 shizukuStatus
+window.openShizukuPanel=function(){
+  const st=szStatus();
+  if(!st){toast(t('szBridgeMissing'));return}
+  const installed=!!st.installed, ready=!!st.ready;
+  const _e=s=>String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  let body='',cta='';
+  if(ready){
+    body='<p class="hint">'+_e(t('szReadyHint'))+'</p>';
+  }else if(!installed){
+    body='<p class="hint">'+_e(t('szNotInstalledHint'))+'</p>';
+    cta=btn('szInstallBtn','szInstall',true);
+  }else{
+    body='<p class="hint">'+_e(t('szNotGrantedHint'))+'</p>';
+    cta=btn('szGrantBtn','szGrant',true)+btn('szOpenMgrBtn','szOpenMgr',false);
+  }
+  gaModal('<h4>'+_e(t('szTitle'))+'</h4>'+body+(cta?'<div class="modalActs">'+cta+'</div>':''),t('szCancel'));
+  const gi=$('szGrantBtn');if(gi)gi.onclick=()=>{closeModal();try{GA.shizukuRequest()}catch(e){toast(t('szBridgeMissing'))}};
+  const oi=$('szOpenMgrBtn');if(oi)oi.onclick=()=>{if(!GA.openShizukuManager())toast(t('szMgrNotFound'))};
+  const ii=$('szInstallBtn');if(ii)ii.onclick=()=>{closeModal();toast(t('szInstallHint'))};
+};
 /* 点设置行「无线调试自连」→ 不再弹模态/深链系统页(旧版=开屏打扰), 而是回对话页开一个干净新会话,
    把引导 prompt 预填进输入框(复用编辑重发的填充范式), 用户选模型后自行发送 → GA 走 adb_self_setup SOP
    (droid.adb_pair/adb_connect)协助完成。守单会话不变量: 在飞任务不打断, 仅提示。 */
@@ -3851,5 +3884,6 @@ window.apOpenSys=function(which){let ok=false;try{ok=GA.openAppSysSettings(which
   refreshModelUI();
   try{refreshA11y()}catch(e){}                      // 无障碍: 首帧刷新横幅/红点/状态
   try{refreshAdb()}catch(e){}                       // 无线调试自连: 首帧刷新设置行状态
+  try{refreshShizuku()}catch(e){}                   // Shizuku 第二条 shell 通道: 首帧刷新设置行状态
   try{setTimeout(maybeAutoCheck,3000)}catch(e){}   // 启动后台检查更新(节流 6h): 有非跳过新版才弹窗
 })();
