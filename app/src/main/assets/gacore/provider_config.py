@@ -132,7 +132,7 @@ def _format_mykey_block(var, cfg):
     return out
 
 
-_UI_MANAGED_OPT = ('fake_cc_system_prompt', 'user_agent', 'max_retries', 'read_timeout', 'timeout', 'connect_timeout', 'max_tokens', 'api_mode', 'proxy', 'type', 'enabled', 'label')   # 编辑器完全掌管的可选字段: 重存时缺失=用户关掉/清空 → 必须从块中删除(否则透传CC/UA/超时等"关不掉")。connect_timeout/type 是死键(编辑器只写 live 的 timeout; type 只决定 var 名不落块), 列入→编辑旧块时顺带清理。enabled: 前端仅在停用时发 False; 重新启用=载荷缺失→删残留行, 缺省即启用
+_UI_MANAGED_OPT = ('fake_cc_system_prompt', 'user_agent', 'max_retries', 'read_timeout', 'timeout', 'connect_timeout', 'max_tokens', 'api_mode', 'proxy', 'type', 'enabled', 'label', 'reasoning_effort')   # 编辑器完全掌管的可选字段: 重存时缺失=用户关掉/清空 → 必须从块中删除(否则透传CC/UA/超时等"关不掉")。connect_timeout/type 是死键(编辑器只写 live 的 timeout; type 只决定 var 名不落块), 列入→编辑旧块时顺带清理。enabled: 前端仅在停用时发 False; 重新启用=载荷缺失→删残留行, 缺省即启用; reasoning_effort: 推理强度选「默认」时载荷不带该键, 必须删行, 否则界面显示默认而后端仍沿用旧档位
 
 
 def _patch_block_lines(lines, block, cfg, drop_absent=None):
