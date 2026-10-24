@@ -119,3 +119,45 @@ def test_pairing_is_not_replaced_by_a_late_keeper_connect(monkeypatch, tmp_path)
         keeper.cancel()
         return seen
     assert asyncio.run(scenario()) == (True, True, False)
+
+
+def test_unpair_during_pairing_leaves_no_room_and_no_reconnect(monkeypatch, tmp_path):
+    import json
+    module, state = _race_link(monkeypatch, tmp_path)
+    Path(module.ROOMS).write_text('{}')                  # not paired yet
+    exchanged = asyncio.Event()
+    async def connect_code(url, code, name, rooms_file, access_key):
+        await exchanged.wait()                            # short-code exchange still in flight
+        Path(rooms_file).write_text(json.dumps({name: {'signal_url': url, 'room': 'new-room'}}))
+        return state['new']
+    monkeypatch.setattr(sys.modules['p2p_ws_client'], 'connect_code', connect_code)
+    async def scenario():
+        keeper = asyncio.create_task(module._keeper())
+        pairing = asyncio.create_task(module._pair('123456789'))
+        await asyncio.sleep(0.01)
+        await module._unpair()                            # user unlinks while pairing is pending
+        exchanged.set()
+        await asyncio.sleep(0.05)
+        seen = (module._sock, module._paired(), state['started'].is_set(), pairing.done())
+        keeper.cancel()
+        return seen
+    assert asyncio.run(scenario()) == (None, False, False, True)
+
+
+def test_keeper_does_not_reconnect_while_a_pairing_is_in_flight(monkeypatch, tmp_path):
+    module, state = _race_link(monkeypatch, tmp_path)
+    hold = asyncio.Event()
+    async def connect_code(url, code, name, rooms_file, access_key):
+        await hold.wait()
+        return state['new']
+    monkeypatch.setattr(sys.modules['p2p_ws_client'], 'connect_code', connect_code)
+    async def scenario():
+        pairing = asyncio.create_task(module._pair('123456789'))
+        await asyncio.sleep(0.01)
+        keeper = asyncio.create_task(module._keeper())    # saved old room exists, socket is None
+        await asyncio.sleep(0.05)
+        started = state['started'].is_set()
+        hold.set(); await pairing
+        keeper.cancel()
+        return started
+    assert asyncio.run(scenario()) is False

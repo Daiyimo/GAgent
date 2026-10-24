@@ -36,6 +36,7 @@ _resume_at = [float('-inf')]
 _resume_busy = [False]
 _gen = [0]            # 配对/解除各 +1: 在飞的 keeper 建连完成时代际不符即弃, 不会在解除后连上或覆盖新配对
 _pairing = [False]    # 配对进行中 keeper 不建连(否则旧房间连接会在新配对前后抢占 _sock)
+_pair_task = [None]   # 在飞的配对: 解除/新配对先取消并等它结束, 短码兑换完成后的 save_room 才不会把房间写回
 
 
 def _paired():
@@ -223,6 +224,8 @@ async def _pair(code):
     config = service_config.pclink_config()
     if not config:
         raise ValueError('Configure PC Link in Settings > Optional modules first')
+    await _cancel_pairing()          # 最新一次配对意图生效
+    _pair_task[0] = asyncio.current_task()
     _gen[0] += 1
     gen, _pairing[0] = _gen[0], True
     try:
@@ -232,15 +235,23 @@ async def _pair(code):
         if gen != _gen[0] or service_config.pclink_config() != config:
             await s.close()
             raise ValueError('Pairing superseded or relay configuration changed during pairing')
-        if _sock is not None:
-            await _drop(_sock)
-        _attach(s, config)
+        _attach(s, config)               # keeper 不在配对期间建连(_pairing), 此时 _sock 必为空
     finally:
         if gen == _gen[0]:
             _pairing[0] = False
+        if _pair_task[0] is asyncio.current_task():
+            _pair_task[0] = None
+
+
+async def _cancel_pairing():
+    t = _pair_task[0]
+    if t is not None and t is not asyncio.current_task() and not t.done():
+        t.cancel()
+        await asyncio.gather(t, return_exceptions=True)
 
 
 async def _unpair():
+    await _cancel_pairing()
     _gen[0] += 1
     _pairing[0] = False
     _forget_room()                  # 先删房间再断线: 断线唤醒 keeper 时它已看不到可重连的配对
