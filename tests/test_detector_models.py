@@ -62,7 +62,7 @@ def _detector_module(monkeypatch):
 
 def test_detections_are_restored_into_the_observed_image(monkeypatch):
     lite = _detector_module(monkeypatch)
-    # 1080x2340 portrait → r=640/2340, x padded by 32 (letterbox), y unpadded.
+    # Portrait 1080x2340 → r=640/2340; a synthetic x padding of 32 exercises the left offset, y is unpadded.
     r, left, top, w, h = 640 / 2340, 32, 0, 1080, 2340
     rows = [[32 + 10 * r, 0 + 20 * r, 32 + 110 * r, 0 + 220 * r, 0.9, 8],   # inside
             [20, -6, 600, 300, 0.8, 11],                                      # crosses top/left padding

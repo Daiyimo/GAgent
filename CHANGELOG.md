@@ -19,8 +19,9 @@ publicly released. Exact artifacts and acceptance belong to their release record
   one level, and back on the first-run consent leaves the app instead of dismissing
   it (which left a blank window). Settings sub-pages open at the top and restore the
   parent position on back, with an interruptible enter that is instant under reduced
-  motion; fading scrims no longer swallow taps. 系统返回只关最上层；首启同意页不再被返回关掉；
-  设置子页还原父页位置，遵守减少动态效果。
+  motion; fading scrims no longer swallow taps. Scrims use one theme token (darker in
+  dark mode) and a re-opened lower sheet is drawn on top. 系统返回只关最上层；首启同意页不再被返回关掉；
+  设置子页还原父页位置，遵守减少动态效果；遮罩改用主题色值，暗色更深。
 - Streaming voice checks its configuration before asking for the microphone and
   opens the voice settings when unset. 语音未配置时不再先申请麦克风。
 - A local bus start failure no longer stops the app from opening, and crash capture

@@ -12,8 +12,10 @@ STUB = '''
       c==='/detector.status'?'{"ok":true,"installed":false,"bytes":0}':c.startsWith('/kv.get ')?'':'{}'
   },{get:(t,k)=>t[k]||(()=> '{}')});
 '''
-# Layers that are logically closed must not intercept a tap at the viewport centre.
-HIT = '''()=>{const e=document.elementFromPoint(innerWidth/2,innerHeight/2);return e?(e.id||e.className||e.tagName):''}'''
+# Which registered layer (if any) receives a tap at the viewport centre.
+HIT = '''()=>{const e=document.elementFromPoint(innerWidth/2,innerHeight/2);
+  const l=e&&e.closest('#setv,#modelv,#sheetMask,.sheet,#mask,#drawer,#modalMask,#detectorDialog,#pcSheetWrap');return l?(l.id||l.className):''}'''
+PANEL_ANIMATIONS = "document.getAnimations().filter(a=>a.effect&&a.effect.target&&/Panel$/.test(a.effect.target.id)).length"
 
 
 def open_page(engine, *, reduced=False, agree=True):
@@ -69,9 +71,10 @@ def test_rapid_back_steps_down_one_layer_at_a_time(reduced):
         assert page.locator('#detectorDialog').count() == 0
         assert page.evaluate('setStack.map(x=>x.panel)') == ['homePanel', 'dataPanel']
         assert page.evaluate('[gaOnBack(),gaOnBack(),gaOnBack()]') == [True, True, False]
+        assert page.evaluate(HIT) == ''             # settings is still sliding out, yet taps reach the page beneath
         page.wait_for_timeout(450)
-        assert page.evaluate(HIT) not in ('setv', 'sheetMask', 'mask', 'modalMask')
-        assert page.evaluate("[...document.querySelectorAll('[id$=Panel]')].filter(e=>e.style.transform||e.style.opacity).length") == 0
+        assert page.evaluate(HIT) == ''
+        assert page.evaluate(PANEL_ANIMATIONS) == 0
         assert not errors
         browser.close()
 
@@ -125,6 +128,18 @@ def test_interrupted_settings_navigation_settles_on_the_last_request():
         shown = page.evaluate("['homePanel','dataPanel','statsPanel'].filter(id=>getComputedStyle(document.getElementById(id)).display!=='none')")
         assert shown == ['statsPanel']
         assert page.evaluate("getComputedStyle(document.getElementById('setv')).transform") in ('none', 'matrix(1, 0, 0, 1, 0, 0)')
-        assert page.evaluate('document.getElementById("statsPanel").style.transform') == ''
+        assert page.evaluate(PANEL_ANIMATIONS) == 0   # interrupted enters were cancelled; the last one finished without fill
+        assert not errors
+        browser.close()
+
+
+def test_reopened_lower_sheet_is_drawn_on_top():
+    with sync_playwright() as engine:
+        browser, page, errors = open_page(engine)
+        page.evaluate("openSheet('themeSheet');openSheet('modelSheet');openSheet('themeSheet')")
+        z = page.evaluate("['themeSheet','modelSheet'].map(id=>+getComputedStyle(document.getElementById(id)).zIndex)")
+        assert z[0] > z[1]
+        page.evaluate('gaOnBack()')
+        assert page.evaluate("[...document.querySelectorAll('.sheet.on')].map(s=>s.id)") == ['modelSheet']
         assert not errors
         browser.close()

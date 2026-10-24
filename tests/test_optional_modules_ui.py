@@ -183,5 +183,10 @@ def test_unconfigured_voice_opens_settings_without_requesting_microphone():
         expect(page.locator('#int_voice_url')).to_be_in_viewport()
         expect(page.locator('#toast')).to_contain_text('Optional modules')
         assert page.evaluate('micRequests') == 0
+        page.evaluate('closeSettings();PCLINK.openView()')   # the PC view (above settings) has its own voice key
+        page.locator('#pcVoiceBtn').click()
+        expect(page.locator('#integrationsPanel')).to_be_in_viewport()
+        assert page.evaluate("document.getElementById('pcView').classList.contains('on')") is False
+        assert page.evaluate('micRequests') == 0
         assert not errors
         browser.close()

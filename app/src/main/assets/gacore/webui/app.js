@@ -2398,9 +2398,10 @@ function testConnection(){const tb=$('setvTest');if(tb.classList.contains('spin'
     GAT.emit('key_test',{ok:!!res.ok,cat:res.ok?null:GAT.errCat(res.error),msg:res.ok?null:GAT.errMsg(res.error),type:cfg.type,where:'editor'}); // key 验证结果(脱敏)
     toast(res.ok?(t('t_connOk')+(res.models?res.models.length:0)):(t('t_connFail')+(res.error||'?')))})}
 let _sheets=[];   // 打开顺序, 栈顶=最上层 sheet
-function openSheet(id){_sheets=_sheets.filter(x=>x!==id).concat(id);$('sheetMask').classList.add('on');$(id).classList.add('on')}
-function closeSheets(){_sheets=[];$('sheetMask').classList.remove('on');document.querySelectorAll('.sheet').forEach(s=>s.classList.remove('on'))}
-function closeTopSheet(){const id=_sheets.pop();if(id)$(id).classList.remove('on');if(!_sheets.length)closeSheets()}   // 返回/遮罩/foBack: 只退一层
+function _sheetZ(){_sheets.forEach((x,i)=>{$(x).style.zIndex=i?String(71+i):''})}   // 视觉层序=栈序(同 z 时 DOM 顺序不可靠)
+function openSheet(id){_sheets=_sheets.filter(x=>x!==id).concat(id);_sheetZ();$('sheetMask').classList.add('on');$(id).classList.add('on')}
+function closeSheets(){_sheets.forEach(x=>{$(x).style.zIndex=''});_sheets=[];$('sheetMask').classList.remove('on');document.querySelectorAll('.sheet').forEach(s=>s.classList.remove('on'))}
+function closeTopSheet(){const id=_sheets.pop();if(id){$(id).classList.remove('on');$(id).style.zIndex=''}if(!_sheets.length)closeSheets()}   // 返回/遮罩/foBack: 只退一层
 
 let deviceState={current:null,devices:[]};
 function deviceName(d){return (d&&(d.displayName||d.hostname||d.deviceId))||'未命名设备'}
@@ -2748,7 +2749,9 @@ function setNav(panel,title,key){   // key=可选 i18n 键, 切语言时据此�
 function setvBack(){if(setStack.length>1){setStack.pop();const top=setStack[setStack.length-1];_setShow(top.panel,top.title);
   const body=_setBody();if(body)body.scrollTop=top.scroll||0;_setEnter(top.panel,-1);return}closeSettings()}
 function closeSettings(){if(_setAnim){_setAnim.cancel();_setAnim=null}setStack=[];$('setv').classList.remove('on');$('setv').setAttribute('aria-hidden','true')}
-function openSettings(){GAT.emit('view_enter',{view:'settings'});closeDrawer();setStack=[{panel:'homePanel',title:t('settings'),key:'settings'}];_setShow('homePanel',t('settings'));
+function openSettings(){GAT.emit('view_enter',{view:'settings'});closeDrawer();
+  if(window.PCLINK&&_isOn('pcView'))PCLINK.closeView();   // PC 视图(z61)盖在设置(z60)之上: 从其中跳转设置(如语音未配置)须先收起, 否则引导开在下面
+  setStack=[{panel:'homePanel',title:t('settings'),key:'settings'}];_setShow('homePanel',t('settings'));
   $('setv').classList.add('on');$('setv').setAttribute('aria-hidden','false');}
 
 /* ---- APK 工厂额度(设置页行): 登录态实时读取, 失败/未登录回退静态文案; 尽力而为不阻塞设置页 ---- */
