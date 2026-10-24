@@ -553,6 +553,46 @@ def _callable_model_id(mid):
     return bool(mid) and len(mid) <= 128 and not _MODEL_ID_BAD.search(mid)
 
 
+_STEP_PLAN_BASE = 'https://api.stepfun.com/step_plan'   # StepFun 官方 Step Plan 订阅端点(OpenAI 兼容 /v1 与 Anthropic 兼容裸路径同源)
+_STEP_API_BASE = 'https://api.stepfun.com/v1'           # StepFun 官方标准按量端点
+_STEP_PLAN_MODELS = ('step-5-preview', 'step-3.7-flash', 'step-3.5-flash', 'step-3.5-flash-2603', 'step-router-v1')
+_STEP_PLAN_MODEL_PREFIXES = ('stepaudio-2.5', 'step-audio-2.5')   # StepAudio 2.5 家族(订阅内含; 文档只给了 asr 的精确 id, 其余按前缀覆盖 realtime/chat/tts)
+
+
+def _stepfun_scope(base):
+    """apibase 命中哪个 StepFun 官方端点目录: 'plan' / 'api' / None。
+
+    只认文档中的两个官方 URL(容忍结尾 '/' 与 chat 精确路径后缀 '$'); 自定义网关/代理
+    一律 None——不过滤, 现有行为不变。"""
+    b = (base or '').strip().lower().rstrip('/')
+    if b.endswith('$'): b = b[:-1].rstrip('/')
+    for scope, root in (('plan', _STEP_PLAN_BASE), ('api', _STEP_API_BASE)):
+        if b == root or b.startswith(root + '/'): return scope
+    return None
+
+
+def _is_step_plan_model(mid):
+    """模型是否属于 Step Plan 订阅目录(StepFun 官方 step-plan 文档所列)。"""
+    m = str(mid or '').lower()
+    return m in _STEP_PLAN_MODELS or m.startswith(_STEP_PLAN_MODEL_PREFIXES)
+
+
+def _scope_stepfun_models(base, ids):
+    """按端点裁剪 StepFun 模型目录。
+
+    两端点的 /models 返回同一份全量目录(step_plan/v1/models 同样吐出标准按量模型),
+    于是「选了 Plan 却列出所有模型」——订阅外模型选了也发不通。这里按端点一分为二:
+    Plan 端点只留订阅内模型, 标准端点剔除订阅专属模型。
+    非官方端点原样返回; 裁剪后为空(上游目录漂移、集合过时)时退回全量——把改版显示成
+    「没有模型」比不过滤更糟。"""
+    scope = _stepfun_scope(base)
+    if scope == 'plan':
+        return [i for i in ids if _is_step_plan_model(i)] or list(ids)
+    if scope == 'api':
+        return [i for i in ids if not _is_step_plan_model(i)] or list(ids)
+    return ids
+
+
 def _list_models(cfg_json):
     """UI 调用: 拉取某服务商的可用模型 id 列表。返回 {ok, models|error} 的 JSON。
     走 requests, 支持 cfg['proxy'](修复直连DNS解析不了时经本地代理出网)。"""
@@ -581,6 +621,7 @@ def _list_models(cfg_json):
         data = j.get('data', j) if isinstance(j, dict) else j
         raw = {m.get('id') for m in data if isinstance(m, dict) and m.get('id')} if isinstance(data, list) else set()
         ids = _fold_vendor_aliases(sorted(i for i in raw if _callable_model_id(i)))
+        ids = _scope_stepfun_models(base, ids)   # StepFun 双端点目录裁剪(见 _scope_stepfun_models)
         if not ids:
             err = (j.get('error') if isinstance(j, dict) else None) or f'未返回模型 (HTTP {r.status_code})'
             return json.dumps({'ok': False, 'error': str(err)[:200]}, ensure_ascii=False)
