@@ -82,12 +82,19 @@ def _yolo(img, conf):
         return []
     sess = _session(model)
     out = sess.run(None, {sess.get_inputs()[0].name: x})[0][0]  # (300,6)
+    return _restore(out, conf, r, left, top, img.shape[1], img.shape[0])
+
+
+def _restore(rows, conf, r, left, top, w, h):
+    """模型空间框 → 原图像素: 去 letterbox, 夹到图内, 丢弃夹后退化的框(大框常越过边缘)。"""
     boxes = []
-    for x1, y1, x2, y2, c, cls in out:
+    for x1, y1, x2, y2, c, cls in rows:
         if c < conf:
             continue
-        boxes.append([(x1 - left) / r, (y1 - top) / r,
-                      (x2 - left) / r, (y2 - top) / r, float(c), int(cls)])
+        x1, x2 = (min(max((v - left) / r, 0.0), w) for v in (x1, x2))
+        y1, y2 = (min(max((v - top) / r, 0.0), h) for v in (y1, y2))
+        if x2 > x1 and y2 > y1:
+            boxes.append([x1, y1, x2, y2, float(c), int(cls)])
     return boxes
 
 

@@ -47,3 +47,28 @@ def test_import_rejects_non_upload_and_escaping_active_path(runtime):
 
 def test_status_is_usable_without_provider_or_model(runtime):
     assert detector.status() == {'ok':True,'installed':False,'bytes':0}
+
+
+def _detector_module(monkeypatch):
+    # The restoration math is pure; stub the inference engines so this runs without onnxruntime.
+    import importlib.util, types
+    monkeypatch.setitem(sys.modules, 'onnxruntime', types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, 'ppocr_engine', types.SimpleNamespace(PPOCR=object))
+    spec = importlib.util.spec_from_file_location('ui_detect_lite_under_test', CORE / 'models/ui_detect_v1/ui_detect_lite.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_detections_are_restored_into_the_observed_image(monkeypatch):
+    lite = _detector_module(monkeypatch)
+    # 1080x2340 portrait → r=640/2340, x padded by 32 (letterbox), y unpadded.
+    r, left, top, w, h = 640 / 2340, 32, 0, 1080, 2340
+    rows = [[32 + 10 * r, 0 + 20 * r, 32 + 110 * r, 0 + 220 * r, 0.9, 8],   # inside
+            [20, -6, 600, 300, 0.8, 11],                                      # crosses top/left padding
+            [700, 10, 720, 30, 0.7, 8],                                       # entirely right of image
+            [40, 40, 60, 60, 0.1, 8]]                                         # below confidence
+    boxes = lite._restore(rows, 0.25, r, left, top, w, h)
+    assert len(boxes) == 2
+    assert [round(v) for v in boxes[0][:4]] == [10, 20, 110, 220]
+    assert all(0 <= b[0] < b[2] <= w and 0 <= b[1] < b[3] <= h for b in boxes)
