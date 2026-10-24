@@ -12,6 +12,22 @@ publicly released. Exact artifacts and acceptance belong to their release record
   stale copy from older builds; configure your own relay URL and credential in
   Optional modules. PC Link 不再在构建中注入默认中继凭据：CI 不写入、APK 审计拒绝该文件、
   运行时忽略旧版残留，请在可选组件填写自己的中继地址与凭据。
+  Optional modules no longer claim a blank PC Link URL restores a default; an
+  unconfigured PC Link tap opens its relay fields. 可选组件页去掉“清空恢复默认”的旧说明。
+- System back closes only the topmost layer, ordered by the layers' own stacking:
+  dialogs and the detector close before the page beneath, stacked sheets step back
+  one level, and back on the first-run consent leaves the app instead of dismissing
+  it (which left a blank window). Settings sub-pages open at the top and restore the
+  parent position on back, with an interruptible enter that is instant under reduced
+  motion; fading scrims no longer swallow taps. 系统返回只关最上层；首启同意页不再被返回关掉；
+  设置子页还原父页位置，遵守减少动态效果。
+- Streaming voice checks its configuration before asking for the microphone and
+  opens the voice settings when unset. 语音未配置时不再先申请麦克风。
+- A local bus start failure no longer stops the app from opening, and crash capture
+  starts first. 本机总线启动失败不再导致应用打不开。
+- Detector boxes are clipped to the observed screen. Main-model requests and
+  observation hops record timing for slow-task attribution (observe-only).
+  检测框限制在屏幕内；记录主模型请求与观察步骤耗时（只观察，不改行为）。
 
 - The floating capsule and task-end notification no longer report a user-stopped
   or failed task as "✔ Done": the core now exposes an `end` reason
