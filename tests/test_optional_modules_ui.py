@@ -102,7 +102,9 @@ def test_optional_module_settings_text_is_readable_in_both_themes(dark):
                                  ('openIntegrations()', '#integrationsPanel'),
                                  ('openGanetPage()', '#ganetPanel'),
                                  ("setNav('ganetSetupPanel','')", '#ganetSetupPanel'),
-                                 ('openProviders()', '#provListPanel'),
+                                 # one configured provider so the model subtitle row is rendered
+                                 ("openProviders();providers=[{id:'t',name:'GLM',model:'glm-test',models:['glm-test']}];"
+                                  "renderProvList()", '#provListPanel .provRow .sub'),
                                  ('PCLINK.openView()', '#pcView')]:
             page.evaluate(opener)
             page.wait_for_timeout(350)

@@ -11,6 +11,8 @@ publicly released. Exact artifacts and acceptance belong to their release record
   build service) as a themed settings page with labelled fields, status chips and
   inline errors; settings secondary text now meets WCAG AA in light and dark.
   可选组件设置改为统一主题的设置子页；设置页次要文字在浅/暗色下满足对比度要求。
+- Configured provider rows show their model names in readable secondary text.
+  服务商列表中的模型名改用可读的次要文字颜色。
 - Exclude GAgent's own overlay windows from `droid.shot()` frames so OCR, the UI
   detector and vision models no longer read the status capsule's text.
   截图抹平 GA 自身悬浮窗区域，避免 OCR/视觉模型读到自己的状态文字。
