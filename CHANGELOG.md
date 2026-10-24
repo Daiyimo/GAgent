@@ -7,6 +7,10 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- The floating capsule and task-end notification no longer report a user-stopped
+  or failed task as "✔ Done": the core now exposes an `end` reason
+  (`done`/`stopped`/`error`) and the capsule shows "■ 已停止" (no alert) or a red
+  "⚠ 出错". 悬浮胶囊不再把用户中止或出错的任务显示为「完成」。
 - Rebuild optional-module settings (PC Link, mesh, GAnet, streaming voice, APK
   build service) as a themed settings page with labelled fields, status chips and
   inline errors; settings secondary text now meets WCAG AA in light and dark.

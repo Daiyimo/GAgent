@@ -22,7 +22,7 @@ agent = None
 _LANG = os.environ.get('GA_LANG', 'zh')   # UI 语言, 由 /lang 设置(写 env); 读 env 使重导入后语言不回退中文
 def _L(zh, en): return en if _LANG == 'en' else zh
 def _new_state():   # t0=本次运行起点(秒, send 时置), 此处先种键使"运行⇒有 t0"契约结构性显式(poll 仍带 running 守卫)
-    return {'running': False, 't0': 0, 'status': 'idle', 'gen': 0, 'steps': [], 'final': '', 'prompt': '', 'cmd_error': '', 'tok_in': 0, 'tok_out': 0, 'cache_read': 0, 'cache_write': 0, 'ask': None}
+    return {'running': False, 't0': 0, 'status': 'idle', 'gen': 0, 'steps': [], 'final': '', 'prompt': '', 'cmd_error': '', 'tok_in': 0, 'tok_out': 0, 'cache_read': 0, 'cache_write': 0, 'ask': None, 'end': ''}
 _lock = threading.RLock()
 _state = _new_state()
 _jobs = {}            # 异步作业(如 /models 网络请求): id -> {'done':bool,'result':str}; 让桥调用立即返回, UI 轮询取结果, 不冻 UI
@@ -2322,7 +2322,7 @@ def _send_for(sess, text):
     for _try in range(2):
         with sess.lock:
             if not sess.retired:
-                sess.state.update(running=True, t0=time.time(), status=_L('思考中', 'Thinking…'), steps=[], final='', prompt=text, gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None)   # t0=本任务起点(秒): 供悬浮窗竖丸按真实运行时长加深颜色(比 FloatService 自计更准, 浮窗中途打开也对)
+                sess.state.update(running=True, t0=time.time(), status=_L('思考中', 'Thinking…'), steps=[], final='', prompt=text, gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, end='')   # t0=本任务起点(秒): 供悬浮窗竖丸按真实运行时长加深颜色(比 FloatService 自计更准, 浮窗中途打开也对)
                 patches._ROUTE['cur'] = None                      # 新任务: 清空上一轮的故障转移路由, 由探针在本轮实际路由时重写
                 mygen = sess.state['gen']                         # 本次任务的代号, 用于作废 /clear 或新任务后的陈旧 drain
                 mycid = _pub_cid(sess.cid)
@@ -2367,7 +2367,7 @@ def _drain_loop(q, mygen, sess, cid=None):
                 with sess.lock:
                     if sess.retired or st['gen'] != mygen: return
                     turn = len(st['steps'])
-                    st.update(running=False, status=_L(f'完成 · {turn}步', f'Done · {turn} steps'),
+                    st.update(running=False, status=_L(f'出错 · {turn}步', f'Error · {turn} steps'), end='error',
                               final=_L('!!!Error: 会话线程已退出, 任务未完成', '!!!Error: session worker exited, task unfinished'), ask=None)
                 _swallow('_drain', RuntimeError('session worker thread is dead'))
                 return
@@ -2380,7 +2380,11 @@ def _drain_loop(q, mygen, sess, cid=None):
             if 'done' in item:
                 final = _clean(item['done']) or (st['steps'][-1]['summary'] if st['steps'] else _L('(空回复)', '(empty reply)'))
                 ask = _extract_ask(st['steps'][-1]['text'] if st['steps'] else item.get('done', ''))   # 本轮以 ask_user 退出 → 供 UI 弹选择框
-                st.update(running=False, status=_L(f'完成 · {turn}步', f'Done · {turn} steps'), final=final, ask=ask)
+                # end: 结束原因(done/stopped/error) 供悬浮窗/通知如实区分, 不把用户中止或出错显示成「✔ 完成」; status 文案同步
+                end = 'stopped' if st.get('end') == 'stopped' else 'error' if final.startswith('!!!Error') else 'done'
+                status = {'stopped': _L(f'已停止 · {turn}步', f'Stopped · {turn} steps'),
+                          'error': _L(f'出错 · {turn}步', f'Error · {turn} steps')}.get(end) or _L(f'完成 · {turn}步', f'Done · {turn} steps')
+                st.update(running=False, status=status, final=final, ask=ask, end=end)
                 pcid = cid or _pub_cid(sess.cid)
                 with _hist_lock:
                     _hist.append({'prompt': st['prompt'], 'final': final, 'convo': pcid,   # 标记本轮归属的前端会话 id(随 chat.json 持久→跨进程被杀仍在): 冷启对账据此精确补全被后台完成截断的会话步骤(修「UI 显 N 步/实际更多步」)。不再靠 prompt 启发——payload 经 goal/附件/override 变换后与气泡 raw text 必不相等, 长多步任务正是命中此变换者
@@ -2432,6 +2436,7 @@ def _poll_for(sess, since='0', summary=False, legacy=False):
         d['tok_in'] = st.get('tok_in', 0); d['tok_out'] = st.get('tok_out', 0)
         d['cache_read'] = st.get('cache_read', 0); d['cache_write'] = st.get('cache_write', 0)
         d['ask'] = st.get('ask')
+        d['end'] = st.get('end', '')
         if not readonly and st.get('ask'):
             try: st['ask'] = ''
             except Exception: pass
@@ -2520,6 +2525,8 @@ def abort2(cid):
     s, err = _resolve_cid(cid, explicit=True)
     if err: return err
     a = s.agent
+    with s.lock:
+        if s.state.get('running'): s.state['end'] = 'stopped'   # 先记中止意图, _drain 收尾据此标「已停止」而非「完成」
     if a: a.abort()
     patches.abort_streams(s)
     return '已发送中止信号'

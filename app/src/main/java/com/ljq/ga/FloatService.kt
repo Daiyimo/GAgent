@@ -73,6 +73,7 @@ class FloatService : Service() {
     private val C_RUN  = Color.parseColor("#0A84FF")   // 运行: iOS 蓝
     private val C_DONE = Color.parseColor("#30D158")   // 完成: iOS 绿
     private val SOLID_BODY = 0.8f                       // 完成绿底不透明度 ≥0.8 时深字对任意壁纸 ≥4.5:1(黑/白壁纸实算 5.6/9.6); 更透明改白字+光晕
+    private val C_ERR  = Color.parseColor("#D70015")   // 出错: 深红, 实底白字 5.4:1; 用户中止用待命墨黑(非警报)
     private val C_ASK  = Color.parseColor("#FF9F0A")   // 待回答: iOS 橙；与“完成”绿色严格区分
     // 贴边竖丸(vertical pill)尺寸(dp): BAR_W=可见条宽(细, 仅此条着色); DOCK_W=窗口/触控宽(宽出可见条→抓取区伸出系统边缘返回手势带); PILL_H=竖丸高(48: 用户反馈 72 太长, 细度 OK; 仍 ≥ 触控目标)。
     // DOCK_W 30dp 让抓取区超出默认 ~20dp 手势带; 再配 render() setSystemGestureExclusionRects 在竖丸矩形夺回横向拖拽(双保险)。不变量: 可见条恒细且贴屏幕边; 抓取窗恒 DOCK_W。变量: 贴左/右、机型手势带宽 → "窗口宽出条 + 排除矩形"通用兜底, 不写死机型。
@@ -352,7 +353,7 @@ class FloatService : Service() {
             val now = x.optBoolean("running")
             val before = wasRunningByCid[cid]
             val ended = !now && (x.optJSONObject("ask") != null || x.optInt("nsteps") > 0)
-            if (before == true && ended) notifyTaskEnd(x, cid)
+            if (before == true && ended && x.optString("end") != "stopped") notifyTaskEnd(x, cid)   // 用户自己按停不再响铃振动报「完成」
             wasRunningByCid[cid] = now
         }
         wasRunningByCid.keys.retainAll(liveCids)
@@ -362,7 +363,11 @@ class FloatService : Service() {
         val run = j.optBoolean("running")
         val askObj = j.optJSONObject("ask")
         val asking = askObj != null
-        val done = !run && !asking && j.optInt("nsteps") > 0                 // ask 是待回答而非完成；只有真完成允许绿色
+        val end = j.optString("end")                                         // done/stopped/error; 旧核无此键 → "" 按完成处理(兼容)
+        val ended = !run && !asking && j.optInt("nsteps") > 0
+        val stopped = ended && end == "stopped"
+        val failed = ended && end == "error"
+        val done = ended && !stopped && !failed                              // ask 是待回答而非完成；只有真完成允许绿色(中止/出错不冒充完成)
         val d = resources.displayMetrics.density
         if (mode == 0 && !asking) {
             // 竖丸(vertical pill, 最小态, 取代旧小球): 细、半透明、贴屏幕边、无文字 → 极简、极大减少遮挡。颜色: 运行态按时长由浅蓝加深到深蓝(深=久, 参考 tuiapp _heat_color); 完成→绿; 待命→墨黑。
@@ -372,6 +377,7 @@ class FloatService : Service() {
             val onLeft = lp.x + dockW / 2 < sw / 2                       // 与 snapEdge 同判据 → 渲染贴边侧恒等于吸附侧
             val pillColor = when {                                       // 运行时长→颜色深度: 越久越深蓝; 完成绿; 待命墨黑(elapsed 来自后端 poll, 真机准, 浮窗中途打开也对)
                 done -> C_DONE
+                failed -> C_ERR
                 run  -> mixColor(C_RUN_LIGHT, C_RUN_DEEP, j.optDouble("elapsed", 0.0).toFloat() / RAMP_SECS)
                 else -> C_IDLE
             }
@@ -392,6 +398,7 @@ class FloatService : Service() {
             val state = when {
                 asking -> C_ASK
                 done -> C_DONE
+                failed -> C_ERR
                 run -> C_RUN
                 else -> C_IDLE
             }
@@ -406,6 +413,8 @@ class FloatService : Service() {
             tv.text = when {
                 asking -> badge + s("需要你回复 · 点击回答", "Reply needed · Tap to answer")
                 done && mode == 1 -> s("✔ 完成", "✔ Done")
+                stopped && mode == 1 -> s("■ 已停止", "■ Stopped")
+                failed && mode == 1 -> s("⚠ 出错", "⚠ Error")
                 mode == 1 -> tail?.let { "S${it.optInt("n")} · ${it.optString("summary")}" } ?: j.optString("status", "GA")
                 else -> buildString {                                                 // mode==2 近三步
                     for (k in 0 until (steps?.length() ?: 0)) steps!!.optJSONObject(k)
@@ -456,7 +465,11 @@ class FloatService : Service() {
             else @Suppress("DEPRECATION") Notification.Builder(this)
                 .setPriority(Notification.PRIORITY_HIGH)
                 .setDefaults(Notification.DEFAULT_SOUND or Notification.DEFAULT_VIBRATE)
-        val n = b.setContentTitle(if (ask) s("GenericAgent 需要你的操作", "GenericAgent needs your input") else s("GenericAgent 任务完成", "GenericAgent task complete"))
+        val n = b.setContentTitle(when {
+                ask -> s("GenericAgent 需要你的操作", "GenericAgent needs your input")
+                j.optString("end") == "error" -> s("GenericAgent 任务出错", "GenericAgent task failed")
+                else -> s("GenericAgent 任务完成", "GenericAgent task complete")
+            })
             .setContentText(if (status.isNotEmpty()) status.take(80) else if (ask) s("点此返回回答", "Tap to reply") else s("点此查看结果", "Tap to view the result"))
             .setSmallIcon(android.R.drawable.ic_menu_info_details)
             .setAutoCancel(true).setContentIntent(pi).build()
