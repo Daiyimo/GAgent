@@ -296,7 +296,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
 .dwSearch{flex:1 1 auto;min-width:0;box-sizing:border-box;overflow:hidden;display:flex;align-items:center;gap:8px;background:var(--surface3);border-radius:var(--r-sm);padding:7px 12px}   /* #52: flex 子项必须可收缩(min-width:0)否则按内容最小宽撑破抽屉; 紧凑搜索条 --r-sm 圆角 */
 .dwSearch svg{width:16px;height:16px;color:var(--mut);flex:none}
 .dwSearch input{flex:1;border:none;outline:none;background:none;color:var(--txt);font-size:14.5px;min-width:0}   /* font:14.5px inherit 是非法简写(font-family 不能为 inherit)→ 整条被丢弃回退默认 13.3px; 用 font-size 才真正生效 */
-.dwSearch input::placeholder{color:var(--mut)}
+.dwSearch input::placeholder{color:var(--txt2)}
 .dwNew{display:flex;align-items:center;gap:10px;margin:6px var(--sp-3) var(--sp-2);padding:13px 15px;border:1px solid var(--line);
   border-radius:var(--r-sm);color:var(--accTxt);font-weight:600;font-size:15px;background:none;width:calc(100% - var(--sp-3)*2);transition:background .15s}
 .dwNew:active{background:var(--surface2)}.dwNew svg{width:18px;height:18px}
@@ -341,7 +341,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
 .fchip .x svg{width:13px;height:13px}
 #in{border:none;outline:none;resize:none;background:none;color:var(--txt);font:16px/24px inherit;letter-spacing:-.01em;
   max-height:140px;width:100%;min-height:26px;padding:8px 8px 4px}
-#in::placeholder{color:var(--mut)}
+#in::placeholder{color:var(--txt2)}   /* 占位提示同样是可读文字(WCAG 1.4.3): --mut 双主题仅 ~2:1, 与 #pcIn 同改 --txt2 */
 .captools{display:flex;align-items:center;gap:8px;padding:3px 1px 1px}              /* 紧凑: 控件收进胶囊, 零溢出; 图标间距加大避免热区重叠(语音按钮误点) */
 .chip{position:relative;display:flex;align-items:center;gap:5px;border:none;background:var(--surface3);color:var(--txt2);
   border-radius:var(--r-full);padding:6px 10px;font-size:12.5px;font-weight:500;min-width:0;transition:background .15s}
@@ -488,7 +488,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
 .inputwrap{display:flex;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sm);padding:0 6px 0 16px;transition:border-color .2s,box-shadow .2s}
 .inputwrap:focus-within{border-color:var(--acc);box-shadow:0 0 0 4px var(--ring)}
 .inputwrap input{flex:1;border:none;outline:none;background:none;color:var(--txt);font:15.5px/1.4 inherit;padding:14px 0;min-width:0}
-.inputwrap input::placeholder{color:var(--mut)}
+.inputwrap input::placeholder{color:var(--txt2)}   /* 可选组件 wss:// 示例 / 令牌「已保存（留空保留）」提示: 有含义, 需达 AA */
 .inputwrap .eye{flex:none;width:40px;height:40px;border:none;background:none;color:var(--mut);display:flex;align-items:center;justify-content:center;border-radius:9px}
 .inputwrap .eye:active{background:var(--surface2)}.inputwrap .eye svg{width:19px;height:19px}
 .hint{font-size:12.5px;color:var(--mut);margin:10px 4px 0;line-height:1.55}
@@ -1000,7 +1000,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
 .authSub{color:var(--mut);font-size:14px;line-height:1.5;text-align:center;margin-bottom:22px;padding:0 6px}
 .authField{display:flex;flex-direction:column;gap:9px;margin:14px 0}.authField label{font-size:13px;color:var(--mut);font-weight:600}
 .authField input{height:50px;border:1px solid var(--line);border-radius:15px;padding:0 15px;background:var(--surface2);color:var(--txt);font-size:16px;outline:none;transition:border-color .18s,box-shadow .18s,background .18s;-webkit-appearance:none}
-.authField input::placeholder{color:var(--mut);opacity:.7}
+.authField input::placeholder{color:var(--txt2)}
 .authField input:focus{border-color:var(--txt);background:var(--surface);box-shadow:0 0 0 4px var(--md-sys-color-primary-container)}
 /* 6 格 OTP 验证码 */
 /* 内联验证码框: 输入框 + 框内右侧"发送验证码"蓝字(参考 Apple/微信/OpenAI) v1.7 */
@@ -1008,7 +1008,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
 .codeField:focus-within{border-color:var(--txt);background:var(--surface);box-shadow:0 0 0 4px var(--md-sys-color-primary-container)}
 .codeField input{flex:1;min-width:0;height:100%;border:none;background:transparent;color:var(--txt);font-size:16px;letter-spacing:.12em;outline:none;-webkit-appearance:none}
 .codeField input:focus{border:none;background:transparent;box-shadow:none}   /* 框的职责归容器(:focus-within): 压制祖先 .authField input:focus 的光环/背景穿透到复合行内层(验证码框重框根因) */
-.codeField input::placeholder{color:var(--mut);opacity:.7;letter-spacing:normal}
+.codeField input::placeholder{color:var(--txt2);letter-spacing:normal}
 .codeDiv{flex:none;width:1px;height:22px;background:var(--line);margin:0 4px 0 8px}
 .codeSend{flex:none;border:none;background:transparent;color:var(--acc);font-size:14px;font-weight:600;white-space:nowrap;padding:0 10px;height:38px;border-radius:10px;cursor:pointer}
 .codeSend:disabled{color:var(--mut);cursor:default;opacity:.85}

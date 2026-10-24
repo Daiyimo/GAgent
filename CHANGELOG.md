@@ -13,6 +13,12 @@ publicly released. Exact artifacts and acceptance belong to their release record
   可选组件设置改为统一主题的设置子页；设置页次要文字在浅/暗色下满足对比度要求。
 - Configured provider rows show their model names in readable secondary text.
   服务商列表中的模型名改用可读的次要文字颜色。
+- Placeholder hints (chat composer, drawer search, optional-module `wss://`
+  examples and the saved-token hint) now meet WCAG AA; the contrast test checks
+  `::placeholder` of empty fields. 输入框占位提示在浅/暗色下达到对比度要求。
+- The floating capsule's transparency preference now fades only the capsule
+  body; status text stays opaque (white with a dark halo when the body is too
+  transparent), so "✔ 完成" stays readable at 30%. 悬浮胶囊透明度只淡化底色，文字保持可读，偏好值不变。
 - Exclude GAgent's own overlay windows from `droid.shot()` frames so OCR, the UI
   detector and vision models no longer read the status capsule's text.
   截图抹平 GA 自身悬浮窗区域，避免 OCR/视觉模型读到自己的状态文字。

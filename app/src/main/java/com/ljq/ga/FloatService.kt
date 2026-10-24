@@ -72,6 +72,7 @@ class FloatService : Service() {
     private val C_IDLE = Color.parseColor("#1C1C1E")   // 待命: 墨黑(沿用旧风格)
     private val C_RUN  = Color.parseColor("#0A84FF")   // 运行: iOS 蓝
     private val C_DONE = Color.parseColor("#30D158")   // 完成: iOS 绿
+    private val SOLID_BODY = 0.8f                       // 完成绿底不透明度 ≥0.8 时深字对任意壁纸 ≥4.5:1(黑/白壁纸实算 5.6/9.6); 更透明改白字+光晕
     private val C_ASK  = Color.parseColor("#FF9F0A")   // 待回答: iOS 橙；与“完成”绿色严格区分
     // 贴边竖丸(vertical pill)尺寸(dp): BAR_W=可见条宽(细, 仅此条着色); DOCK_W=窗口/触控宽(宽出可见条→抓取区伸出系统边缘返回手势带); PILL_H=竖丸高(48: 用户反馈 72 太长, 细度 OK; 仍 ≥ 触控目标)。
     // DOCK_W 30dp 让抓取区超出默认 ~20dp 手势带; 再配 render() setSystemGestureExclusionRects 在竖丸矩形夺回横向拖拽(双保险)。不变量: 可见条恒细且贴屏幕边; 抓取窗恒 DOCK_W。变量: 贴左/右、机型手势带宽 → "窗口宽出条 + 排除矩形"通用兜底, 不写死机型。
@@ -92,9 +93,21 @@ class FloatService : Service() {
     // 悬浮窗透明度: 设置页经 GA.setFloatOpacity 写入 SharedPreferences("ga"); 显示时读取(默认 0.9, 不再"完全不透明")
     private fun floatOpacity(): Float =
         getSharedPreferences("ga", MODE_PRIVATE).getFloat("float_opacity", 0.9f).coerceIn(0.3f, 1f)
-    // 透明度作用在 View(tv.alpha)而非 window(lp.alpha): window 半透明时 Flyme/Android 会过滤悬浮窗触摸
-    // (低不透明度遮挡触摸缓解机制)→ 30% 时拖不动也点不了; View alpha 纯视觉, 永不影响触摸派发, 窗口保持完全可触。
-    fun applyOpacity(f: Float) { ui.post { tv.alpha = f.coerceIn(0.3f, 1f) } }
+    // 透明度作用在 View 内(而非 window lp.alpha): window 半透明时 Flyme/Android 会过滤悬浮窗触摸
+    // (低不透明度遮挡触摸缓解机制)→ 30% 时拖不动也点不了; View 内的 alpha 纯视觉, 永不影响触摸派发, 窗口保持完全可触。
+    // 偏好只淡化胶囊底色, 不淡化文字: 低透明度(如 30%)时底色几乎透出壁纸, 文字可读性不能依赖底色 →
+    // 文字恒不透明; 底色足够实(≥SOLID_BODY)时完成态保留深字配绿底, 否则一律白字 + 深色光晕(字幕式), 任意壁纸可读。偏好值本身不改。
+    fun applyOpacity(f: Float) { ui.post { styleBody(f.coerceIn(0.3f, 1f)) } }
+    private var lastDone = false
+    private fun styleBody(f: Float, done: Boolean = lastDone) {
+        lastDone = done
+        tv.alpha = 1f
+        tv.background?.alpha = (f * 255).toInt()
+        val darkText = done && f >= SOLID_BODY
+        tv.setTextColor(if (darkText) Color.parseColor("#0B1F12") else Color.WHITE)
+        if (darkText) tv.setShadowLayer(0f, 0f, 0f, 0)
+        else tv.setShadowLayer(3f * resources.displayMetrics.density, 0f, 0f, Color.parseColor("#E6000000"))
+    }
     // live = 悬浮球确实挂上屏了(addView 成功后才赋值, onDestroy 清) —— 唯一能代表"实际运行态"的信号;
     // lastError = 最近一次上屏失败的原因, 供设置页/菜单如实说明"开关是开的但球没上去"。
     companion object {
@@ -205,8 +218,8 @@ class FloatService : Service() {
                 setStroke((1 * d).toInt().coerceAtLeast(1), Color.parseColor("#22FFFFFF"))   // 极淡描边, 浅底上也分明
             }
             elevation = 6 * d                                                                // 投影=悬浮感(旧纯墨黑无阴影发飘)
-            alpha = floatOpacity()                                                            // 透明度作用在 View 上(纯视觉, 不影响触摸), 默认 0.9
         }
+        styleBody(floatOpacity())                                                             // 透明度只淡化底色(纯视觉, 不影响触摸), 默认 0.9
         lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -370,6 +383,7 @@ class FloatService : Service() {
             // 可见细条贴【屏幕】边: 左吸附→条置窗口左侧(右侧留触控空白); 右吸附→条置窗口右侧。
             tv.background = if (onLeft) InsetDrawable(bar, 0, 0, dockW - barW, 0)
                             else InsetDrawable(bar, dockW - barW, 0, 0, 0)
+            styleBody(floatOpacity(), done)
             tv.text = ""; tv.setPadding(0, 0, 0, 0); tv.maxLines = 1
             setWinSize(dockW, pillH)
             if (Build.VERSION.SDK_INT >= 29) tv.systemGestureExclusionRects = listOf(Rect(0, 0, dockW, pillH))   // 竖丸矩形内夺回横向拖拽优先级, 不被系统边缘返回手势抢走(尽力而为, 配合 DOCK_W 宽出条双保险)
@@ -385,7 +399,7 @@ class FloatService : Service() {
                 cornerRadius = 20 * d; setColor(state)
                 setStroke((1 * d).toInt().coerceAtLeast(1), Color.parseColor("#22FFFFFF"))
             }
-            tv.setTextColor(if (done) Color.parseColor("#0B1F12") else Color.WHITE)   // 浅绿底配深字；ask/墨黑/蓝底配白字
+            styleBody(floatOpacity(), done)   // 实底: 浅绿底配深字、ask/墨黑/蓝底配白字; 低透明度: 白字 + 光晕
             tv.setPadding((12 * d).toInt(), (8 * d).toInt(), (12 * d).toInt(), (8 * d).toInt())
             tv.maxLines = if (!asking && mode == 2) 4 else 1
             val badge = if (askQueue.size > 1) "[${askQueue.size}] " else ""

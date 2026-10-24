@@ -54,7 +54,8 @@ def test_profile_import_requires_save_and_provider_remains_available(language):
         browser.close()
 
 
-# WCAG 1.4.3 for readable text: composite every ancestor background, skip inactive controls (.dim / disabled).
+# WCAG 1.4.3 for readable text, including ::placeholder of empty fields: composite every ancestor background,
+# skip inactive controls (.dim / disabled; WCAG exempts inactive components).
 LOW_CONTRAST_JS = r'''(sel)=>{
   const root=document.querySelector(sel);if(!root)return [{missing:sel}];
   const parse=s=>{const m=s.match(/rgba?\(([^)]+)\)/);if(!m)return null;const p=m[1].split(/[ ,\/]+/).filter(Boolean).map(Number);return [p[0],p[1],p[2],p.length>3?p[3]:1]};
@@ -65,12 +66,13 @@ LOW_CONTRAST_JS = r'''(sel)=>{
   for(const node of [root,...root.querySelectorAll('*')]){
     if(!node.getClientRects().length||node.closest('.dim,[disabled],[aria-disabled=true]'))continue;
     const style=getComputedStyle(node);if(style.visibility!=='visible')continue;
-    const field=node.tagName==='INPUT'&&['text','password','url'].includes(node.type);
-    const text=field?node.value:[...node.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent).join('').trim();
+    const field=(node.tagName==='INPUT'&&['text','password','url','search','email','tel'].includes(node.type))||node.tagName==='TEXTAREA';
+    let text=field?node.value:[...node.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent).join('').trim();
+    const ph=field&&!text&&!!node.placeholder;if(ph)text='placeholder:'+node.placeholder;   // empty field shows its placeholder instead
     if(!text)continue;
     let bg=[255,255,255,1],alpha=1;const chain=[];for(let e=node;e;e=e.parentElement)chain.unshift(e);
     for(const e of chain){const s=getComputedStyle(e),b=parse(s.backgroundColor);alpha*=+s.opacity;if(b&&b[3]>0)bg=blend(b,bg)}
-    const fg=parse(style.color);fg[3]*=alpha;
+    const ps=ph?getComputedStyle(node,'::placeholder'):style,fg=parse(ps.color);fg[3]*=alpha*(ph?+ps.opacity:1);
     const size=parseFloat(style.fontSize),large=size>=24||(size>=18.66&&+style.fontWeight>=700);
     const r=ratio(blend(fg,bg),bg);if(r<(large?3:4.5))low.push(text.slice(0,24)+' '+r.toFixed(2));
   }
@@ -98,6 +100,7 @@ def test_optional_module_settings_text_is_readable_in_both_themes(dark):
         ''' % ('true' if dark else 'false'))
         page.goto((WEB / 'index.html').as_uri())
         page.locator('.pcAgree').click()
+        assert page.evaluate(LOW_CONTRAST_JS, '#in') == [], dark   # chat composer placeholder
         for opener, selector in [('openSettings()', '#homePanel'),
                                  ('openIntegrations()', '#integrationsPanel'),
                                  ('openGanetPage()', '#ganetPanel'),
