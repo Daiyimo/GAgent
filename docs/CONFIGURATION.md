@@ -138,21 +138,23 @@ Jev 单独配置、默认关闭，不是“选成主模型就生效”。只用�
 Record the configuration names and outcomes, not keys. Hardware and service
 coverage remain bounded by [Validation](VALIDATION.md).
 
-### PC Link build bootstrap / 构建默认配置
+### PC Link relay profile / 中继配置
 
-A trusted build can set the Actions secret `GAGENT_PCLINK_DEFAULTS` to a JSON
-object containing `url` (WSS) and `token` (relay request signing). The build writes
-an ignored `pclink_defaults.json` asset. This is extractable client access material,
-not an account, model-provider or administrator secret. Never put those secrets
-in this profile. Source and APK audits still reject other secret formats.
-No default is committed to source. Missing bootstrap leaves PC Link unconfigured
-and the UI opens Optional modules. A custom PC Link URL and token override the
-entire bootstrap; clearing that URL restores the build default. Unpair to stop
-saved-room reconnect. Network connection starts only after pairing or restoring
-an existing pair. The original `ga-pclink:v1:` nine-digit QR protocol is unchanged.
+Release and source builds contain no PC Link relay default. Anything packaged in
+an APK is extractable and shared by every install, so a relay signing credential
+must not be bundled; CI does not inject one, and the APK audit fails if a
+`pclink_defaults.json` asset appears. Configure PC Link in Settings → Optional
+modules with the WSS signaling URL and access credential of a relay you operate
+(self-hosted) or are authorized to use, matching the relay used by your computer's
+GA. Until then, pairing shows “Configure PC Link service first” and opens Optional
+modules instead of contacting a relay. A stale default left by an older build is
+ignored. Network connection starts only after pairing or restoring an existing
+pair; unpair to stop saved-room reconnect. The `ga-pclink:v1:` nine-digit QR
+protocol is unchanged. Per-device, revocable credentials need a relay-side issuer.
 
-受信构建可通过上述 Actions secret 注入默认中继，源码不保存凭据。
-安装包中的中继接入材料可被提取，不可使用账户、模型服务商或管理密钥。
-扫码后才连接；已有配对会自动重连。自定义地址和令牌整体覆盖默认配置，
-清空 PC Link 地址恢复默认，解除配对停止重连。无默认配置的自行构建包会
-明确提示打开可选组件配置，不再把缺配置显示成普通未链接。
+发布包与源码均不附带 PC Link 默认中继。APK 中的内容可被提取且所有安装共享，
+因此不能打包中继签名凭据；CI 不再注入，APK 审计发现 `pclink_defaults.json`
+即失败。请在「设置 → 可选组件 → PC Link」填写你自建或获授权使用的 WSS 信令地址
+与访问凭据，并与电脑端 GA 使用同一中继。未配置时点击配对会提示先配置并打开可选组件，
+不会连接中继；旧版本残留的默认配置会被忽略。扫码或恢复已有配对后才联网，
+解除配对停止重连；九位数字二维码协议不变。逐设备可撤销凭据需中继侧签发服务。

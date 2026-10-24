@@ -1,25 +1,40 @@
+"""PC Link must not ship shared relay signing material in source or APKs."""
 import asyncio
+import importlib.util
 import json
 from pathlib import Path
 import sys
 import types
+import zipfile
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parents[1] / 'app/src/main/assets/gacore'))
+ROOT = Path(__file__).parents[1]
+CORE = ROOT / 'app/src/main/assets/gacore'
+sys.path.insert(0, str(CORE))
 import service_config
 from test_pclink_credentials import load_link
 
 
+def load_audit():
+    spec = importlib.util.spec_from_file_location('audit_bootstrap', ROOT / 'tools/audit_source.py')
+    audit = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(audit)
+    return audit
+
+
 @pytest.fixture
-def bootstrap(tmp_path, monkeypatch):
+def legacy_defaults(monkeypatch, tmp_path):
+    # Simulate a device upgraded from a build that unpacked pclink_defaults.json.
     path = tmp_path / 'pclink_defaults.json'
-    monkeypatch.setattr(service_config, 'PCLINK_DEFAULTS', path)
+    path.write_text(json.dumps({'url': 'wss://relay.example/ws', 'token': 'synthetic-build-token'}))
+    # Older builds read this module attribute; keep it pointed at the stale file.
+    monkeypatch.setattr(service_config, 'PCLINK_DEFAULTS', path, raising=False)
     monkeypatch.setattr(service_config, 'load_config', lambda: {})
     return path
 
 
-def test_unconfigured_status_is_actionable_without_network(bootstrap, monkeypatch):
+def test_unconfigured_status_is_actionable_without_network(legacy_defaults, monkeypatch):
     link = load_link()
     monkeypatch.setattr(link, '_paired', lambda: False)
     monkeypatch.setattr(link, '_ensure_loop', lambda: pytest.fail('no pairing: no network'))
@@ -28,9 +43,19 @@ def test_unconfigured_status_is_actionable_without_network(bootstrap, monkeypatc
     assert status['paired'] is False and status['signal'] == ''
 
 
-def test_defaults_pair_old_code_without_user_settings(bootstrap, monkeypatch):
-    default = {'url': 'wss://relay.example/ws', 'token': 'synthetic-build-token'}
-    bootstrap.write_text(json.dumps(default))
+def test_stale_bundled_defaults_are_never_used_to_sign(legacy_defaults, monkeypatch):
+    link = load_link()
+    async def forbidden(*args, **kwargs):
+        pytest.fail('no relay request without a user-configured credential')
+    monkeypatch.setitem(sys.modules, 'p2p_ws_client', types.SimpleNamespace(connect_code=forbidden))
+    with pytest.raises(ValueError, match='Configure PC Link'):
+        asyncio.run(link._pair('123456789'))
+    assert service_config.pclink_config() is None
+
+
+def test_user_configured_relay_pairs_with_its_own_credential(monkeypatch):
+    custom = {'url': 'wss://private.example/ws', 'token': 'synthetic-custom'}
+    monkeypatch.setattr(service_config, 'load_config', lambda: {'pclink': custom})
     link = load_link()
     calls = []
     async def connect(url, code, **kwargs):
@@ -39,35 +64,33 @@ def test_defaults_pair_old_code_without_user_settings(bootstrap, monkeypatch):
     monkeypatch.setitem(sys.modules, 'p2p_ws_client', types.SimpleNamespace(connect_code=connect))
     monkeypatch.setattr(link, '_attach', lambda socket, config: calls.append(config))
     asyncio.run(link._pair('123456789'))
-    assert calls == [(default['url'], '123456789', default['token']), default]
-    assert service_config.public_config() == {}  # never reveal bootstrap credential
+    assert calls == [(custom['url'], '123456789', custom['token']), custom]
+    assert service_config.public_config() == {'pclink': {'url': custom['url'], 'has_token': True}}
 
 
-def test_custom_endpoint_never_inherits_bootstrap_token(bootstrap, monkeypatch):
-    bootstrap.write_text(json.dumps({'url': 'wss://relay.example/ws', 'token': 'synthetic-default'}))
-    custom = {'url': 'wss://private.example/ws', 'token': 'synthetic-custom'}
-    monkeypatch.setattr(service_config, 'load_config', lambda: {'pclink': custom})
-    assert service_config.pclink_config() == custom
-    with pytest.raises(ValueError, match='token'):
-        service_config.merge_config({}, {'pclink': {'url': custom['url'], 'token': ''}})
-    monkeypatch.setattr(service_config, 'load_config', lambda: {})
-    assert service_config.pclink_config()['token'] == 'synthetic-default'
+def test_build_never_injects_relay_defaults():
+    workflow = (ROOT / '.github/workflows/android.yml').read_text(encoding='utf-8')
+    assert 'GAGENT_PCLINK_DEFAULTS' not in workflow
+    assert 'write_pclink_defaults' not in workflow
+    assert not (ROOT / 'tools/write_pclink_defaults.py').exists()
 
 
-def test_invalid_bootstrap_fails_closed(bootstrap):
-    bootstrap.write_text(json.dumps({'url': 'http://relay.example/ws', 'token': 'synthetic'}))
-    with pytest.raises(ValueError):
-        service_config.pclink_config()
+@pytest.mark.parametrize('name', ['assets/gacore/pclink_defaults.json',
+                                  'app/src/main/assets/gacore/pclink_defaults.json'])
+def test_audit_rejects_bundled_relay_defaults_in_any_shape(name):
+    audit = load_audit()
+    host = 'wss://' + 'p2p.' + 'example' + '.org/ws'
+    for blob in (json.dumps({'url': host, 'token': 'synthetic-relay-token'}).encode(), b'{}'):
+        assert any(f['rule'] == 'credential-or-runtime-file' for f in audit.audit_blob(name, blob))
 
 
-def test_bootstrap_audit_exception_is_narrow():
-    import importlib.util
-    spec = importlib.util.spec_from_file_location('audit_bootstrap', Path(__file__).parents[1] / 'tools/audit_source.py')
-    audit = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(audit)
-    host = 'wss://' + 'p2p.' + 'gaagent' + '.ai/ws'
-    data = json.dumps({'url': host, 'token': 'synthetic-relay-token'}).encode()
-    assert audit.audit_blob('assets/gacore/pclink_defaults.json', data) == []
-    assert audit.audit_blob('assets/other.json', data)
-    assert audit.audit_blob('assets/gacore/pclink_defaults.json', data[:-1])
-    assert audit.audit_blob('assets/gacore/pclink_defaults.json', json.dumps({'url': host, 'token': 'sk-' + 'x'*30}).encode())
+def test_apk_audit_fails_when_package_contains_relay_defaults(tmp_path, monkeypatch, capsys):
+    audit = load_audit()
+    apk = tmp_path / 'synthetic.apk'
+    with zipfile.ZipFile(apk, 'w') as archive:
+        archive.writestr('assets/gacore/pclink.py', 'print(1)\n')
+        archive.writestr('assets/gacore/pclink_defaults.json', '{"token": "synthetic"}')
+    monkeypatch.setattr(sys, 'argv', ['audit_source.py', '--apk', str(apk)])
+    assert audit.main() is True
+    report = json.loads(capsys.readouterr().out)
+    assert [f['path'] for f in report['findings']] == ['assets/gacore/pclink_defaults.json']

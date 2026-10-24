@@ -7,6 +7,12 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- PC Link no longer ships a build-injected relay default. CI stops writing
+  `pclink_defaults.json`, the APK audit rejects that asset, and runtime ignores a
+  stale copy from older builds; configure your own relay URL and credential in
+  Optional modules. PC Link 不再在构建中注入默认中继凭据：CI 不写入、APK 审计拒绝该文件、
+  运行时忽略旧版残留，请在可选组件填写自己的中继地址与凭据。
+
 - The floating capsule and task-end notification no longer report a user-stopped
   or failed task as "✔ Done": the core now exposes an `end` reason
   (`done`/`stopped`/`error`) and the capsule shows "■ 已停止" (no alert) or a red
