@@ -176,6 +176,24 @@ class VisionEntryTest(unittest.TestCase):
             self.assertEqual(droid.ask_vision('image', 'read', timeout=15),
                              ('image', 'read', {'timeout': 15}))
 
+    def test_empty_vision_answer_raises_instead_of_passing_through_silently(self):
+        # 真机实证: 某轮 ask_vision 返回空串, stdout 只剩 _prepare_image 的「缩放/Base64」两行 print,
+        # agent 把"没有回答"当成功并整轮重问同一问题(白付一轮模型 + ~17s)。
+        # vision_api 契约: 错误以 "Error: ..." 字符串返回(可见), 空串则完全无信号 —— 必须显式失败。
+        from types import SimpleNamespace
+        for empty in ('', '   ', '\n\t', None):
+            adapter = SimpleNamespace(ask_vision=lambda image, prompt, _v=empty, **kw: _v)
+            with patch.dict(sys.modules, {'vision_api': adapter}):
+                with self.assertRaisesRegex(RuntimeError, '空响应'):
+                    droid.ask_vision('image', 'read')
+
+    def test_visible_error_string_from_adapter_still_passes_through(self):
+        # "Error: ..." 是可见失败, 由调用方按错误处理; 不在此改写成异常, 保持 vision_api 既有契约
+        from types import SimpleNamespace
+        adapter = SimpleNamespace(ask_vision=lambda image, prompt, **kw: 'Error: 请求超时')
+        with patch.dict(sys.modules, {'vision_api': adapter}):
+            self.assertEqual(droid.ask_vision('image', 'read'), 'Error: 请求超时')
+
     def test_code_run_exposes_lazy_vision_entry(self):
         import subprocess
         script = """

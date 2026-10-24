@@ -2,6 +2,7 @@ package com.ljq.ga
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.util.Log
 import rikka.shizuku.Shizuku
 
 /**
@@ -105,21 +106,25 @@ object ShizukuShell {
 
     /**
      * 跑一条非交互 shell 命令, 收全部输出后返回(适合 `am start` 这类短命令)。
-     * 未授权 / binder 死 / 启动失败一律返回 null, 由调用方决定降级——不抛异常打断调用方主流程。
+     * 未授权 / binder 死 / 反射不可用 / 读流失败一律返回 null, 由调用方决定降级——不抛异常打断调用方主流程。
+     * 失败原因一律记 logcat(TAG), 便于真机定位"通道就绪却没跑成"。
      */
     fun exec(cmd: String, timeoutMs: Long = 20_000): String? {
-        if (!ready()) return null
-        val method = newProcess ?: return null
+        if (!ready()) { Log.w(TAG, "exec skipped: channel not ready"); return null }
+        val method = newProcess ?: run { Log.w(TAG, "exec skipped: newProcess reflection unavailable"); return null }
         val process = runCatching {
             // env/dir 传 null: 继承 Shizuku 服务进程的环境; 命令是纯 ASCII 的 am 调用, 无编码协商问题
             method.invoke(null, arrayOf("sh", "-c", cmd), null, null) as? java.lang.Process
-        }.getOrNull() ?: return null
+        }.getOrNull() ?: run { Log.w(TAG, "exec skipped: newProcess invoke failed for: $cmd"); return null }
         return try {
             val out = process.inputStream.bufferedReader().use { it.readText() }
-            // 等退出码: am start 成功/失败都很快; 超时即视为本次失败(不静默当成功)
-            val done = process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-            if (done) out else null
-        } catch (_: Exception) {
+            // 不把 waitFor 超时当失败: 输出已到手即命令已执行完(am 的输出在进程退出前才 flush, 能读到就说明跑完了);
+            // 超时只说明进程句柄还没回收(极少见), 输出内容本身足以判定成败。等退出码只为兜底回收, 不作为成功条件。
+            runCatching { process.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS) }
+            Log.i(TAG, "exec ok (${out.length} chars): ${out.take(300)}")
+            out
+        } catch (e: Exception) {
+            Log.w(TAG, "exec read failed: ${e.javaClass.simpleName}: ${e.message}")
             null
         } finally {
             runCatching { process.destroyForcibly() }

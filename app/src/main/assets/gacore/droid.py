@@ -567,7 +567,16 @@ def ask_vision(image_input, prompt="描述当前界面", **options):
     except ImportError:
         raise RuntimeError("视觉模型未配置(找不到 vision_api 模块): 不要重试 ask_vision —— 立即改用 droid.look()/droid.ocr 读屏; "
                            "确需看图问答时, 先按 memory/vision_sop.md 配置 vision_api 再继续") from None
-    return invoke(image_input, prompt, **options)
+    result = invoke(image_input, prompt, **options)
+    # 空响应 = 静默失败(真机实证): 某轮 ask_vision 返回空串, stdout 只剩 _prepare_image 的
+    # 「缩放/Base64」两行 print, agent 把"没有回答"当成功, 又整轮重问同一问题(白付一轮模型 + ~17s)。
+    # vision_api 的契约是「错误以 "Error: ..." 字符串返回, 空串则完全无信号」——OpenAI 兼容后端
+    # 直接 return content 且无空检查, Claude 后端才有 raise。故在此补显式失败: 空/纯空白一律抛错,
+    # 不让无信号结果流过; 已以 "Error:" 开头的字符串保持原样回传(那是可见的失败, 由调用方按错处理)。
+    if result is None or not str(result).strip():
+        raise RuntimeError("视觉模型未返回回答内容(空响应): 不要重试 ask_vision —— 立即改用 droid.look()/droid.ocr 读屏; "
+                           "若确需看图问答, 检查 vision_api 的后端与模型是否支持图片输入, 或稍后重试")
+    return result
 
 
 def screen():
