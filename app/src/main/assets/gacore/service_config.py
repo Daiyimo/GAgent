@@ -114,16 +114,8 @@ def _save_config(updates):
             os.unlink(temporary)
 
 
-# Build-provided PC Link bootstrap is independent of user integration settings.
-# Never combine its credential with a user-supplied endpoint.
-PCLINK_DEFAULTS = Path(__file__).resolve().with_name('pclink_defaults.json')
-
-
+# PC Link has no build-provided default. Relay credentials come only from the
+# user's own Optional modules settings, so no shared signing material is bundled.
+# A stale pclink_defaults.json left by an older build is deliberately ignored.
 def pclink_config():
-    explicit = load_config().get('pclink')
-    if explicit:
-        return explicit
-    if not PCLINK_DEFAULTS.exists():
-        return None
-    value = json.loads(PCLINK_DEFAULTS.read_text(encoding='utf-8'))
-    return validate_service('pclink', value) or None
+    return load_config().get('pclink') or None

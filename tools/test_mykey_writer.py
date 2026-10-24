@@ -257,6 +257,14 @@ def _():
                                    'native_claude_config': {'name': 'KIMI', 'apikey': 'sk-k', 'apibase': 'https://cn.example', 'model': 'kimi-k3', 'models': ['kimi-k3'], 'type': 'claude'}})
     py_compile.compile(p, doraise=True); assert enames(p) == ['GA Plan', 'Codex', 'KIMI'], enames(p); assert by_name(p, 'Codex')['model'] == 'gpt-6-astra'
 
+@case('C17 推理强度切回「默认」: 载荷不含 reasoning_effort → 删掉旧值(界面显示默认而后端仍是 low 的回归)')
+def _():
+    p = with_file(CANON)
+    W['_provider_save'](json.dumps({'name': 'A', 'apikey': 'sk-a', 'apibase': 'https://a.example/v1', 'type': 'oai', 'model': 'm1', 'models': ['m1'], 'reasoning_effort': 'low'}))
+    assert by_name(p, 'A')['reasoning_effort'] == 'low'
+    W['_provider_save'](json.dumps({'name': 'A', 'apikey': 'sk-a', 'apibase': 'https://a.example/v1', 'type': 'oai', 'model': 'm1', 'models': ['m1']}))
+    assert 'reasoning_effort' not in by_name(p, 'A')
+
 if __name__ == '__main__':
     for name, ok, err in RESULTS: print(('PASS' if ok else 'FAIL'), name, ('' if ok else ' -> ' + err))
     n_ok = sum(1 for _, ok, _ in RESULTS if ok); print(f'\n{n_ok}/{len(RESULTS)} PASS')

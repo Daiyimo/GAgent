@@ -83,8 +83,17 @@ Kotlin application paths are under `app/src/main/java/com/ljq/ga/`.
   这些服务尚未整理为可独立发布的开源组件；客户端能力仍保留，服务端后续发布范围待定。
 - **Official onboarding / 官方接入闭环：** automatic login, token renewal and a new
   per-user issuer are not implemented. Legacy shared-key relays require migration;
-  a settings screen alone does not establish safe authorization.
+  a settings screen alone does not establish safe authorization. The PC Link value
+  that older builds packaged equals the default access key already published in the
+  public GenericAgent desktop client, which describes it as a scan filter rather than
+  a secret and relies on the unguessable room ID. Limits remain: the key exchange is
+  not bound to the short code, so a relay operator could interpose; short-code rate
+  limiting is unknown; unlinking only forgets the local room. This build packages
+  none and takes the relay URL and value from the user's Optional modules settings.
   官方自动登录、令牌续签和新逐用户签发器尚未实现；旧共享密钥中继仍需迁移，配置页不等于安全授权闭环。
+  旧版打包的 PC Link 值与公开的 GenericAgent 桌面端默认访问值相同，上游称其只用于过滤扫描、
+  不是秘密，并依赖不可猜测的房间 ID。仍有限制：密钥交换未与短码绑定，中继运营方理论上可介入；
+  短码限速未知；解除配对只删除本地房间。本版本不再打包，由用户在可选组件填写。
 - **Model redistribution / 模型再分发：** optional YOLO installation is documented in
   [OPTIONAL_YOLO.md](OPTIONAL_YOLO.md). The upstream model-card and export notices
   conflict; no new redistribution license is claimed.

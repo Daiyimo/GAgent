@@ -106,7 +106,7 @@ try{var _th=JSON.parse(localStorage.getItem('ga.theme')||'"system"');
 </div>
 
 <!-- bottom sheets -->
-<div id="sheetMask" onclick="closeSheets()"></div>
+<div id="sheetMask" onclick="closeTopSheet()"></div>
 <!-- F2.3 顶栏溢出菜单: 原顶栏快捷位收纳于此(浏览器=人工登录复用登录态 / 悬浮窗 / 无障碍状态引导); a11yStat 保原 id, refreshA11y 显隐逻辑零改动 -->
 <div class="sheet" id="hdrMoreSheet">
   <div class="grab"></div>
@@ -147,7 +147,7 @@ try{var _th=JSON.parse(localStorage.getItem('ga.theme')||'"system"');
   <div class="shBody" id="deviceList"></div>
 </div>
 <div class="sheet" id="failoverSheet">
-  <div class="foHd"><button class="foBack" onclick="closeSheets()" aria-label="返回"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg></button><h3 data-i18n="failoverTitle">故障转移</h3></div>
+  <div class="foHd"><button class="foBack" onclick="closeTopSheet()" aria-label="返回"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg></button><h3 data-i18n="failoverTitle">故障转移</h3></div>
   <p class="hint" style="margin:0 16px 2px" data-i18n="failoverHint">按顺序尝试，前一个失败自动切下一个。</p>
   <div class="shBody">
     <div class="foRow" style="border-bottom:none;padding:4px 6px 2px"><div class="mid"><div class="nm" style="font-weight:600" data-i18n="failoverEnable">启用故障转移</div></div><button class="sw" id="foEnabledSw" role="switch" aria-checked="false" aria-label="启用故障转移" onclick="toggleFailover()"></button></div>

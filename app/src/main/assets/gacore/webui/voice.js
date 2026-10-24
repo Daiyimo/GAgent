@@ -7,6 +7,7 @@
   const $=id=>document.getElementById(id);
   let owner=null;                 // 当前会话归属方; 状态高亮/识别文字只作用于它
   const bound=[];                 // 已绑定的全部语音按钮(用于「点其它按钮关麦」判定时豁免彼此, 切换交给 toggle)
+  if(typeof I18N!=='undefined'){Object.assign(I18N.zh,{v_needConfig:'请先在可选组件中配置流式语音识别'});Object.assign(I18N.en,{v_needConfig:'Set up streaming speech recognition in Optional modules first'})}
   const T=(k,zh)=>{try{return(window.t&&window.t(k))||zh}catch(e){return zh}};   // i18n: 复用全局 t(), 缺键兜底中文(zh-en 键已在 app.js I18N 对齐)
   const hasBridge=()=>!!(window.GA&&GA.sttStart&&GA.sttSend&&GA.sttPoll&&GA.sttStop);
   let ctx=null, src=null, proc=null, stream=null;
@@ -96,7 +97,9 @@
     // 1) 后端开 WS
     let st; try{st=JSON.parse(GA.sttStart()||'{}')}catch(e){st={};}
     if(myId!==runId){return;}                         // 期间被取消
-    if(!st.ok){setState('idle');toast(T('v_connFail','语音连接失败：')+(st.error||'unknown'));return;}
+    if(!st.ok){setState('idle');
+      if(st.error==='voice_not_configured'){toast(T('v_needConfig','请先在可选组件中配置流式语音识别'));if(typeof openIntegrations==='function')openIntegrations('voice');return;}
+      toast(T('v_connFail','语音连接失败：')+(st.error||'unknown'));return;}
     // 2) 取麦克风
     let s2;
     try{ s2=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:false,noiseSuppression:false,autoGainControl:false}}); }

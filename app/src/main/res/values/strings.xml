@@ -6,7 +6,7 @@
          开源版以 OSS 区分官方发行版；debug 资源再追加 Debug，避免权限列表同名。
          单一真相源——启动器/悬浮窗/应用信息均读此键, 故三处天然一致(issue#3 名称统一)。 -->
     <string name="app_name">GAgent OSS</string>
-    <string name="a11y_desc">GA 能力总线: UI dump/手势/截图，仅本机 127.0.0.1:8765 调用</string>
+    <string name="a11y_desc">GA 能力总线: UI dump/手势/截图，仅限本机回环地址并需本应用令牌调用</string>
     <!-- 桌面长按快捷方式(sense 无感开录): 短标签进桌面, 长标签进快捷菜单 -->
     <string name="sc_sense_start_short">记一下</string>
     <string name="sc_sense_start_long">开始记录真实世界</string>
