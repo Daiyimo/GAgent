@@ -22,7 +22,7 @@ import time
 import weakref
 
 from kernel_adapter import patches
-from plugins.tool_events_hook import _text, NAME_CAP, SUM_CAP, MAX_EVENTS
+from plugins.tool_events_hook import _text, NAME_CAP, SUM_CAP, trim
 
 URL_CAP = 300
 
@@ -161,8 +161,7 @@ def _open_event(label, action, phase, args, kwargs, url_from_args):
                 'screenshot_id': None,          # 唯一允许的 None(json null): 无既有截图落盘即缺省, 宁缺毋假
             }
             evs.append(ev)
-            if len(evs) > MAX_EVENTS:
-                del evs[:len(evs) - MAX_EVENTS]
+            trim(evs)
             return (weakref.ref(sess), gen, ev['seq'])
     except Exception:
         return None
@@ -230,7 +229,7 @@ def _close_event(rec, action, ret, err):
         pass
 
 
-_LIST_ACTIONS = ('dump', 'find', 'look')   # 观察结果为节点/检测列表: 摘要记条数+前 3 项
+_LIST_ACTIONS = ('look',)   # 检测列表: 摘要记条数+前 3 项
 
 
 # ---------- 观察性包装 ----------
@@ -287,10 +286,8 @@ def _install():
         _wrap(droid, 'back', 'back', 'acting')
         _wrap(droid, 'paste', 'paste', 'acting')
         _wrap(droid, 'shot', 'screenshot', 'verifying')
-        # 观察侧也记一跳: code_run 内的节点读取、OCR 检测与看图问答原先不在 tool_events 中,
-        # 长 code_run 无法区分等待、检测与远端视觉。嵌套调用(如 look 内的 shot)由 _depth 只记外层。
-        _wrap(droid, 'dump', 'dump', 'verifying')
-        _wrap(droid, 'find', 'find', 'verifying')
+        # 观察侧也记一跳: OCR 检测与看图问答原先不在 tool_events 中, 长 code_run 无法区分等待、检测与远端视觉。
+        # 只包耗时的观察; dump/find 便宜且常在轮询循环里, 记录会挤满环形缓冲。嵌套调用(如 look 内的 shot)由 _depth 只记外层。
         _wrap(droid, 'tap_text', 'tap', 'acting')
         _wrap(droid, 'scroll_view', 'scroll', 'acting')
         _wrap(droid, 'look', 'look', 'verifying')

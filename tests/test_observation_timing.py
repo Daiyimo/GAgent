@@ -33,8 +33,9 @@ def _bound_sess(entry, cid):
 class _Resp:
     status_code = 200
 
-    def __init__(self, lines):
+    def __init__(self, lines, body=b''):
         self._lines = lines
+        self.request = SimpleNamespace(body=body)
 
     def iter_lines(self):
         yield from self._lines
@@ -57,12 +58,23 @@ SSE = [b'event: message_start',
        b'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":1975,"output_tokens":42}}']
 
 
-def test_main_model_request_records_phases_context_and_usage(entry, monkeypatch):
+@pytest.fixture
+def timed(entry, monkeypatch):
     import llmcore
+    for name in ('_stream_with_retry', 'requests'):
+        monkeypatch.setattr(llmcore, name, getattr(llmcore, name))   # undo the runtime patches after each test
+    for name in ('_ga_llmt_patched', '_ga_llmt_orig', '_ga_abort_patched'):
+        monkeypatch.setattr(llmcore, name, getattr(llmcore, name, None), raising=False)
     entry.patches.patch_abort()
     entry.patches.patch_llm_timing()
+    return llmcore
+
+
+def test_main_model_request_records_phases_context_and_usage(entry, timed, monkeypatch):
+    import json
+    llmcore = timed
     sess = _bound_sess(entry, 'llmt')
-    monkeypatch.setattr('requests.post', lambda *a, **k: _Resp(SSE))
+    monkeypatch.setattr('requests.post', lambda *a, **k: _Resp(SSE, json.dumps(k.get('json')).encode()))
     try:
         payload = {'model': 'm', 'messages': [{'role': 'user', 'content': [{'type': 'image', 'source': {}},
                                                                           {'type': 'text', 'text': 'x' * 500}]}],
@@ -75,11 +87,32 @@ def test_main_model_request_records_phases_context_and_usage(entry, monkeypatch)
         assert len(d['llm']) == 1
         rec = d['llm'][0]
         assert rec['i'] == 1 and rec['attempts'] == 1 and rec['http'] == 200 and rec['errors'] == 0
-        assert rec['ctx_chars'] > 500 and rec['n_img'] == 1 and rec['n_msgs'] == 1 and rec['tools_chars'] > 0
+        assert rec['body_bytes'] > 500 and rec['n_img'] == 1 and rec['n_msgs'] == 1
         assert rec['in_tok'] == 1975 and rec['out_tok'] == 42
         for key in ('hdr', 'first', 'think', 'text', 'tool', 'end'):
             assert isinstance(rec[key], float), key
         assert rec['first'] <= rec['think'] <= rec['text'] <= rec['tool'] <= rec['end']
+    finally:
+        entry.patches.bind_sess(None)
+
+
+def test_abandoned_stream_does_not_claim_later_requests(entry, timed, monkeypatch):
+    llmcore = timed
+    sess = _bound_sess(entry, 'llmt3')
+    seen = []
+    def post(*a, **k):
+        seen.append(getattr(entry.patches._tls, 'llmt', None))
+        return _Resp(SSE)
+    monkeypatch.setattr('requests.post', post)
+    try:
+        llm = SimpleNamespace(max_retries=0, stream=True, connect_timeout=1, read_timeout=1, proxies=None, verify=True)
+        g = llmcore._stream_with_retry(llm, 'https://x.test/v1/messages', {}, {'model': 'm', 'messages': []},
+                                       lambda r: llmcore._parse_claude_sse(r.iter_lines()))
+        next(g)                                   # first request in flight, generator then abandoned
+        assert seen[0] is not None and getattr(entry.patches._tls, 'llmt', None) is None
+        llmcore.requests.post('https://x.test/other')   # an unrelated request on the same thread
+        assert seen[1] is None
+        g.close()
     finally:
         entry.patches.bind_sess(None)
 
@@ -176,8 +209,10 @@ def test_observation_hops_record_vision_cost_and_keep_results(entry):
         ev = evs[0]
         assert ev['name'] == 'droid.ask_vision' and ev['status'] == 'error' and ev['out_len'] > 0
         assert 'ndarray[2340, 1080, 3]' in ev['input_summary']
-        for name in ('dump', 'find', 'look', 'ask_vision', 'scroll_view', 'tap_text'):
+        for name in ('look', 'ask_vision', 'scroll_view', 'tap_text'):
             assert getattr(getattr(droid, name), '_ga_bwev', False), name
+        for name in ('dump', 'find'):   # cheap and polled in loops: not recorded, so they cannot flood the ring
+            assert not getattr(getattr(droid, name), '_ga_bwev', False), name
     finally:
         entry.patches.bind_sess(None)
 
@@ -186,10 +221,18 @@ def test_list_observations_are_summarized_by_count(entry):
     from plugins import browser_events_hook as hook
     sess = _bound_sess(entry, 'lists')
     try:
-        mod = SimpleNamespace(__name__='droidfake', dump=lambda: [{'t': str(i)} for i in range(60)])
-        hook._wrap(mod, 'dump', 'dump', 'verifying')
-        assert len(mod.dump()) == 60
-        ev = [e for e in sess.state['tool_events'] if e.get('name') == 'droidfake.dump'][0]
+        mod = SimpleNamespace(__name__='droidfake', look=lambda: [{'t': str(i)} for i in range(60)])
+        hook._wrap(mod, 'look', 'look', 'verifying')
+        assert len(mod.look()) == 60
+        ev = [e for e in sess.state['tool_events'] if e.get('name') == 'droidfake.look'][0]
         assert ev['result_summary'].startswith('n=60 ') and ev['status'] == 'done'
     finally:
         entry.patches.bind_sess(None)
+
+
+def test_ring_trim_keeps_running_host_events():
+    from plugins.tool_events_hook import MAX_EVENTS, trim
+    evs = [{'seq': 0, 'status': 'running'}] + [{'seq': i, 'status': 'done'} for i in range(1, MAX_EVENTS + 5)]
+    trim(evs)
+    assert len(evs) == MAX_EVENTS and evs[0] == {'seq': 0, 'status': 'running'}
+    assert [e['seq'] for e in evs[1:3]] == [6, 7]   # the five oldest finished events went first

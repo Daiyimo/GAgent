@@ -84,8 +84,15 @@ def _on_tool_before(ctx):
             'result_summary': '',
             'error': '',
         })
-        if len(evs) > MAX_EVENTS:
-            del evs[:len(evs) - MAX_EVENTS]
+        trim(evs)
+
+
+def trim(evs):
+    """环形上限: 超出时丢最旧的已结束事件; 运行中的宿主事件不淘汰, 否则 tool_after 找不到它来收尾。"""
+    over = len(evs) - MAX_EVENTS
+    if over > 0:
+        for i in reversed([i for i, e in enumerate(evs) if e.get('status') != 'running'][:over]):
+            del evs[i]
 
 
 def _on_tool_after(ctx):

@@ -113,12 +113,10 @@ class _ReqProxy:
         import requests; r = requests.post(*a, **k)
         sess = current_sess()
         try:
-            if rec is not None:
-                if rec['hdr'] is None: rec['hdr'] = _llmt_dt(rec)
-                rec['http'] = int(getattr(r, 'status_code', 0) or 0)
-            _sess_resps(sess).add(r)
+            _sess_resps(sess).add(r)                 # 先登记: 「停止」靠它关掉在飞 SSE, 不受计时影响
             _wrap_iter_lines(r, sess, rec)
         except Exception: pass
+        if rec is not None: _llmt_sent(rec, r)
         return r
 
 
@@ -243,21 +241,15 @@ def _llmt_dt(rec):
 
 
 def _llmt_open(payload):
-    """每次 _stream_with_retry 一条记录: 上下文规模在发出前量, 时间点相对 t_req(秒)。无归属会话不记。"""
-    import json, time
+    """每次 _stream_with_retry 一条记录, 时间点相对 t_req(秒)。无归属会话不记。上下文规模在发出后从请求体量, 不在请求路径上重复序列化。"""
+    import time
     s = current_sess()
     st = getattr(s, 'state', None) if s is not None else None
     if not isinstance(st, dict) or not isinstance(payload, dict): return None
-    def size(v):
-        try: return len(json.dumps(v, ensure_ascii=False, default=str))
-        except Exception: return 0
     msgs = payload.get('messages') or payload.get('input') or []
-    try: body = json.dumps(msgs, ensure_ascii=False, default=str)
-    except Exception: body = ''
     rec = {'gen': int(st.get('gen', 0) or 0), 'i': 0, 't_req': round(time.time(), 3),
            'model': str(payload.get('model') or '')[:60], 'n_msgs': len(msgs) if isinstance(msgs, list) else 0,
-           'ctx_chars': len(body), 'sys_chars': size(payload.get('system') or ''), 'tools_chars': size(payload.get('tools') or []),
-           'n_img': body.count('"type": "image"') + body.count('"image_url"'),
+           'body_bytes': 0, 'n_img': 0,
            'attempts': 0, 'http': 0, 'errors': 0, 'last_error': '',
            'hdr': None, 'first': None, 'think': None, 'text': None, 'tool': None, 'end': None,
            'in_tok': 0, 'out_tok': 0, 'cache_read': 0}
@@ -272,6 +264,19 @@ def _llmt_open(payload):
     finally:
         if lock is not None: lock.release()
     return rec
+
+
+def _llmt_sent(rec, r):
+    """响应头到达: 记首包时间、HTTP 码, 并从已发送的请求体量上下文规模(bytes.count 为 C 级扫描)。"""
+    try:
+        if rec['hdr'] is None: rec['hdr'] = _llmt_dt(rec)
+        rec['http'] = int(getattr(r, 'status_code', 0) or 0)
+        body = getattr(getattr(r, 'request', None), 'body', None) or b''
+        if isinstance(body, str): body = body.encode('utf-8', 'replace')
+        rec['body_bytes'] = max(rec['body_bytes'], len(body))
+        rec['n_img'] = max(rec['n_img'], body.count(b'"type": "image"') + body.count(b'"image_url"'))
+    except Exception:
+        pass
 
 
 def _llmt_line(rec, line):
@@ -308,18 +313,17 @@ def patch_llm_timing():
     def _stream_with_retry(sess, url, headers, payload, parse_fn):
         try: rec = _llmt_open(payload)
         except Exception: rec = None
-        prev = getattr(_tls, 'llmt', None)
-        _tls.llmt = rec
         g = orig(sess, url, headers, payload, parse_fn)
         try:
             while True:
+                prev, _tls.llmt = getattr(_tls, 'llmt', None), rec   # 只在推进内层生成器时归属本记录: 弃用的生成器不会吞下后续请求
                 try: chunk = next(g)
                 except StopIteration as e: return e.value
+                finally: _tls.llmt = prev
                 if rec is not None and isinstance(chunk, str) and chunk.lstrip().startswith(('!!!Error', '[!!!')):
                     rec['errors'] += 1; rec['last_error'] = chunk.strip()[:120]
                 yield chunk
         finally:
-            _tls.llmt = prev
             try: g.close()
             except Exception: pass
             if rec is not None:
