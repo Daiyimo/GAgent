@@ -1,5 +1,6 @@
 """Slow tasks must be attributable: main-model request timing, observation hops and vision cost are recorded
 without changing what the wrapped calls return."""
+import importlib.util
 import sys
 import threading
 from pathlib import Path
@@ -112,6 +113,52 @@ def test_openai_placeholders_do_not_count_as_first_tokens(entry):
         assert rec['text'] == 5.0 and rec['think'] is None
         entry.patches._llmt_line(rec, b'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3}}')
         assert (rec['in_tok'], rec['out_tok']) == (10, 3)
+
+
+def _template():
+    spec = importlib.util.spec_from_file_location('vision_template', CORE / 'memory/vision_api.template.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_vision_disables_extended_thinking_by_default_and_allows_provider_default():
+    module = _template()
+    cfg = {'apibase': 'https://example.test/anthropic', 'apikey': 'test-placeholder', 'model': 'test'}
+    with patch.object(module, '_cfg', return_value=cfg), patch.object(module.requests, 'post') as post:
+        post.return_value.status_code = 200
+        post.return_value.json.return_value = {'content': [{'type': 'text', 'text': 'OK'}]}
+        assert module._call_claude('img', 'read', 10) == 'OK'
+        assert post.call_args.kwargs['json']['thinking'] == {'type': 'disabled'}
+        module._call_claude('img', 'read', 10, thinking='auto')
+        assert 'thinking' not in post.call_args.kwargs['json']
+
+
+def test_vision_falls_back_once_when_provider_rejects_thinking_parameter():
+    module = _template()
+    cfg = {'apibase': 'https://example.test/anthropic', 'apikey': 'test-placeholder', 'model': 'test'}
+    rejected = SimpleNamespace(status_code=400, raise_for_status=lambda: (_ for _ in ()).throw(AssertionError('no')))
+    ok = SimpleNamespace(status_code=200, raise_for_status=lambda: None,
+                         json=lambda: {'content': [{'type': 'text', 'text': 'OK'}]})
+    sent = []
+    def post(*a, **k):
+        sent.append(dict(k['json']))
+        return rejected if len(sent) == 1 else ok
+    with patch.object(module, '_cfg', return_value=cfg), patch.object(module.requests, 'post', side_effect=post):
+        assert module._call_claude('img', 'read', 10) == 'OK'
+    assert [('thinking' in p) for p in sent] == [True, False]
+
+
+def test_vision_keeps_configured_disable_without_retry():
+    module = _template()
+    cfg = {'apibase': 'https://example.test/anthropic', 'apikey': 'test-placeholder', 'model': 'test',
+           'thinking_type': 'disabled'}
+    with patch.object(module, '_cfg', return_value=cfg), patch.object(module.requests, 'post') as post:
+        post.return_value.status_code = 400
+        post.return_value.raise_for_status.side_effect = RuntimeError('HTTP 400')
+        with pytest.raises(RuntimeError):
+            module._call_claude('img', 'read', 10, thinking='auto')
+        assert post.call_count == 1 and post.call_args.kwargs['json']['thinking'] == {'type': 'disabled'}
 
 
 def test_observation_hops_record_vision_cost_and_keep_results(entry):
