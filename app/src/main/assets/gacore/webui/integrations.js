@@ -30,7 +30,7 @@ function openIntegrations(){
   let panel=document.getElementById('integrationsPanel');
   if(!panel){panel=el('div');panel.id='integrationsPanel';panel.style.display='none';$('homePanel').parentElement.appendChild(panel)}
   panel.replaceChildren();   // rebuilt on every open: fresh saved state + current language, no stale typed secrets
-  panel.appendChild(el('p','hint intLead',en?'Optional. Only endpoints you configure are used. Blank tokens keep the saved value only when the URL is unchanged; clear the URL to disable a module.':'可选，只连接你配置的服务。令牌留空仅在地址未变时保留旧值；清空地址即停用该组件。'));
+  panel.appendChild(el('p','hint intLead',en?'PC Link can use build-provided defaults; blank PC Link URL restores them. Other blank URLs disable the module. Blank tokens retain saved values only for unchanged URLs.':'PC Link 可使用安装包的默认服务；清空 PC Link 地址恢复默认，其他组件清空地址停用。令牌留空仅在地址未变时保留旧值。'));
 
   const section=(title,chip)=>{const s=el('div','secLbl');s.appendChild(el('span',null,title));if(chip)s.appendChild(chip);panel.appendChild(s);const c=el('div','card');panel.appendChild(c);return c};
   const models=el('button','row rowBtn');models.type='button';

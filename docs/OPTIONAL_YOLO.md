@@ -59,7 +59,25 @@ YOLO("best.pt").export(format="onnx", imgsz=640, dynamic=True,
 
 Required contract: float32 RGB `[1,3,H,W]`, NMS output `[1,300,6]` with `x1,y1,x2,y2,confidence,class_id`, and the 21 classes in `ui_detect_lite.NAMES` order. Exporter versions may differ; validate compatibility first. The recipe was not re-exported in this release.
 
-## 3. 安装到自己的手机 / Install on your phone
+## 3. 从设置导入 / Import from Settings
+
+在设置中打开「本地图标识别」，选择你已有的兼容 `.onnx` 文件（不超过 32 MiB）。
+无需模型 API Key。应用会先在手机上执行方形、矩形两种输入的 ONNX 推理校验，
+通过后才切换模型；失败会保留之前的模型。模型独立存放于 `user_models/`，
+配置位于 `kv/ga.detector.json`，覆盖安装不会替换该文件。导入后点击「检测当前屏幕」，
+核对实际图标数、文字数、屏幕尺寸和耗时。文件存在不等于实际检测通过。
+
+Open Settings → Local icon detection and select your compatible `.onnx` file
+(up to 32 MiB). No provider key is required. The app runs square and rectangular
+inference checks before switching models; failed imports preserve the previous
+model. User models and selection survive APK upgrades. Use “Test current screen”
+to verify actual icon/text detections, screen dimensions and elapsed time.
+
+The APK still excludes the optional weights; importing a model does not change
+its licensing terms or grant redistribution rights.
+
+## 4. 兼容旧安装方式 / Legacy installation
+
 
 将兼容的 ONNX 重命名为 `ui_detect_yolo.onnx`，记录其 SHA-256，并通过 USB/系统文件选择放到手机 Download 目录。让 GAgent 在本机执行以下代码（把摘要替换为你实际核验的值），或 debug 安装使用 `adb shell run-as` 写入相同私有路径。无需官方账号、订阅或密钥。
 
@@ -86,14 +104,14 @@ The target is the current app's private `files/ga/models/ui_detect_v1/models/ui_
 Release and debug installations are independent. Back up an existing detector
 before replacement. Root is not required; resolve file-access permission if Downloads cannot be read.
 
-## 4. 验证与停用 / Verify and disable
+## 5. 验证与停用 / Verify and disable
 
-重启 GAgent 后运行 `print(droid.look(cache=False))`。`droid.ping()['loaded']` 应包含 `ui_detect_yolo.onnx`，检测项应有 `Icon`/`TextButton` 等类别。不要仅凭文件存在宣称模型工作。
+重启 GAgent 后运行 `print(droid.look(cache=False))`。`droid.ping()['loaded']` 应包含 `detector_models.model_path()` 返回的模型路径，检测项应有 `Icon`/`TextButton` 等类别。不要仅凭文件存在宣称模型工作。
 
 Restart GAgent, then run `print(droid.look(cache=False))`. Confirm the detector appears in `droid.ping()['loaded']` and that actual predictions contain UI classes such as `Icon` or `TextButton`.
 
-删除这个可选文件并重启即可退回 OCR。模型安装仅作用于 App 私有数据，不会加入 Git 源码历史或默认发布包。
-Delete the optional file and restart to return to OCR. Device installation does not add the model to Git history or default release artifacts.
+若通过设置导入，移除 `kv/ga.detector.json` 后重启可取消该选择，`user_models/` 中原模型仍保留。若还存在旧安装路径的 `ui_detect_yolo.onnx`，需先备份并移开它才能退回仅 OCR。模型安装仅作用于 App 私有数据，不会加入 Git 源码历史或默认发布包。
+For a Settings import, remove `kv/ga.detector.json` and restart to clear the selection; weights in `user_models/` remain preserved. Also move aside any legacy `ui_detect_yolo.onnx` to return to OCR only. Device installation does not add the model to Git history or default release artifacts.
 
 
 可直接对 GAgent 说：

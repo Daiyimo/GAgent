@@ -76,9 +76,7 @@ the entire APK or Android codebase**. [Core, memory and counting scope →](docs
 | 🎙️ **Step Voice streaming input** | Speak a task and review the transcript. The client supports the Step ASR streaming path through a configured compatible WSS service. |
 | 🛠️ **APK Factory** | Describe a small app, generate its project, then submit, track and fetch its APK through your configured build service. Templates and clients are included. |
 
-**Local tools are ready to configure; hosted integrations are opt-in.** PC Link,
-voice and APK Factory do not ship server credentials, build workers or automatic
-service enrollment. [All setup steps](docs/CONFIGURATION.md) · [Component boundaries](docs/OFFICIAL_MODULES.md)
+**Local tools are ready to configure; hosted integrations are opt-in.** Trusted builds may include a PC Link relay bootstrap: scan the computer QR to pair, with no manual relay setup. Source-only builds need a compatible relay profile. Voice and APK Factory do not include service credentials or build workers. [All setup steps](docs/CONFIGURATION.md) · [Component boundaries](docs/OFFICIAL_MODULES.md)
 
 ## 🧠 A small core, useful memory, less repeated context
 
@@ -149,3 +147,5 @@ GenericAgent / GAndroid**; attribution remains in [NOTICE](NOTICE).
 YOLO weights are optional and not bundled. iOS and ESP32 development remain separate.
 
 [Website](https://gaagent.ai/) · [GA Mobile](https://app.gaagent.ai/) · [GenericAgent](https://github.com/lsdefine/GenericAgent) · [AndroidBench](https://androidbench.gaagent.ai/) · [Logo](docs/assets/README.md)
+
+Settings → Local icon detection now imports and validates a user-supplied compatible ONNX model without a provider key, and can test a real screenshot. Optional detector weights remain separately supplied; see [setup](docs/OPTIONAL_YOLO.md).
