@@ -34,6 +34,8 @@ _wake = [None]        # keeper 的唤醒事件: 断线时 set, 免等 2s 轮转
 _last_rx = [float('-inf')]
 _resume_at = [float('-inf')]
 _resume_busy = [False]
+_gen = [0]            # 配对/解除各 +1: 在飞的 keeper 建连完成时代际不符即弃, 不会在解除后连上或覆盖新配对
+_pairing = [False]    # 配对进行中 keeper 不建连(否则旧房间连接会在新配对前后抢占 _sock)
 
 
 def _paired():
@@ -70,13 +72,14 @@ async def _keeper():
             config = service_config.pclink_config()
             if _sock is not None and config != _sock_config:
                 await _drop(_sock)
-            if config and _sock is None and _paired():
+            if config and _sock is None and not _pairing[0] and _paired():
+                gen = _gen[0]
                 saved = p2p.load_room(NAME, path=ROOMS)
                 if saved['signal_url'] != config['url']:
                     raise ValueError('Relay address changed; pair again before reconnecting')
                 s = await p2p.connect_saved(NAME, path=ROOMS, access_key=config['token'])
-                if service_config.pclink_config() != config:
-                    await s.close()
+                if gen != _gen[0] or _sock is not None or service_config.pclink_config() != config:
+                    await s.close()        # 期间解除/重新配对/改配置: 这条连接已过期
                     continue
                 _attach(s, config)
                 backoff = 3
@@ -220,18 +223,32 @@ async def _pair(code):
     config = service_config.pclink_config()
     if not config:
         raise ValueError('Configure PC Link in Settings > Optional modules first')
-    if _sock is not None:
-        await _drop(_sock)
-    s = await p2p.connect_code(config['url'], code, name=NAME, rooms_file=ROOMS, access_key=config['token'])
-    if service_config.pclink_config() != config:
-        await s.close()
-        raise ValueError('Relay configuration changed during pairing')
-    _attach(s, config)
+    _gen[0] += 1
+    gen, _pairing[0] = _gen[0], True
+    try:
+        if _sock is not None:
+            await _drop(_sock)
+        s = await p2p.connect_code(config['url'], code, name=NAME, rooms_file=ROOMS, access_key=config['token'])
+        if gen != _gen[0] or service_config.pclink_config() != config:
+            await s.close()
+            raise ValueError('Pairing superseded or relay configuration changed during pairing')
+        if _sock is not None:
+            await _drop(_sock)
+        _attach(s, config)
+    finally:
+        if gen == _gen[0]:
+            _pairing[0] = False
 
 
 async def _unpair():
+    _gen[0] += 1
+    _pairing[0] = False
+    _forget_room()                  # 先删房间再断线: 断线唤醒 keeper 时它已看不到可重连的配对
     if _sock is not None:
         await _drop(_sock)
+
+
+def _forget_room():
     try:
         with open(ROOMS, 'r', encoding='utf-8') as f:
             d = json.load(f)
