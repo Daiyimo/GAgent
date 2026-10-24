@@ -180,6 +180,56 @@ Physical unplug, landscape/foldables on this Meizu, voice and optional services
 were not tested. Private screenshots/traces are not published; uninstrumented
 zero token fields do not mean zero usage.
 
+## 2026-10-25 integration candidate / 集成候选
+
+MEIZU 21, Android 16, portrait 1080×2340, GLM-5.3-flash (Anthropic protocol), the
+original queries, a fresh conversation per run, the target app force-stopped, a
+fixed 240 s budget including model wait. Every run is kept. Success requires
+`end=done` within budget, no pending question, no settings change, and a checked
+answer: the device's real page title for display/sound; for Bilibili the
+most-played order, full first title and uploader checked against an independent
+on-device reading. Small samples on one phone and one network; not a benchmark.
+
+在 MEIZU 21 上用原始指令、每轮新对话、目标 App 冷启动、240 秒固定预算（含模型等待）逐轮记录，
+失败与超时全部保留。成功需在预算内完成、无待回答问题、设置未变且答案经独立核验。样本小、单机单网络，不是基准成绩。
+
+| Arm / 组 | display | sound | Bilibili |
+| --- | --- | --- | --- |
+| main 7bc0340 | 3/3, median 90.4 s | 3/3, median 76.1 s | 0/3 (all 240 s) |
+| + observe-only timing | 3/3, 92.2 s | 3/3, 61.5 s | 0/3 |
+| + vision template without extended thinking | 3/3, 86.7 s | 3/3, 95.3 s | 1/3 |
+| + reasoning effort `low` (user setting) | 3/3, 40.3 s | 3/3, 56.9 s | 2/3; one failed run opened and played the video |
+| + imported YOLO (default effort) | 3/3, 47.0 s | 3/3, 54.0 s | 2/3 |
+
+- Per-request timing showed the main model reasoning on every turn (first byte
+  3.6–10.6 s, reasoning before text up to 23 s); a vision call took about 30 s
+  before the template change. After migrating the device's own `vision_api.py`
+  (backup kept, header names preserved), the same synthetic and real screenshots
+  took 2.0 s and 2.6 s instead of 44.2 s and 11.0 s, with correct answers.
+- Bilibili failures come from the app's own GUI: a self-drawn filter drawer absent
+  from the node tree, back leaving the results page, and no confirm control. No
+  app-specific workaround was added.
+- Reasoning effort `low` is a user choice in the composer, not a default here: it
+  was faster but one run violated “do not play”.
+- Original AndroidDaily items `v9_used_L1` and `v9_meet_L1` stopped at the apps'
+  login pages and asked the user; recorded as blocked, not passed.
+- The optional YOLO export imported through Settings, passed on-device validation
+  and detected 5 icons and 24 text items in 5009 ms on its first run.
+- System back closed the detector before settings and one layer per press across
+  18 settings/sheet/dialog screens in dark and light; the voice and PC Link setup
+  guides opened their own fields without asking for the microphone. Landscape and
+  the keyboard kept the focused field visible without horizontal overflow.
+- Model behavior to watch: GLM sometimes issued `code_run` without code and once
+  wrote a fabricated execution result without calling a tool; judge runs by the
+  recorded tool events, not by the reply text.
+
+Not established in this round / 本轮未证明: App self-ADB offscreen (the phone required
+re-pairing, a user step), optical QR pairing (needs a user-run relay and a PC QR), a
+fresh install (the ROM requires on-device confirmation for new USB installs), the
+overlay error state, foldables and other OEMs.
+本轮未证明：App 自连 ADB 离屏（需用户重新配对）、光学扫码配对（需用户自建中继与电脑二维码）、
+全新安装（系统要求在手机上确认 USB 安装）、浮窗出错态、折叠屏与其他厂商。
+
 ## Not established / 尚未证明
 
 - Physical foldable behavior, broader OEM coverage, external displays and 16 KB page-size coverage.

@@ -22,6 +22,9 @@ publicly released. Exact artifacts and acceptance belong to their release record
   motion; fading scrims no longer swallow taps. Scrims use one theme token (darker in
   dark mode) and a re-opened lower sheet is drawn on top. 系统返回只关最上层；首启同意页不再被返回关掉；
   设置子页还原父页位置，遵守减少动态效果；遮罩改用主题色值，暗色更深。
+- PC Link reconnects that finish after unlinking, or during a new pairing, are
+  discarded instead of reconnecting an unpaired phone or replacing the new link.
+  解除配对后或新配对期间迟到的重连会被丢弃。
 - Streaming voice checks its configuration before asking for the microphone and
   opens the voice settings when unset. 语音未配置时不再先申请麦克风。
 - A local bus start failure no longer stops the app from opening, and crash capture
