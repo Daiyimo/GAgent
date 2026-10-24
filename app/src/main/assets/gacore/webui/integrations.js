@@ -21,7 +21,7 @@ function parseProfile(profile,inputs){
   return profile.integrations;
 }
 
-function openIntegrations(){
+function openIntegrations(focus){   // focus=module name: scroll its card into view (e.g. PC Link asks for its relay)
   const en=lang==='en',L=pair=>pair[en?1:0];
   let config={};
   try{config=JSON.parse(GA.send('/integrations.get')||'{}')}catch(e){toast(String(e));return}
@@ -30,7 +30,7 @@ function openIntegrations(){
   let panel=document.getElementById('integrationsPanel');
   if(!panel){panel=el('div');panel.id='integrationsPanel';panel.style.display='none';$('homePanel').parentElement.appendChild(panel)}
   panel.replaceChildren();   // rebuilt on every open: fresh saved state + current language, no stale typed secrets
-  panel.appendChild(el('p','hint intLead',en?'PC Link can use build-provided defaults; blank PC Link URL restores them. Other blank URLs disable the module. Blank tokens retain saved values only for unchanged URLs.':'PC Link 可使用安装包的默认服务；清空 PC Link 地址恢复默认，其他组件清空地址停用。令牌留空仅在地址未变时保留旧值。'));
+  panel.appendChild(el('p','hint intLead',en?'A blank URL disables its module. A blank token keeps the saved value only while the URL is unchanged.':'地址留空即停用该组件；令牌留空仅在地址未变时保留旧值。'));
 
   const section=(title,chip)=>{const s=el('div','secLbl');s.appendChild(el('span',null,title));if(chip)s.appendChild(chip);panel.appendChild(s);const c=el('div','card');panel.appendChild(c);return c};
   const models=el('button','row rowBtn');models.type='button';
@@ -78,10 +78,12 @@ function openIntegrations(){
     const payload={};for(const [name,fields] of Object.entries(inputs))payload[name]=Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v.value]));
     try{const result=JSON.parse(GA.send('/integrations.save '+JSON.stringify(payload))||'{}');
       if(!result.ok){error.classList.add('bad');error.textContent=result.error||'Save failed';error.scrollIntoView({block:'center'});return}
-      toast(en?'Saved':'已保存');setvBack()}
+      toast(en?'Saved':'已保存');if(window.PCLINK)PCLINK.refreshStatus();setvBack()}
     catch(e){error.classList.add('bad');error.textContent=String(e)}
   };
   setNav('integrationsPanel',en?'Optional modules':'可选组件');
+  const target=focus&&inputs[focus]&&inputs[focus].url.closest('.card');
+  if(target)(target.previousElementSibling||target).scrollIntoView({block:'start'});
 }
 window.openIntegrations=openIntegrations;
 })();

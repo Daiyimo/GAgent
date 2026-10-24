@@ -119,3 +119,43 @@ def test_optional_module_settings_text_is_readable_in_both_themes(dark):
         assert page.locator('#integrationsPanel .intChip.on').count() == 2
         assert not errors
         browser.close()
+
+
+def test_unconfigured_pclink_opens_its_relay_fields_and_save_refreshes_status():
+    errors = []
+    with sync_playwright() as engine:
+        browser = engine.chromium.launch(executable_path=os.environ.get('PLAYWRIGHT_CHROMIUM_EXECUTABLE'))
+        page = browser.new_page(viewport={'width': 390, 'height': 640}, locale='en')
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.route('http**://**', lambda route: route.abort())
+        page.add_init_script('''
+          window.services={}; window.statusCalls=0;
+          window.GA=new Proxy({ready:()=> 'ok', poll:()=> '{}', isDark:()=>false,
+            send:(c)=>{
+              if(c==='/integrations.get')return JSON.stringify(services);
+              if(c==='/config')return '{"ok":true,"items":[]}';
+              if(c.startsWith('/integrations.save ')){const p=JSON.parse(c.slice(19)).pclink;
+                if(p&&p.url)services.pclink={url:p.url,has_token:!!p.token};return '{"ok":true}'}
+              if(c==='/pclink.status'||c==='/pclink.resume'){statusCalls++;
+                return JSON.stringify({ok:1,configured:!!services.pclink,paired:false,connected:false})}
+              return c.startsWith('/kv.get ')?'':'{}'}
+          },{get:(t,k)=>t[k]||(()=> '{}')});
+        ''')
+        page.goto((WEB / 'index.html').as_uri())
+        page.locator('.pcAgree').click()
+        page.evaluate('openSettings()')
+        expect(page.locator('#pcLinkV')).to_contain_text('Optional modules')
+        page.locator('#pcLinkRow').click()
+        panel = page.locator('#integrationsPanel')
+        expect(panel).to_be_visible()
+        assert 'build-provided' not in panel.inner_text()
+        url = page.locator('#int_pclink_url')
+        expect(url).to_be_in_viewport()
+        url.fill('wss://relay.example.com/ws')
+        page.locator('#int_pclink_token').fill('synthetic-user-credential')
+        before = page.evaluate('statusCalls')
+        panel.get_by_role('button', name='Save', exact=True).click()
+        expect(page.locator('#pcLinkV')).to_have_text('Not linked')
+        assert page.evaluate('statusCalls') > before
+        assert not errors
+        browser.close()

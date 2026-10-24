@@ -233,7 +233,7 @@ function openManualPair(){
     if(!code)return toast(t('pcPairFail')+'9?');
     doPair(code,'manual')}})}
 function onRowTap(){
-  if(configError){toast(configError);if(typeof openIntegrations==='function')openIntegrations();return}
+  if(configError){toast(configError);if(typeof openIntegrations==='function')openIntegrations('pclink');return}
   if(paired){gaConfirm(t('pcUnpair'),t('pcUnpairAsk'),()=>call('/pclink.unpair',r=>{paired=connected=false;renderRow();showFab();track('pclink_unpair');toast(t('pcUnpair'))}),true);return}
   gaModal({title:t('pcPairTitle'),msg:t('pcPairHint'),okText:t('pcScan'),cancelText:t('pcManual'),
     onOk:()=>startScan(),onCancel:()=>openManualPair()})}
