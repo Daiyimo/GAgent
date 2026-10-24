@@ -56,8 +56,11 @@
   --dark-fxRip:212,216,228; --dark-chipEdge:linear-gradient(135deg,rgba(255,255,255,.26),var(--line) 30%,var(--line) 70%,rgba(255,255,255,.16));
 }
 :root{
-  --z-hdr:10; --z-empty:0; --z-fx:-1; --z-shareHintTip:96; --z-mask:40; --z-drawer:50; --z-sheetMask:70; --z-sheet:71; --z-foDrag:2; --z-setv:60; --z-modelv:62; --z-toast:130; --z-scrollNav:20; --z-modalMask:125; --z-shareMask:95; --z-shareBtns:2; --z-sclose:5; --z-stabs:5; --z-sload:4; --z-goalActive:-1; --z-cropMask:10000; --z-rangeMask:92; --z-otaMask:94; --z-authOverlay:9999; --z-filePrev:80; --z-pcFab:20; --z-pcView:61; --z-pcFabRc:63; --z-pcFx:115;
+  --z-hdr:10; --z-empty:0; --z-fx:-1; --z-shareHintTip:96; --z-mask:40; --z-drawer:50; --z-sheetMask:70; --z-sheet:71; --z-foDrag:2; --z-setv:60; --z-modelv:62; --z-toast:130; --z-scrollNav:20; --z-modalMask:125; --z-shareMask:95; --z-shareBtns:2; --z-sclose:5; --z-stabs:5; --z-sload:4; --z-goalActive:-1; --z-cropMask:10000; --z-rangeMask:92; --z-otaMask:94; --z-authOverlay:9999; --z-filePrev:80; --z-pcFab:20; --z-pcView:61; --z-pcFabRc:63; --z-pcFx:115; --z-detector:120; --z-pcSheet:80;
+  --scrim:rgba(0,0,0,.44);
 }
+:root[data-theme="dark"]{--scrim:rgba(0,0,0,.62)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--scrim:rgba(0,0,0,.62)}}
 :root[data-theme="dark"]{
   color-scheme:dark;
   --md-sys-color-primary:var(--dark-md-sys-color-primary); --md-sys-color-on-primary:var(--dark-md-sys-color-on-primary); --md-sys-color-primary-container:var(--dark-md-sys-color-primary-container);
@@ -1399,7 +1402,7 @@ body.pcHubFabOn #chat{padding-bottom:calc(var(--sp-4) + 52px)}
   font-size:10.5px;font-variant-numeric:tabular-nums;color:var(--txt2)}
 .pcArchHd:active{opacity:.7}
 /* 底部操作单: 拖拽把手 + 会话头 + 图标动作行, 入出场镜像弹簧 */
-#pcSheetWrap{position:fixed;inset:0;z-index:80}
+#pcSheetWrap{position:fixed;inset:0;z-index:var(--z-pcSheet)}
 #pcSheetMask{position:absolute;inset:0;background:rgba(0,0,0,.46);animation:pcMaskIn .16s ease-out}
 @keyframes pcMaskIn{from{opacity:0}to{opacity:1}}
 .pcSheet{position:absolute;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));
@@ -1518,4 +1521,12 @@ body.pcHubFabOn #chat{padding-bottom:calc(var(--sp-4) + 52px)}
   #pcDown{right:max(14px,calc((100% - var(--pcCol))/2 - 52px))}
   #pcFab.rc{right:14px;left:auto}   /* #037: 悬浮钮已居右下; 宽屏常驻侧栏在左, 出口钮居右天然让开, 无需再算 288 偏移 */
 }
-
+/* 分层与转场: 整页层关闭时继续滑出(visibility 延到过渡结束), 未打开/淡出中的遮罩与层不接收指针, 点击穿透到下层 */
+#setv,#modelv{transition:transform .3s cubic-bezier(.32,.72,0,1),visibility 0s linear .3s}
+#setv.on,#modelv.on{transition:transform .3s cubic-bezier(.32,.72,0,1),visibility 0s}
+#mask:not(.on),#sheetMask:not(.on),#modalMask:not(.on),#rangeMask:not(.on),#otaMask:not(.on),#cropMask:not(.on),
+#setv:not(.on),#modelv:not(.on),#pcSheetWrap.out{pointer-events:none}
+#mask,#sheetMask,#modalMask,#rangeMask,#otaMask,#pcScrim,#pcSheetMask{background-color:var(--scrim)}
+#detectorDialog{position:fixed;inset:0;z-index:var(--z-detector);background:var(--scrim);display:grid;place-items:center;
+  padding:max(24px,env(safe-area-inset-top)) 24px max(24px,env(safe-area-inset-bottom))}
+#detectorDialog .modalCard{transform:none;max-width:520px;max-height:85vh;overflow:auto;overflow-wrap:anywhere;color:var(--txt)}

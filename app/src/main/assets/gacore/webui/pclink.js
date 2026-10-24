@@ -148,7 +148,8 @@ function rowSheet(p){
   w.querySelector('.pcSheetTt').textContent=p.title||p.name;
   w.querySelector('.pcSheetSub').textContent=p.name+(p.n_msgs?(' · '+p.n_msgs+' '+t('pcMsgsUnit')):'');
   document.body.appendChild(w);
-  const close=()=>{w.classList.add('out');setTimeout(()=>w.remove(),160)};   // 出场镜像入场弹簧, 不闪断
+  const close=()=>{if(w.classList.contains('out'))return;w.classList.add('out');setTimeout(()=>w.remove(),160)};   // 出场镜像入场弹簧, 不闪断; 幂等
+  w._close=close;   // 返回分层(GA_LAYERS)走同一出场
   w.querySelector('#pcSheetMask').onclick=close;
   w.querySelector('.pcSheetCancel').onclick=close;
   const btns=w.querySelectorAll('.pcSheetIt');

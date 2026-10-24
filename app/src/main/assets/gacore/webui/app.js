@@ -322,7 +322,7 @@ function gaModal(o){const mask=$('modalMask'),card=$('modalCard');const hasInput
   ca.textContent=o.cancelText||t('cancel');ok.textContent=o.okText||t('ok');if(o.noCancel)ca.style.display='none';
   const close=()=>{if(window.gaSpringModalClose){gaSpringModalClose(mask,card);return}mask.classList.remove('on')};   // M3: 弹层出场弹簧(helper 内先 remove('on') 语义不变; spring.js 缺席/GA_SPRING_OFF=原路径)
   ca.onclick=()=>{close();o.onCancel&&o.onCancel()};ok.onclick=()=>{const v=ipt?ipt.value:true;close();o.onOk&&o.onOk(v)};
-  mask.onclick=e=>{if(e.target===mask)close()};
+  mask.onclick=e=>{if(e.target===mask)close()};mask._dismiss=close;   // 返回=同遮罩点击: 关闭但不触发 onCancel(onCancel 可能是独立动作, 如手动配对)
   mask.classList.add('on');
   if(window.gaSpringModalOpen)gaSpringModalOpen(card);   // M3: 弹层入场弹簧(关态零内联样式 → CSS scale 过渡回退不变)
   if(ipt){setTimeout(()=>{try{ipt.focus();ipt.select()}catch(e){}},60);ipt.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();ok.click()}}}}
@@ -345,6 +345,7 @@ function showPrivacyConsent(onAgree){
   agree.onclick=go;
   try{agree.addEventListener('pointerup',go,{passive:false})}catch(e){}
   mask.onclick=function(e){if(e.target!==mask)return;e.preventDefault();e.stopPropagation()};   // 只拦遮罩空白, 不吃掉按钮冒泡
+  mask._dismiss=null;   // 首启同意页不可被返回关闭(关掉后 boot 永不执行=白屏); 返回交还系统退后台
   card.onclick=function(e){e.stopPropagation()};
   mask.classList.add('on');
   try{GAT.emit('privacy_shown',{version:PRIVACY_VERSION})}catch(e){}   // 同意页到达(算 →privacy_accept 转化率/卡同意页流失)
@@ -355,7 +356,7 @@ function showPrivacyView(){const mask=$('modalMask'),card=$('modalCard');card.cl
   card.querySelector('h4').textContent=t('privacyTitle');card.querySelector('.pcBody p').textContent=t('privacyBody');
   const ok=card.querySelector('.pcAgree');ok.textContent=t('ok');
   const close=()=>{mask.classList.remove('on');card.className='modalCard'};
-  ok.onclick=close;mask.onclick=e=>{if(e.target===mask)close()};
+  ok.onclick=close;mask.onclick=e=>{if(e.target===mask)close()};mask._dismiss=close;
   mask.classList.add('on')}
 
 /* 规范星标(v2.5 单一来源): 4 折对称凹边 sparkle, 几何居中(bbox 12,12), 用于 wordmark/提示行; index.html 的 .welcome/.otaSpark 内联同款 path 须与此同步。根治"多处星形不一致"。 */
@@ -660,7 +661,28 @@ function fitHeaderTitle(){const tt=$('hdrTitleTxt');if(!tt||tt.style.display==='
 addEventListener('resize',()=>fitHeaderTitle());   // 旋转/键盘改变可用宽度 → 重新适配标题
 function openDrawer(){GAT.emit('view_enter',{view:'drawer'});renderDrawer();$('drawer').classList.add('on');$('mask').classList.add('on');$('drawer').setAttribute('aria-hidden','false')}
 function closeDrawer(){$('drawer').classList.remove('on');$('mask').classList.remove('on');$('drawer').setAttribute('aria-hidden','true')}
-function gaPanelOpen(){return $('sheetMask').classList.contains('on')||['setv','modelv'].some(i=>{const e=$(i);return e&&e.classList.contains('on')})}
+/* 返回分层: 返回只作用于「逻辑打开且 z 最高」的一层; 关闭中的层不算打开 → 连按返回逐层后退, 不吞、不重复弹。
+   z 取元素计算值(CSS 单一来源, 不在此重抄); back() 返回 false=不消费, 交还壳退后台(如首启同意页)。 */
+function gaPickBack(layers){let top=null;for(const l of layers)if(l.open&&(!top||l.z>top.z||(l.z===top.z&&l.seq>top.seq)))top=l;return top}
+const _isOn=id=>{const e=$(id);return !!e&&e.classList.contains('on')};
+const GA_LAYERS=[
+  ['cropMask',()=>_isOn('cropMask'),()=>closeCrop()],
+  ['modalMask',()=>_isOn('modalMask'),()=>{const d=$('modalMask')._dismiss;if(!d)return false;d()}],
+  ['detectorDialog',()=>!!$('detectorDialog'),()=>closeDetector()],
+  ['shareMask',()=>_isOn('shareMask'),()=>{if(!(typeof _shareRefineCancel==='function'&&_shareRefineCancel()))closeSharePreview()}],   // 精修中首次返回=只取消精修
+  ['otaMask',()=>_isOn('otaMask'),()=>{if(!(_otaPoll||(_otaM&&_otaM.mandatory)))closeOta()}],   // 下载中/必需更新: 吞掉返回不关
+  ['rangeMask',()=>_isOn('rangeMask'),()=>closeRangePicker()],
+  ['pcSheetWrap',()=>{const w=$('pcSheetWrap');return !!w&&!w.classList.contains('out')},()=>$('pcSheetWrap')._close()],
+  ['filePrev',()=>_isOn('filePrev'),()=>closeFilePreview()],
+  ['sheetMask',()=>_isOn('sheetMask'),()=>closeTopSheet()],
+  ['modelv',()=>_isOn('modelv'),()=>closeModelListPage()],
+  ['pcView',()=>_isOn('pcView'),()=>{const pc=$('pcView');if(pc.classList.contains('side'))pc.classList.remove('side');else if(window.PCLINK&&PCLINK.closeView)PCLINK.closeView();else pc.classList.remove('on')}],
+  ['setv',()=>_isOn('setv'),()=>setvBack()],
+  ['drawer',()=>_isOn('drawer'),()=>closeDrawer()]];
+function gaTopLayer(){
+  const ls=GA_LAYERS.map(([id,open],seq)=>{const o=!!open();return {id,seq,open:o,z:o?(+getComputedStyle($(id)).zIndex||0):0}});
+  const top=gaPickBack(ls);return top?GA_LAYERS[top.seq]:null}
+function gaPanelOpen(){const top=gaTopLayer();return !!top&&top[0]!=='drawer'}   // 任何高于抽屉的层打开时, 左缘手势不在其下开出看不见的抽屉
 /* 边缘滑动手势(热更可用): 左缘右滑开抽屉 / 抽屉上左滑关。修复"左滑退出程序"; 系统返回手势另由 Kotlin onBackPressed→window.gaOnBack 接管 */
 (function(){let sx=0,sy=0,track=false,edge=false;const EDGE=40,TH=55;
   addEventListener('touchstart',e=>{if(e.touches.length!==1||gaPanelOpen())return;const t=e.touches[0];sx=t.clientX;sy=t.clientY;
@@ -671,25 +693,9 @@ function gaPanelOpen(){return $('sheetMask').classList.contains('on')||['setv','
     if(!open&&edge&&dx>TH){openDrawer();track=false}
     else if(open&&dx<-TH){closeDrawer();track=false}},{passive:true});
   addEventListener('touchend',()=>{track=false;edge=false},{passive:true})})();
-/* Kotlin 壳的返回(系统手势/返回键)会调用此函数: 有弹层/抽屉就先关(留在 app 内), 没有才返回 false 让壳退到后台 */
-window.gaOnBack=function(){
-  if($('shareMask')&&$('shareMask').classList.contains('on')){   // 分享预览浮层优先: 精修中首次返回=只取消精修(留在预览, 仿 OTA 下载中吞返回), 否则返回=关闭预览, 不退出 app
-    if(typeof _shareRefineCancel==='function'&&_shareRefineCancel())return true;
-    closeSharePreview();return true}
-  if($('otaMask')&&$('otaMask').classList.contains('on')){if(_otaPoll||(_otaM&&_otaM.mandatory))return true;closeOta();return true}   // 更新弹窗: 下载中/必需更新时吞掉返回不关
-  if($('rangeMask')&&$('rangeMask').classList.contains('on')){closeRangePicker();return true}   // #2c: 自定义时间段弹层优先于其它返回处理
-  if($('modalMask').classList.contains('on')){$('modalMask').classList.remove('on');return true}
-  const fp=$('filePrev');if(fp&&fp.classList.contains('on')){closeFilePreview();return true}   // 文件预览(z80): 返回=关预览, 不整 app 退后台
-  const pcSheet=document.getElementById('pcSheetWrap');if(pcSheet){pcSheet.remove();return true}   // PC 会话行操作单: 返回=关操作单, 不许穿透关掉底下的 PC 视图
-  if($('sheetMask').classList.contains('on')){closeSheets();return true}
-  if($('modelv')&&$('modelv').classList.contains('on')){closeModelListPage();return true}
-  if($('setv')&&$('setv').classList.contains('on')){setvBack();return true}
-  const dv=$('drawer');if(dv&&dv.classList.contains('on')){closeDrawer();return true}
-  const pc=$('pcView');if(pc&&pc.classList.contains('on')){   // #034-P1: remote view on back stack — close side first, else closeView (stay in app)
-    if(pc.classList.contains('side')){pc.classList.remove('side');return true}
-    if(window.PCLINK&&typeof PCLINK.closeView==='function')PCLINK.closeView();else pc.classList.remove('on');
-    return true}
-  return false};   // 不变量: 返回=回桌面(交还给壳 moveTaskToBack)。无弹层/抽屉时不再劫持去开抽屉; 开抽屉改由左缘右滑/顶栏菜单(变量)
+/* Kotlin 壳的返回(系统手势/返回键)会调用此函数: 有层就关最上层(留在 app 内), 没有才返回 false 让壳退到后台。
+   不变量: 返回=回桌面(交还给壳 moveTaskToBack); 无弹层/抽屉时不劫持去开抽屉(开抽屉由左缘右滑/顶栏菜单)。 */
+window.gaOnBack=function(){const top=gaTopLayer();return !!top&&top[2]()!==false};
 function stopRun(){  // 切换会话/清空前: multi 只停焦点会话(不杀后台 run); legacy 全停
   if(multi){const id=(curConvo&&curConvo.id)||(runConvo&&runConvo.id)||activeCid;if(id&&runs.get(id)&&runs.get(id).running){bridgeAbort(id);_abortWaitCid=id;setRunning(false,id)}task=null;return}
   if(running){const id=runConvo&&runConvo.id;bridgeAbort(id);_abortWaitCid=id;setRunning(false)}task=null}   // 切换会话/清空前: 中止在飞任务, 防 poll 空引用; _abortWaitCid=id → 后端收敛前 idle poll 不复活(T7)
@@ -2391,8 +2397,10 @@ function testConnection(){const tb=$('setvTest');if(tb.classList.contains('spin'
   asyncModels(cfg,res=>{tb.classList.remove('spin');
     GAT.emit('key_test',{ok:!!res.ok,cat:res.ok?null:GAT.errCat(res.error),msg:res.ok?null:GAT.errMsg(res.error),type:cfg.type,where:'editor'}); // key 验证结果(脱敏)
     toast(res.ok?(t('t_connOk')+(res.models?res.models.length:0)):(t('t_connFail')+(res.error||'?')))})}
-function openSheet(id){$('sheetMask').classList.add('on');$(id).classList.add('on')}
-function closeSheets(){$('sheetMask').classList.remove('on');document.querySelectorAll('.sheet').forEach(s=>s.classList.remove('on'))}
+let _sheets=[];   // 打开顺序, 栈顶=最上层 sheet
+function openSheet(id){_sheets=_sheets.filter(x=>x!==id).concat(id);$('sheetMask').classList.add('on');$(id).classList.add('on')}
+function closeSheets(){_sheets=[];$('sheetMask').classList.remove('on');document.querySelectorAll('.sheet').forEach(s=>s.classList.remove('on'))}
+function closeTopSheet(){const id=_sheets.pop();if(id)$(id).classList.remove('on');if(!_sheets.length)closeSheets()}   // 返回/遮罩/foBack: 只退一层
 
 let deviceState={current:null,devices:[]};
 function deviceName(d){return (d&&(d.displayName||d.hostname||d.deviceId))||'未命名设备'}
@@ -2726,9 +2734,20 @@ function _setShow(panel,title){
   else if(panel==='datasetPanel')resetDatasetForm();
   else if(panel==='a11yPersistPanel')renderA11yPersistPage();
 }
-function setNav(panel,title,key){setStack.push({panel,title,key});_setShow(panel,title)}   // key=可选 i18n 键, 切语言时据此重译标题
-function setvBack(){if(setStack.length>1){setStack.pop();const top=setStack[setStack.length-1];_setShow(top.panel,top.title);return}closeSettings()}
-function closeSettings(){setStack=[];$('setv').classList.remove('on');$('setv').setAttribute('aria-hidden','true')}
+const _setBody=()=>$('setv').querySelector('.setbody');   // 各子页共用的滚动盒: 进子页回顶, 返回还原父页位置
+let _setAnim=null;
+function _setEnter(panel,dir){   // 子页 shared-axis X 入场: 一次性动画不设 fill → 结束/打断零残留; 减弱动效=瞬切; 只管呈现, 栈已同步生效
+  if(_setAnim){_setAnim.cancel();_setAnim=null}
+  const el=$(panel);if(!el||!el.animate||matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  const dx=Math.min(30,el.getBoundingClientRect().width*.08)*dir;
+  const a=_setAnim=el.animate([{transform:'translate3d('+dx+'px,0,0)',opacity:0},{transform:'none',opacity:1}],{duration:250,easing:'cubic-bezier(.32,.72,0,1)'});
+  a.onfinish=a.oncancel=()=>{if(_setAnim===a)_setAnim=null}}
+function setNav(panel,title,key){   // key=可选 i18n 键, 切语言时据此重译标题
+  const top=setStack[setStack.length-1],body=_setBody();if(top&&body)top.scroll=body.scrollTop;
+  setStack.push({panel,title,key});_setShow(panel,title);if(body)body.scrollTop=0;_setEnter(panel,1)}
+function setvBack(){if(setStack.length>1){setStack.pop();const top=setStack[setStack.length-1];_setShow(top.panel,top.title);
+  const body=_setBody();if(body)body.scrollTop=top.scroll||0;_setEnter(top.panel,-1);return}closeSettings()}
+function closeSettings(){if(_setAnim){_setAnim.cancel();_setAnim=null}setStack=[];$('setv').classList.remove('on');$('setv').setAttribute('aria-hidden','true')}
 function openSettings(){GAT.emit('view_enter',{view:'settings'});closeDrawer();setStack=[{panel:'homePanel',title:t('settings'),key:'settings'}];_setShow('homePanel',t('settings'));
   $('setv').classList.add('on');$('setv').setAttribute('aria-hidden','false');}
 
