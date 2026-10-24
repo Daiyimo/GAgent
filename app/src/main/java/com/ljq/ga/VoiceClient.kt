@@ -43,6 +43,8 @@ object VoiceClient {
 
     /** 开始录音: 申领 token → WS 连接 → session.update. 返回 JSON {ok, error?}. */
     fun start(): String = runCatching {
+        // 配置只读本地文件, 同步校验: 未配置时不申请麦克风、不开线程, 交由 WebUI 引导到可选组件
+        val config = try { voiceConfig() } catch (e: Exception) { return """{"ok":false,"error":"voice_not_configured"}""" }
         close()
         val curGen: Int
         synchronized(lock) {
@@ -53,9 +55,6 @@ object VoiceClient {
         // 后台线程做 token 申领 + WS 握手(原 connectWs 的 latch.await 会同步阻塞 JS 桥线程 1-2s → 点击卡顿).
         // 立即返回 ok; WS 就绪前 send() 把帧缓冲进 sendQueue, senderLoop 连上后一次性补发(实时 ASR 容忍短延迟).
         Thread {
-            val config = try { voiceConfig() } catch (e: Exception) {
-                failAsync(curGen, "Configure streaming ASR in Settings > Integrations"); return@Thread
-            }
             val socket = try { connectWs(config.getString("url"), curGen, config.optString("token")) }
                 catch (e: Exception) { null }
             if (socket == null) { failAsync(curGen, "Streaming ASR connection failed"); return@Thread }

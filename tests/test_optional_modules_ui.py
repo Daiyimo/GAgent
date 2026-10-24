@@ -159,3 +159,29 @@ def test_unconfigured_pclink_opens_its_relay_fields_and_save_refreshes_status():
         assert page.evaluate('statusCalls') > before
         assert not errors
         browser.close()
+
+
+def test_unconfigured_voice_opens_settings_without_requesting_microphone():
+    errors = []
+    with sync_playwright() as engine:
+        browser = engine.chromium.launch(executable_path=os.environ.get('PLAYWRIGHT_CHROMIUM_EXECUTABLE'))
+        page = browser.new_page(viewport={'width': 390, 'height': 844}, locale='en')
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.route('http**://**', lambda route: route.abort())
+        page.add_init_script('''
+          window.micRequests=0;
+          navigator.mediaDevices.getUserMedia=async()=>{micRequests++;throw Error('not expected')};
+          window.GA=new Proxy({ready:()=> 'ok', poll:()=> '{}', isDark:()=>false,
+            sttStart:()=> '{"ok":false,"error":"voice_not_configured"}', sttSend:()=> '{}', sttPoll:()=> '{}', sttStop:()=> '{}',
+            send:(c)=>c==='/integrations.get'?'{}':c==='/config'?'{"ok":true,"items":[]}':c.startsWith('/kv.get ')?'':'{}'
+          },{get:(t,k)=>t[k]||(()=> '{}')});
+        ''')
+        page.goto((WEB / 'index.html').as_uri())
+        page.locator('.pcAgree').click()
+        page.locator('#voiceBtn').click()
+        expect(page.locator('#integrationsPanel')).to_be_visible()
+        expect(page.locator('#int_voice_url')).to_be_in_viewport()
+        expect(page.locator('#toast')).to_contain_text('Optional modules')
+        assert page.evaluate('micRequests') == 0
+        assert not errors
+        browser.close()
