@@ -24,8 +24,8 @@ file to `.onnx` does not convert it. No model-provider key is used for local YOL
 
 - 模型 / Model: [yasirfaizahmed/android_ui_detection_yolov8](https://huggingface.co/yasirfaizahmed/android_ui_detection_yolov8), YOLOv8 Nano, 21 Android UI classes.
 - 固定来源版本 / Pinned source revision: `f692e68a3d7c92d51b5e94bba2fc13196a280e18`.
-- 模型卡标注 Apache-2.0；旧 ONNX 导出元数据标注 Ultralytics / AGPL-3.0。此差异尚未由权利方澄清。GAgent 框架的 Apache-2.0 不会覆盖第三方模型；使用、修改和再分发须遵守适用模型条款，商业授权须另行取得，不能把本说明视作已取得授权。
-- The model card says Apache-2.0, while the previous ONNX export embeds Ultralytics / AGPL-3.0 metadata. These conflicting notices remain unresolved. The framework license does not relicense model weights; obtain the applicable rights separately before redistribution.
+- 模型卡标注 Apache-2.0；旧 ONNX 导出元数据标注 Ultralytics / AGPL-3.0。2026-10-25 读取该导出（SHA-256 `f070f222…3168`）的元数据：`author=Ultralytics`、`license=AGPL-3.0`、`version=8.4.75`，这是 Ultralytics 导出器写入的默认字段，不是模型作者另行声明。此差异尚未由权利方澄清。GAgent 框架的 Apache-2.0 不会覆盖第三方模型；使用、修改和再分发须遵守适用模型条款，商业授权须另行取得，不能把本说明视作已取得授权。
+- The model card says Apache-2.0, while the previous ONNX export embeds Ultralytics / AGPL-3.0 metadata. Read on 2026-10-25 from that export (SHA-256 `f070f222…3168`): `author=Ultralytics`, `license=AGPL-3.0`, `version=8.4.75` — default fields written by the Ultralytics exporter, not a separate statement by the model author. These conflicting notices remain unresolved. The framework license does not relicense model weights; obtain the applicable rights separately before redistribution.
 - [Ultralytics licensing](https://www.ultralytics.com/license), [ONNX export documentation](https://docs.ultralytics.com/modes/export/).
 
 ### 能否随开源 APK 内置 / Can the default APK bundle it?
@@ -103,6 +103,19 @@ print({'installed': out.exists(), 'bytes': out.stat().st_size})
 The target is the current app's private `files/ga/models/ui_detect_v1/models/ui_detect_yolo.onnx`.
 Release and debug installations are independent. Back up an existing detector
 before replacement. Root is not required; resolve file-access permission if Downloads cannot be read.
+
+### 实机记录 / Device record
+
+2026-10-25，MEIZU 21 / Android 16，集成候选 `a4d17c5`：把上述导出放进 Download，
+在「设置 → 本地图标识别」用系统文件选择器导入；应用在手机上完成方形/矩形推理校验后切换，
+显示 SHA-256 `f070f222…3168`。「检测当前屏幕」：图标 5、文字 24、1080×2340、首次 5009 ms（含加载）。
+这只证明导入与端侧推理可用，不代表每个按钮都能识别正确。
+
+On 2026-10-25 (MEIZU 21, Android 16, candidate `a4d17c5`) the export above was
+imported from Downloads through the system picker; on-device validation passed and
+“Test current screen” reported 5 icons, 24 text items, 1080×2340 and 5009 ms for
+the first run including load. This shows import and inference work; it does not
+show that every control is recognized correctly.
 
 ## 5. 验证与停用 / Verify and disable
 
