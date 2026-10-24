@@ -43,9 +43,12 @@ import droid
 _PKG = os.environ.get("GA_PACKAGE", "io.github.shenhaostu.gagent")                    # GA 自身包名: VdHelper 类随 GA apk 分发
 _LOG = "/data/local/tmp/ga_vd.log"     # helper 进程 stdout/stderr 重定向落点
 _SHOT = "/data/local/tmp/ga_vd_shot.png"  # VdHelper 消费 ImageReader 落盘的最新虚拟屏帧(screencap -d 在部分ROM对虚拟屏无效)
+_META = "/data/local/tmp/ga_vd_shot.meta"  # VdHelper 每落一帧原子写 SEQ/UPTIME_MS(帧到达, CLOCK_MONOTONIC)/PID/W/H: 帧新鲜度与归属的真相源
 _STATUS = "/data/local/tmp/ga_vd.status"  # VdHelper 建屏后原子写 "DISPLAY_ID=<id>\nPID=<pid>": 进程真相源, 解耦易失 stdout 日志; Python 重启/日志截断后按 pid 反查既有屏做幂等复用, liveness 用 /proc/<pid>(消除 pgrep cmdline 自匹配)
 
 _vid = None   # 模块级缓存: 当前虚拟屏 display id, 未启动为 None
+_size = None  # 当前虚拟屏 (w, h): 坐标边界校验用(虚拟屏≠主屏尺寸, 沿用主屏截图坐标是常见误操作)
+_last_input = 0.0  # 最近一次 vd 输入完成的 time.monotonic(); 与 helper 的 UPTIME_MS 同钟, 用来判截帧是否晚于动作
 _pkg = None   # 本会话最后上屏的目标 pkg: 仅供 vd_stop 跳前台护栏用(引擎重启后为 None→护栏跳过, 主修靠 helper 的 DESTROY_CONTENT_ON_REMOVAL flag)
 
 
@@ -68,21 +71,58 @@ def _resolve_activity(pkg):
 
 def _need_vid():
     """_vid 空时回退 status 文件接管遗留活屏: 新会话/引擎重启后可直接 vd_shot 看现状再决定, 不必先 vd_start 拉起 app。"""
-    global _vid
+    global _vid, _size
     if _vid is None:
-        vid, pid = _status()
-        if vid is not None and _alive(pid):
-            _vid = vid
+        info = _status_info()
+        if info.get("DISPLAY_ID") is not None and _alive(info.get("PID")):
+            _vid = info["DISPLAY_ID"]
+            _size = _size_of(info)
     if _vid is None:
         raise RuntimeError("虚拟屏未启动: 先 vd_start()")
     return _vid
 
 
+def _parse_kv(text):
+    """纯函数: "K=123\n..." → {K: int}; 只收整数值, 半写/缺失的键自然缺席。"""
+    return {k: int(v) for k, v in re.findall(r"^([A-Z_]+)=(\d+)\s*$", text or "", re.M)}
+
+
+def _size_of(info):
+    return (info["W"], info["H"]) if info.get("W") and info.get("H") else None
+
+
+def _status_info():
+    return _parse_kv(droid.adb_shell("cat " + _STATUS + " 2>/dev/null"))
+
+
 def _status():
     """读 status 文件 → (vid|None, pid|None); 缺失/半写返回 (None,None)。"""
-    out = droid.adb_shell("cat " + _STATUS + " 2>/dev/null")
-    v = re.search(r"DISPLAY_ID=(\d+)", out); p = re.search(r"PID=(\d+)", out)
-    return (int(v.group(1)) if v else None, int(p.group(1)) if p else None)
+    info = _status_info()
+    return info.get("DISPLAY_ID"), info.get("PID")
+
+
+def _check_point(x, y, size):
+    """纯函数: 坐标必须落在虚拟屏内。虚拟屏默认 1080x1920, 与主屏(如 1080x2340)不同;
+    越界注入不会报错而是静默打空/打到边缘控件, 故在发送前显式拒绝并给出屏幕尺寸。"""
+    if size is None:
+        return
+    w, h = size
+    if not (0 <= x < w and 0 <= y < h):
+        raise ValueError("坐标 (%d,%d) 超出虚拟屏 %dx%d: 请用 vd_shot 截图上的坐标, 不要沿用主屏坐标" % (x, y, w, h))
+
+
+def _frame_ready(meta, pid, last_input, now, settle):
+    """纯函数: 帧是否可交付。帧须来自当前 helper(PID 一致, 否则是上一会话残留文件);
+    帧到达早于最近一次输入时, 在 settle 窗口内继续等(动作的画面还没落盘), 超窗则认为画面未变化(静止), 照常交付。"""
+    if not meta.get("SEQ") or meta.get("PID") != pid:
+        return False
+    return meta.get("UPTIME_MS", 0) >= last_input * 1000 or now - last_input >= settle
+
+
+def _mark_input(out):
+    global _last_input
+    _last_input = time.monotonic()
+    return out
 
 
 def _alive(pid):
@@ -94,13 +134,20 @@ def _alive(pid):
 def vd_start(pkg, activity=None, w=1080, h=1920, dpi=320, timeout=10.0):
     """建离屏虚拟屏(存活按 status 文件复用, 幂等)+把 pkg 拉到该屏。返回 display id。
     落屏后校验 pkg 未变默认屏前台(A11y 仅见默认屏): 变=被系统回退弹主屏=打扰, 立即 force-stop 并报错。"""
-    global _vid, _pkg
-    vid, pid = _status()
-    if vid is not None and _alive(pid):
+    global _vid, _pkg, _size
+    before = droid.ping().get("pkg", "")
+    if before == pkg:
+        # 真机取证(Flyme, 2026-10-24): am start --display <vd> 会把用户正在主屏前台的同一 App 整条 task 搬到虚拟屏,
+        # 主屏瞬间失去该 App = 打扰用户。离屏模式的前提是主屏归用户, 故此处拒绝而不是"顺手"搬走。
+        raise RuntimeError(pkg + " 正在主屏前台由用户使用; 迁到虚拟屏会把它从用户屏幕上移走。请用户先离开该 App, 或改用前台模式")
+    info = _status_info()
+    vid, pid = info.get("DISPLAY_ID"), info.get("PID")
+    if vid is not None and info.get("W") and _alive(pid):   # 无 W/H 的 status = 旧版 helper(不写帧 meta), 不复用, 重建
         _vid = vid
+        _size = _size_of(info)
     else:
         apk = _apk_path()
-        droid.adb_shell("pkill -f '[c]om.ljq.ga.VdHelper' 2>/dev/null; rm -f " + _STATUS + " " + _LOG + "; true")   # 清孤儿 + 陈旧 status/log(否则轮询首轮读到旧 DISPLAY_ID 或旧 ERR: 误判)
+        droid.adb_shell("pkill -f '[c]om.ljq.ga.VdHelper' 2>/dev/null; rm -f " + " ".join((_STATUS, _LOG, _SHOT, _META)) + "; true")   # 清孤儿 + 陈旧 status/log(否则轮询首轮读到旧 DISPLAY_ID 或旧 ERR: 误判)
         # held-stream + 3>&-(真机定案): helper 前台跑, 流由 app 侧长持(adb_shell_detached, tag="vd")。
         # 为何必须 held(不 close): 普通 adb_shell 读完 EOF 即 stream.close(), adbd 收割该 shell 的所有子进程
         #   (含 `&` 后台的)——实测 `setsid ... &` 经普通 adb_shell 起的 helper 被 close 秒收割; 唯有流保持开才存活。
@@ -124,6 +171,7 @@ def vd_start(pkg, activity=None, w=1080, h=1920, dpi=320, timeout=10.0):
         if vid is None or not _alive(pid):
             raise RuntimeError("VdHelper 起虚拟屏失败/超时: " + (droid.adb_shell("cat " + _LOG).strip() or "(无输出)"))
         _vid = vid
+        _size = _size_of(_status_info()) or (int(w), int(h))
 
     target = activity or _resolve_activity(pkg)
     if "/" not in target:
@@ -133,9 +181,8 @@ def vd_start(pkg, activity=None, w=1080, h=1920, dpi=320, timeout=10.0):
         record_path("vdisplay")
     except Exception:
         pass
-    before = droid.ping().get("pkg", "")
-    droid.adb_shell("am start --display " + str(_vid) + " -n " + target)
-    if before != pkg and droid._wait_fg(pkg, 1.5) == pkg:
+    _mark_input(droid.adb_shell("am start --display " + str(_vid) + " -n " + target))
+    if droid._wait_fg(pkg, 1.5) == pkg:
         droid.adb_shell("am force-stop " + pkg)
         raise RuntimeError(pkg + " 被系统落到默认屏(拒绝虚拟屏启动), 已撤回避免打扰前台; 该 App/ROM 不支持后台虚拟屏, 请降级前台模式")
     _pkg = pkg
@@ -145,25 +192,39 @@ def vd_start(pkg, activity=None, w=1080, h=1920, dpi=320, timeout=10.0):
 _SHOT_EXT = "/sdcard/Android/data/" + _PKG + "/files/ga_vd_shot.png"  # app 自有外部目录: shell 可写, app 免权限直读
 
 
-def vd_shot(path, wait=0.6):
+def _copy_frame():
+    """一次 round trip 取 (meta, 帧字节)。meta 与 cp 同一条 shell: helper 先 rename PNG 再写 meta, 故 meta 不会领先于帧。
+    主通道=cp 到 app 外部目录后直读(1MB+ 大帧 base64 走文本 bus 实测超时); rm 先清残留 + && echo 显式确认,
+    否则 cp 失败时 adb_shell 只回错误文本不抛错, 会 open 到上一次的旧帧。base64 仅作回退。"""
+    out = droid.adb_shell("cat %s 2>/dev/null; rm -f %s; cp %s %s && echo GA_CP_OK" % (_META, _SHOT_EXT, _SHOT, _SHOT_EXT))
+    meta = _parse_kv(out)
+    if "GA_CP_OK" in out:
+        try:
+            with open(_SHOT_EXT, "rb") as f:
+                return meta, f.read()
+        except OSError:
+            pass
+    # 截图 base64 常达 1-4MB, 远超 adb_shell 默认 256KB 上限(超限会报错防帧损坏), 故显式放开 max_bytes 到 16MB
+    b64 = droid.adb_shell("base64 " + _SHOT, max_bytes=16 * 1024 * 1024)
+    return meta, (base64.b64decode("".join(b64.split())) if b64.strip() else b"")
+
+
+def vd_shot(path, wait=0.6, settle=1.5):
     """读 VdHelper 落盘的最新虚拟屏帧存到本地 path(screencap -d 对虚拟屏在部分 ROM 无效, 故 helper 消费 ImageReader 落 PNG)。
-    动作后画面变化会触发新帧(节流≤400ms), 故先等 wait 秒再读, 拿到贴近当前态的一帧。
-    主通道=cp 到 app 外部目录后直读文件(1MB+ 大帧 base64 走文本 bus 实测超时); base64 仅作回退。"""
+    helper 尾沿节流(≤400ms 内必落最新帧), 先等 wait 秒; 再按 meta 校验: 帧须属当前 helper(防读到上一会话残留/已死 helper 的旧帧),
+    且晚于最近一次 vd 输入(否则在 settle 内重读; 超窗=动作未引起画面变化, 照常交付当前帧)。"""
     _need_vid()
+    _, pid = _status()
+    if not _alive(pid):
+        raise RuntimeError("虚拟屏 helper 已退出(屏已销毁): 旧帧不代表当前画面, 先 vd_status()/vd_start() 重建")
     time.sleep(wait)
-    data = b""
-    try:
-        # rm 先清残留 + && echo 显式确认: cp 失败(源未写/目录被拒)时 adb_shell 只回错误文本不抛错,
-        # 不确认会 open 到上一次调用的旧帧 → agent 拿陈旧截图误诊(比无帧更糟)
-        out = droid.adb_shell("rm -f %s; cp %s %s && echo GA_CP_OK" % (_SHOT_EXT, _SHOT, _SHOT_EXT))
-        if "GA_CP_OK" not in out:
-            raise RuntimeError("cp failed: " + out.strip()[:200])
-        with open(_SHOT_EXT, "rb") as f:
-            data = f.read()
-    except Exception:
-        # 截图 base64 常达 1-4MB, 远超 adb_shell 默认 256KB 上限(超限会报错防帧损坏), 故显式放开 max_bytes 到 16MB
-        b64 = droid.adb_shell("base64 " + _SHOT, max_bytes=16 * 1024 * 1024)
-        data = base64.b64decode("".join(b64.split())) if b64.strip() else b""
+    while True:
+        meta, data = _copy_frame()
+        if not data or _frame_ready(meta, pid, _last_input, time.monotonic(), settle):
+            break
+        if meta.get("PID") != pid:
+            raise RuntimeError("虚拟屏暂无属于当前 helper 的帧(可能是上一会话残留): 先做一次操作(vd_tap/vd_key)或稍候重试")
+        time.sleep(0.2)
     if not data:
         raise RuntimeError("虚拟屏暂无帧: 画面静止未产生新帧或 helper 未就绪; 先做一次操作(vd_tap/vd_key)或稍候重试")
     with open(path, "wb") as f:
@@ -176,8 +237,9 @@ def vd_tap(x, y, dur=50):
     (注入 MotionEvent DOWN 后有个同步等待)与 libadb 多路复用死锁 → 卡满 30s 超时(实测 MEIZU21);
     而 swipe(DOWN+MOVE+UP 序列)不触发该等待, 秒退且点击等效。长按传 dur>=800(见 vd_longpress)。"""
     v = _need_vid()
-    return droid.adb_shell("input -d " + str(v) + " swipe " + str(int(x)) + " " + str(int(y))
-                           + " " + str(int(x)) + " " + str(int(y)) + " " + str(int(dur)))
+    _check_point(int(x), int(y), _size)
+    return _mark_input(droid.adb_shell("input -d " + str(v) + " swipe " + str(int(x)) + " " + str(int(y))
+                                       + " " + str(int(x)) + " " + str(int(y)) + " " + str(int(dur))))
 
 
 def vd_longpress(x, y, dur=800):
@@ -186,10 +248,13 @@ def vd_longpress(x, y, dur=800):
 
 
 def vd_swipe(x1, y1, x2, y2, dur=300):
-    return droid.adb_shell(
-        "input -d " + str(_need_vid()) + " swipe "
+    v = _need_vid()
+    _check_point(int(x1), int(y1), _size)
+    _check_point(int(x2), int(y2), _size)
+    return _mark_input(droid.adb_shell(
+        "input -d " + str(v) + " swipe "
         + str(int(x1)) + " " + str(int(y1)) + " " + str(int(x2)) + " " + str(int(y2)) + " " + str(int(dur))
-    )
+    ))
 
 
 def vd_text(text):
@@ -198,12 +263,12 @@ def vd_text(text):
     s = str(text)
     if any(ord(c) > 127 for c in s):
         raise RuntimeError("vd_text 仅支持 ASCII(input text 对中文静默丢字): 中文搜索/跳转请用 app scheme 深链 am start --display <vid> -a VIEW -d '<scheme>://...?keyword=<URL编码>'")
-    return droid.adb_shell("input -d " + str(_need_vid()) + " text " + shlex.quote(s))
+    return _mark_input(droid.adb_shell("input -d " + str(_need_vid()) + " text " + shlex.quote(s)))
 
 
 def vd_key(name="KEYCODE_ENTER"):
     """input -d keyevent, name 需 Android keycode 全名(如 KEYCODE_ENTER/KEYCODE_BACK)或数字码。"""
-    return droid.adb_shell("input -d " + str(_need_vid()) + " keyevent " + str(name))
+    return _mark_input(droid.adb_shell("input -d " + str(_need_vid()) + " keyevent " + str(name)))
 
 
 def vd_stop():
@@ -212,12 +277,12 @@ def vd_stop():
     跳前台护栏: 屏销毁时内容就地销毁靠 VdHelper 的 DESTROY_CONTENT_ON_REMOVAL flag(缺它时 AOSP 把屏上
     task 整条搬回主屏置顶=跳前台, MEIZU21 取证定案); 个别 ROM 若不吃该 flag, 此处检测"销毁后被采集 pkg
     冒到主屏前台且销毁前不在前台"并 force-stop 撤回(前后对比防误杀用户自己正开着的同 app)。"""
-    global _vid, _pkg
+    global _vid, _pkg, _size
     before = droid._fg() if _pkg else ""
     _, pid = _status()
     if pid:   # 单条 shell 内校验 cmdline 含 VdHelper 才 kill: 校验与 kill 原子, 消除两次 round-trip 的 PID 复用 TOCTOU
         droid.adb_shell("grep -q VdHelper /proc/" + str(pid) + "/cmdline 2>/dev/null && kill " + str(pid) + " 2>/dev/null; true")
-    droid.adb_shell("pkill -f '[c]om.ljq.ga.VdHelper'; rm -f " + _STATUS)
+    droid.adb_shell("pkill -f '[c]om.ljq.ga.VdHelper'; rm -f " + " ".join((_STATUS, _META)))
     droid.adb_shell_close("vd")
     # 护栏(常态不触发, flag 起效时屏内容就地销毁): 仅当采集 pkg 销毁前不在前台、销毁后瞬时冒到前台才撤回。
     # reparent 是瞬时的, 一次 sleep+比对足够, 不长轮询(避免健康路径白等); 撤回用 force-stop(语义强且此场景恰当)。
@@ -226,12 +291,14 @@ def vd_stop():
         if droid._fg() == _pkg:
             droid.adb_shell("am force-stop " + _pkg)
     _vid = None
+    _size = None
     _pkg = None
 
 
 def vd_status():
-    vid, pid = _status()
-    return {"vid": _vid if _vid is not None else vid, "alive": _alive(pid)}
+    info = _status_info()
+    vid = _vid if _vid is not None else info.get("DISPLAY_ID")
+    return {"vid": vid, "alive": _alive(info.get("PID")), "size": _size_of(info)}
 
 
 def vd_probe():

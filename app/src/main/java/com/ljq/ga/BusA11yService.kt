@@ -477,17 +477,36 @@ class BusA11yService : AccessibilityService() {
     }
 
     // --- shot ---
+    // Own overlay windows (status capsule / answer panel) are part of the composed frame but not of the
+    // app under automation. Rects are sampled in display space and mapped to the frame before masking.
+    private fun ownWindows(): List<Triple<List<IntArray>, Int, Int>> =
+        listOfNotNull(FloatService.live?.let { runCatching { it.ownWindowRects() }.getOrNull() })
+
+    private fun maskOwnWindows(b: Bitmap, owned: List<Triple<List<IntArray>, Int, Int>>) {
+        val pad = (2 * resources.displayMetrics.density).toInt().coerceAtLeast(1)
+        for ((rects, dw, dh) in owned) for (r in frameMaskRects(rects, dw, dh, b.width, b.height, pad)) {
+            val x0 = (r[0] - 1).coerceAtLeast(0); val y0 = (r[1] - 1).coerceAtLeast(0)
+            val x1 = (r[2] + 1).coerceAtMost(b.width); val y1 = (r[3] + 1).coerceAtMost(b.height)
+            val w = x1 - x0; val h = y1 - y0
+            val px = IntArray(w * h)
+            b.getPixels(px, 0, w, x0, y0, w, h)
+            inpaintRect(px, w, h, r[0] - x0, r[1] - y0, r[2] - x0, r[3] - y0)
+            b.setPixels(px, 0, w, x0, y0, w, h)
+        }
+    }
+
     fun shot(jpegQuality: Int?): ByteArray {
         if (Build.VERSION.SDK_INT < 30) throw RuntimeException("takeScreenshot needs API30+, this=${Build.VERSION.SDK_INT}")
         if (BrowserActivity.secureForeground)   // 前台是登录浏览器: FLAG_SECURE 必涂黑, 与其返回黑图不如显式报错让 agent 换路由
             throw RuntimeException("前台是登录浏览器(FLAG_SECURE 保护密码输入), 截图必为黑屏; 网页任务请用前台任务浏览器 webcdp.open_url(url) 操作, 或先离开登录页再截图")
+        val ownBefore = ownWindows()
         val latch = CountDownLatch(1)
         var bmp: Bitmap? = null
         var err: String? = null
         takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
             override fun onSuccess(res: ScreenshotResult) {
                 bmp = Bitmap.wrapHardwareBuffer(res.hardwareBuffer, res.colorSpace)
-                    ?.copy(Bitmap.Config.ARGB_8888, false)
+                    ?.copy(Bitmap.Config.ARGB_8888, true)
                 res.hardwareBuffer.close()
                 latch.countDown()
             }
@@ -496,6 +515,7 @@ class BusA11yService : AccessibilityService() {
         if (!latch.await(5, TimeUnit.SECONDS)) throw RuntimeException("screenshot timeout")
         err?.let { throw RuntimeException(it) }
         val b = bmp ?: throw RuntimeException("screenshot null bitmap")
+        maskOwnWindows(b, ownBefore + ownWindows())   // before+after: a window moved mid-capture is still covered
         val bos = ByteArrayOutputStream()
         if (jpegQuality != null) b.compress(Bitmap.CompressFormat.JPEG, jpegQuality, bos)
         else b.compress(Bitmap.CompressFormat.PNG, 100, bos)

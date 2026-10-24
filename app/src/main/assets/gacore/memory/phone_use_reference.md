@@ -14,7 +14,7 @@
 纯 GUI / 微信开局：`droid.launch(包名)` 后先 `print(ask_vision(droid.shot(), "描述当前可交互层：是否有弹窗、关闭按钮在哪里、可执行的下一步是什么？"))`。统一入口为 `droid.ask_vision`；`code_run` 也预导入同一个 `ask_vision`，无需猜模块名；未配置时按 `memory/vision_sop.md` 配置。进入新小程序或点击后页面未变时也先做这一视觉检查。
 定位用 `print([(d.get("label"), d.get("cls"), d["x"], d["y"]) for d in droid.look()])`；保留全部紧凑候选，匹配视觉确认的按钮与当帧坐标，再操作。弹窗存在时只操作最上层，不能点击遮罩后正文；不要用 `back()` 猜测关闭弹窗，它可能退出小程序。
 微信的 `dump/find/tap_text` 依赖被禁止的节点树，不能用它们判断按钮是否存在；文字按钮也从 `look()` 的 `label` 匹配。`ocr_text` 接受图片裁剪数组，不接受搜索词；`shot()` 返回像素数组，不能打印给模型看或使用不存在的 `save=True`。
-常用签名：`tap(x, y)`；`paste(text, replace=False)`（微信仅放剪贴板，必须继续点可见粘贴菜单/键盘候选，不能反复调用当作输入）；`swipe(x1,y1,x2,y2,dur=300)`。浏览下方内容用 `scroll('up')`，浏览上方用 `scroll('down')`（参数是手指方向）；默认 `frac=0.35, dur=600`，每次观察后再继续。返回/桌面用 `back()` / `home()`；`key('ENTER')` 仅支持回车；没有 `droid.input` 或 `droid.sh`，不调用 shell/广播输入。`look(conf=0.25, roi=None, label=None)` 返回检测框，`label` 按 OCR 文字子串筛选全部匹配项，多命中先消歧，不接受问题字符串；看图问答用 `ask_vision(droid.shot(), "问题")`。roi名称只有 top/upper/middle/lower/bottom，其他区域传矩形元组。普通App的 `find(text)` 返回列表。
+常用签名：`tap(x, y)`；`paste(text, replace=False)`（微信仅放剪贴板，必须继续点可见粘贴菜单/键盘候选，不能反复调用当作输入）；`swipe(x1,y1,x2,y2,dur=300)`。浏览下方内容用 `scroll_view('down')`，浏览上方用 `scroll_view('up')`（参数是浏览方向；旧 `scroll()` 参数是手指方向，与之相反）；默认 `frac=0.35, dur=600`，每次观察后再继续。返回/桌面用 `back()` / `home()`；`key('ENTER')` 仅支持回车；没有 `droid.input` 或 `droid.sh`，不调用 shell/广播输入。`look(conf=0.25, roi=None, label=None)` 返回检测框，`label` 按 OCR 文字子串筛选全部匹配项，多命中先消歧，不接受问题字符串；看图问答用 `ask_vision(droid.shot(), "问题")`。roi名称只有 top/upper/middle/lower/bottom，其他区域传矩形元组。普通App的 `find(text)` 返回列表。
 排序/筛选必须核验当前选中项和箭头方向，不能凭两条价格恰好递增或返回 `ok` 宣称成功。文字/OCR不显示高亮或箭头颜色时，调用 `ask_vision` 看当前截图；列表不单调不能自行解释为广告。一次点击未生效就重新观察当前可见层与 `look()` 坐标，滚动吸顶后树坐标可能滞后，不连续重用旧坐标。
 用户明确要求的导航直接执行，无固定动作预算或解锁步骤。结束前重新观察停点；「去结算」不等于「提交订单」，没有提交授权就停在确认页。
 
@@ -129,9 +129,9 @@
 - launch 后 fg 未变≠失败: app 可能被 resume 到遗留虚拟屏/分屏→先 `vdisplay.vd_status()` 或 `dumpsys activity activities` 看 display 归属再诊断, 勿在主屏反复 launch/tap。
 - 长按 = swipe 同点 dur>=800。
 - ⚠`droid.scroll` 只吃**方向/比例**: `scroll('up'|'down'|'left'|'right', times<=10)`, **不是 `swipe(x1,y1,x2,y2,dur)`**——误当 swipe 传坐标(如 scroll(900,1850,...))会被夹取成少量有界滚动(已护栏防失控狂滑), 要按坐标精细滑请用 `droid.swipe`。
-- 滚动优先 `droid.scroll('up'/'down'/'left'/'right', times=1)`；方向是手指方向：`up` 看下方内容，`down` 看上方。scroll() 自己负责文本/像素证据；`scrolled=True` 只确认内容变化，不代表目标已找到或动画已结束；`scrolled=False` 且无 uncertain 表示有效证据未见滚动；`uncertain=True` 表示观察失败，必须重新读取当前页面，禁盲目重复。
-- 交互目标查找固定使用 `scroll(..., times=1)`, 每步后重新 dump/shot 观察再决定下一步; times>1 仅用于明确遍历, 且可能跳过目标。
-- 一次过冲就缩小幅度并减速，例如 `scroll(direction, frac=0.15, dur=800, times=1)`；参数随当前列表响应调整，不在两个端点反复快滑。重新截图确认当前位置；若节点文字与画面矛盾，该界面改用 `look()`/OCR，不继续沿陈旧节点导航。
+- 滚动优先 `droid.scroll_view('down'/'up'/'left'/'right', times=1)`；方向是浏览方向：`down` 看下方内容，`up` 看上方。scroll_view() 自己负责文本/像素证据；`scrolled=True` 只确认内容变化，不代表目标已找到或动画已结束；`scrolled=False` 且无 uncertain 表示有效证据未见滚动；`uncertain=True` 表示观察失败，必须重新读取当前页面，禁盲目重复。
+- 交互目标查找固定使用 `scroll_view(..., times=1)`, 每步后重新 dump/shot 观察再决定下一步; times>1 仅用于明确遍历, 且可能跳过目标。
+- 一次过冲就缩小幅度并减速，例如 `scroll_view(direction, frac=0.15, dur=800, times=1)`；参数随当前列表响应调整，不在两个端点反复快滑。重新截图确认当前位置；若节点文字与画面矛盾，该界面改用 `look()`/OCR，不继续沿陈旧节点导航。
 - 裸 swipe 端点已夹进安全带；按内容选择幅度与时长，等待手势及动画结束后重新观察，不能用派发返回 `ok` 代表到达目标。
 
 ## §5 验证节奏与敏感 App

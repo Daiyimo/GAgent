@@ -14,6 +14,18 @@
 - 虚拟屏模式下主屏 tap/launch/home=破坏用户意图; 仅 vd 明确不可用且已告知用户才降级前台。
 - launch 后 fg 未变≠失败: app 可能被 resume 到遗留虚拟屏, 看 `vd_status()`/`dumpsys activity` 的 display 归属再诊断。
 
+## 三条执行面怎么选(先选面, 再选动作)
+- **主屏 GUI(droid/A11y)**: 默认面, 用户能看见; 截图/点击/A11y 都归默认屏。
+- **App 离屏(vdisplay)**: 截图=虚拟屏帧(vd_shot), 输入=`input -d <vid>`(vd_tap/vd_swipe/vd_key), 二者同属该屏; ⚠droid.shot/look/tap/A11y 只看/只点主屏, 离屏期间禁混用。
+- **网页离屏(webcdp background)**: 只适用于网页任务, 复用内置浏览器登录态; 不能操作第三方 App。
+- 诚实边界: 离屏不是"所有 App 都能后台跑"。FLAG_SECURE 黑帧、ROM/App 拒绝非默认屏(被落回主屏会撤回报错)、中文输入只能深链、
+  锁屏/熄屏后虚拟屏内 App 是否继续运行因 ROM 而异(未验证前不得承诺)。
+
+## 守护规则(代码已强制)
+- 目标 App 正在主屏前台(用户在用)时 `vd_start` 直接拒绝: 真机取证 `am start --display` 会把该 App 整条 task 从用户屏幕搬走。
+- 坐标按虚拟屏尺寸(`vd_status()['size']`, 默认 1080x1920)校验, 越界(常见于沿用主屏截图坐标)直接 ValueError, 不注入。
+- `vd_shot` 只交付属于当前 helper 且晚于最近一次 vd 输入的帧(动作无画面变化时 settle 后交付当前帧); helper 已死直接报错, 不回旧图。
+
 ## 坑点(细则=vdisplay docstring, 设备端唯一细则源, 勿凭印象)
 - `vd_text` 仅 ASCII 可靠; 中文一律 app scheme 深链 `am start --display <vid> -a android.intent.action.VIEW -d '<scheme>://…'`(URL 编码), 失效再退 vd_tap。
 - FLAG_SECURE App 在虚拟屏同样黑帧; droid.shot/vd_shot 拿黑帧按报错提示降级, 勿盲目重截。

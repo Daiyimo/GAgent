@@ -7,6 +7,20 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- Rebuild optional-module settings (PC Link, mesh, GAnet, streaming voice, APK
+  build service) as a themed settings page with labelled fields, status chips and
+  inline errors; settings secondary text now meets WCAG AA in light and dark.
+  可选组件设置改为统一主题的设置子页；设置页次要文字在浅/暗色下满足对比度要求。
+- Exclude GAgent's own overlay windows from `droid.shot()` frames so OCR, the UI
+  detector and vision models no longer read the status capsule's text.
+  截图抹平 GA 自身悬浮窗区域，避免 OCR/视觉模型读到自己的状态文字。
+- Virtual display: refuse to move a task the user has in the foreground, reject
+  points outside the display, require frames newer than the last input and write
+  a trailing frame after motion stops (frame metadata includes size and PID).
+  离屏虚拟屏：拒绝抢占用户前台同一 App、坐标越界拒绝、帧须新于最近输入并补尾帧。
+- Agent guidance uses view-direction `scroll_view()` consistently and warns that
+  `back()` may leave the page instead of closing an in-page drawer.
+
 - Fix virtual-display adapter import: load `os` before reading the installation's
   package identity; cover default and debug identities without device access.
 - Present the public source preview with a sourced DeepSeek Android comparison,

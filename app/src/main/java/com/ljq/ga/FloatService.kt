@@ -102,6 +102,26 @@ class FloatService : Service() {
         @Volatile var lastError: String? = null
     }
 
+    /** Screen rects (l,t,r,b) of this service's visible windows plus the display size they live in.
+     *  Sampled on the UI thread because window position changes only settle there. */
+    fun ownWindowRects(): Triple<List<IntArray>, Int, Int> {
+        fun sample(): Triple<List<IntArray>, Int, Int> {
+            val metrics = android.util.DisplayMetrics().also { wm.defaultDisplay.getRealMetrics(it) }
+            val rects: List<IntArray> = if (!alive) emptyList() else listOfNotNull<View>(tv, askView)
+                .filter { it.isAttachedToWindow && it.isShown && it.width > 0 && it.height > 0 }
+                .map { v -> val p = IntArray(2); v.getLocationOnScreen(p); intArrayOf(p[0], p[1], p[0] + v.width, p[1] + v.height) }
+            return Triple(rects, metrics.widthPixels, metrics.heightPixels)
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) return sample()
+        val done = CountDownLatch(1)
+        var out: Triple<List<IntArray>, Int, Int>? = null
+        var failure: Throwable? = null
+        ui.post { try { out = sample() } catch (e: Throwable) { failure = e } finally { done.countDown() } }
+        check(done.await(1, TimeUnit.SECONDS)) { "overlay geometry timeout" }
+        failure?.let { throw it }
+        return out!!
+    }
+
     /** Called off the UI thread, before dispatch. Keep the lease until gesture completion. */
     fun passThroughGesture(): () -> Unit {
         check(Looper.myLooper() != Looper.getMainLooper()) { "gesture preparation needs a worker thread" }

@@ -332,7 +332,11 @@ try{var _th=JSON.parse(localStorage.getItem('ga.theme')||'"system"');
       
 
       <div class="secLbl"><span data-i18n="integrations">可选组件</span></div>
-      <div class="card"><button class="row rowBtn" onclick="openIntegrations()"><span class="k" data-i18n="integrations">可选组件</span><span class="v">›</span></button></div>
+      <div class="card icoCard"><button class="row rowBtn" onclick="openIntegrations()">
+          <span class="rowIco ic-indigo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M17.5 14v7M14 17.5h7"/></svg></span>
+          <span class="k" data-i18n="integrations">可选组件</span>
+          <span class="v"><svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></span>
+        </button></div>
       <div class="secLbl"><span data-i18n="grpAbout">关于</span></div>
       <div class="card icoCard">
         <button class="row rowBtn" id="rowCheckUpdate" onclick="openUpdatePage()">

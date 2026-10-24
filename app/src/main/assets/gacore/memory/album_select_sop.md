@@ -21,7 +21,7 @@ cells.sort(key=lambda e:(e['bbox'][1]//rh, e['bbox'][0]))
 droid.tap(*center(cells[idx]['bbox']), human=True); time.sleep(0.6)
 ```
 - 单选 tap 即返回(部分 picker 再点「完成」)；多选逐张 tap 出角标后点「添加(N)/确定」。
-- 目标不在可见区 → `droid.scroll('up')` 翻页再认，别一屏死磕。
+- 目标不在可见区 → `droid.scroll_view('down')` 翻页再认，别一屏死磕。
 - 判成没成: picker 关闭回发起页、目标图已带入(`shot` 复核)；多选核计数。
 
 ## 注意

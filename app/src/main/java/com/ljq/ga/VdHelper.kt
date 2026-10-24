@@ -45,9 +45,20 @@ object VdHelper {
     private const val FLAG_DEVICE_DISPLAY_GROUP = 1 shl 15
 
     private const val SHOT_PATH = "/data/local/tmp/ga_vd_shot.png"
+    private const val META_PATH = "/data/local/tmp/ga_vd_shot.meta"   // 每次落帧后原子写 SEQ/UPTIME_MS/PID/W/H: vd_shot 据此判 新鲜度+归属当前 helper
     private const val STATUS_PATH = "/data/local/tmp/ga_vd.status"  // 建屏后写 DISPLAY_ID+PID: vdisplay.py 幂等复用/liveness 真相源, 解耦易失 stdout
     private const val SHOT_MIN_INTERVAL = 400L   // 每帧落盘节流(ms): 静态画面不重复编码, 动态画面≤400ms一帧
-    @Volatile private var lastShotMs = 0L
+    private var lastShotMs = 0L                  // 以下状态只在主 Looper 线程读写(回调与 drain 同一 Handler), 无需同步
+    private var pending: android.media.Image? = null
+    private var pendingAtMs = 0L
+    private var drainPosted = false
+    private var seq = 0L
+
+    /** 尾沿节流(纯函数): 距上次落盘不足 interval 时延后到窗口末尾, 而不是丢弃。
+     *  旧实现把窗口内到达的帧直接丢掉, 画面随后静止就不再有新帧 → 磁盘上停在过渡中间帧(动作后的终态丢失)。 */
+    @JvmStatic
+    internal fun writeDelayMs(nowMs: Long, lastWriteMs: Long, intervalMs: Long): Long =
+        (lastWriteMs + intervalMs - nowMs).coerceIn(0L, intervalMs)
 
     @JvmStatic
     fun main(args: Array<String>) {
@@ -57,14 +68,27 @@ object VdHelper {
             val h = args.getOrElse(1) { "1920" }.toInt()
             val dpi = args.getOrElse(2) { "320" }.toInt()
 
-            val reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
-            reader.setOnImageAvailableListener({ r ->
-                val img = r.acquireLatestImage() ?: return@setOnImageAvailableListener
+            // maxImages=3: 最多持有 1 张待写帧, 仍留余量给 acquireLatestImage 取新帧并关掉旧帧
+            val reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 3)
+            val handler = Handler(Looper.myLooper()!!)
+            val drain = Runnable {
+                drainPosted = false
+                val img = pending ?: return@Runnable
+                pending = null
                 try {
-                    val now = SystemClock.elapsedRealtime()
-                    if (now - lastShotMs >= SHOT_MIN_INTERVAL) { writePng(img, w, h); lastShotMs = now }
+                    writePng(img, w, h); seq += 1
+                    writeAtomic(META_PATH, "SEQ=$seq\nUPTIME_MS=$pendingAtMs\nPID=${android.os.Process.myPid()}\nW=$w\nH=$h\n")
                 } catch (_: Throwable) { /* 单帧编码失败不影响保活 */ } finally { img.close() }
-            }, Handler(Looper.myLooper()!!))
+                lastShotMs = SystemClock.uptimeMillis()
+            }
+            reader.setOnImageAvailableListener({ r ->
+                val img = try { r.acquireLatestImage() } catch (_: IllegalStateException) { null } ?: return@setOnImageAvailableListener
+                pending?.close(); pending = img; pendingAtMs = SystemClock.uptimeMillis()   // 只留最新一帧, 时间=该帧到达(CLOCK_MONOTONIC, 同 Python time.monotonic)
+                if (!drainPosted) {
+                    drainPosted = true
+                    handler.postDelayed(drain, writeDelayMs(pendingAtMs, lastShotMs, SHOT_MIN_INTERVAL))
+                }
+            }, handler)
 
             val ctor = DisplayManager::class.java.getDeclaredConstructor(Context::class.java)
             ctor.isAccessible = true
@@ -74,8 +98,7 @@ object VdHelper {
                 ?: throw IllegalStateException("createVirtualDisplay -> null(权限不足或参数非法)")
 
             val vid = vd.display.displayId
-            File("$STATUS_PATH.tmp").writeText("DISPLAY_ID=$vid\nPID=${android.os.Process.myPid()}\n")
-            File("$STATUS_PATH.tmp").renameTo(File(STATUS_PATH))   // 原子写: vdisplay.py 幂等复用/liveness 真相源(解耦易失 stdout, survive 日志截断+Python重进程)
+            writeAtomic(STATUS_PATH, "DISPLAY_ID=$vid\nPID=${android.os.Process.myPid()}\nW=$w\nH=$h\nDPI=$dpi\n")   // 原子写: vdisplay.py 幂等复用/liveness/坐标边界真相源(解耦易失 stdout)
             println("DISPLAY_ID=$vid")
             System.out.flush()
             Looper.loop()   // 阻塞保活: 本进程是 VirtualDisplay 的宿主, 进程退出即销毁
@@ -84,6 +107,10 @@ object VdHelper {
             System.out.flush()
             kotlin.system.exitProcess(1)   // 半径可控: 建屏失败整进程退出, 不留半死状态
         }
+    }
+
+    private fun writeAtomic(path: String, text: String) {
+        val tmp = File("$path.tmp"); tmp.writeText(text); tmp.renameTo(File(path))
     }
 
     /** RGBA_8888 帧 → PNG, 原子落盘(.tmp→rename)避免 vd_shot 读到半截。rowStride 含行填充, 按填充宽建图再裁到真实 w。*/

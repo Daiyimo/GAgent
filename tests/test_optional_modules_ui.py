@@ -20,7 +20,7 @@ def test_profile_import_requires_save_and_provider_remains_available(language):
           window.savedProfiles=[]; window.kv={};
           const services={voice:{url:'wss://voice.example.com/asr',has_token:true}};
           window.GA=new Proxy({
-            ready:()=> 'nokey', poll:()=> '{}', isDark:()=>false,
+            ready:()=> 'ok', poll:()=> '{}', isDark:()=>false,
             appVersion:()=> '{"name":"2.33.1","code":134}',
             send:(command)=>{
               if(command==='/config')return '{"ok":true,"items":[]}';
@@ -37,7 +37,8 @@ def test_profile_import_requires_save_and_provider_remains_available(language):
         page.goto((WEB / 'index.html').as_uri())
         page.locator('.pcAgree').click()
         page.evaluate('openSettings();openIntegrations()')
-        card = page.locator('.modalCard').filter(has=page.locator('input[type=file]'))
+        card = page.locator('#integrationsPanel')
+        expect(card).to_be_visible()
         assert card.locator('input[type=password]').evaluate_all('(xs)=>xs.every(x=>!x.value)')
         profile = {'schema': 1, 'integrations': {'voice': {'url': 'wss://speech.example.com/asr', 'token': 'sample-user-token', 'model': 'asr'}}}
         card.locator('input[type=file]').set_input_files({'name':'connection.json','mimeType':'application/json','buffer':json.dumps(profile).encode()})
@@ -50,4 +51,66 @@ def test_profile_import_requires_save_and_provider_remains_available(language):
         assert page.locator('#provListPanel').is_visible()
         assert not errors
         assert not outgoing
+        browser.close()
+
+
+# WCAG 1.4.3 for readable text: composite every ancestor background, skip inactive controls (.dim / disabled).
+LOW_CONTRAST_JS = r'''(sel)=>{
+  const root=document.querySelector(sel);if(!root)return [{missing:sel}];
+  const parse=s=>{const m=s.match(/rgba?\(([^)]+)\)/);if(!m)return null;const p=m[1].split(/[ ,\/]+/).filter(Boolean).map(Number);return [p[0],p[1],p[2],p.length>3?p[3]:1]};
+  const blend=(t,b)=>[0,1,2].map(i=>t[i]*t[3]+b[i]*(1-t[3])).concat(1);
+  const lum=c=>{const f=v=>{v/=255;return v<=0.03928?v/12.92:Math.pow((v+0.055)/1.055,2.4)};return .2126*f(c[0])+.7152*f(c[1])+.0722*f(c[2])};
+  const ratio=(a,b)=>{const x=lum(a),y=lum(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05)};
+  const low=[];
+  for(const node of [root,...root.querySelectorAll('*')]){
+    if(!node.getClientRects().length||node.closest('.dim,[disabled],[aria-disabled=true]'))continue;
+    const style=getComputedStyle(node);if(style.visibility!=='visible')continue;
+    const field=node.tagName==='INPUT'&&['text','password','url'].includes(node.type);
+    const text=field?node.value:[...node.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent).join('').trim();
+    if(!text)continue;
+    let bg=[255,255,255,1],alpha=1;const chain=[];for(let e=node;e;e=e.parentElement)chain.unshift(e);
+    for(const e of chain){const s=getComputedStyle(e),b=parse(s.backgroundColor);alpha*=+s.opacity;if(b&&b[3]>0)bg=blend(b,bg)}
+    const fg=parse(style.color);fg[3]*=alpha;
+    const size=parseFloat(style.fontSize),large=size>=24||(size>=18.66&&+style.fontWeight>=700);
+    const r=ratio(blend(fg,bg),bg);if(r<(large?3:4.5))low.push(text.slice(0,24)+' '+r.toFixed(2));
+  }
+  return low;
+}'''
+
+
+@pytest.mark.parametrize('dark', [False, True])
+def test_optional_module_settings_text_is_readable_in_both_themes(dark):
+    errors = []
+    with sync_playwright() as engine:
+        browser = engine.chromium.launch(executable_path=os.environ.get('PLAYWRIGHT_CHROMIUM_EXECUTABLE'))
+        page = browser.new_page(viewport={'width': 390, 'height': 844}, locale='zh',
+                                color_scheme='dark' if dark else 'light')
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.route('http**://**', lambda route: route.abort())
+        page.add_init_script('''
+          window.kv={};
+          const services={voice:{url:'wss://voice.example.com/asr',has_token:true,model:'asr'},ganet:{url:'https://mesh.example.com',owner_id:'7',has_token:true}};
+          window.GA=new Proxy({ready:()=> 'ok', poll:()=> '{}', isDark:()=>%s,
+            send:(c)=>c==='/integrations.get'?JSON.stringify(services):c==='/config'?'{"ok":true,"items":[]}':
+              c.startsWith('/integrations.save ')?'{"ok":false,"error":"voice requires a wss URL without embedded credentials"}':
+              c.startsWith('/kv.get ')?'':'{}'
+          },{get:(t,k)=>t[k]||(()=> '{}')});
+        ''' % ('true' if dark else 'false'))
+        page.goto((WEB / 'index.html').as_uri())
+        page.locator('.pcAgree').click()
+        for opener, selector in [('openSettings()', '#homePanel'),
+                                 ('openIntegrations()', '#integrationsPanel'),
+                                 ('openGanetPage()', '#ganetPanel'),
+                                 ("setNav('ganetSetupPanel','')", '#ganetSetupPanel'),
+                                 ('openProviders()', '#provListPanel'),
+                                 ('PCLINK.openView()', '#pcView')]:
+            page.evaluate(opener)
+            page.wait_for_timeout(350)
+            assert page.evaluate(LOW_CONTRAST_JS, selector) == [], (opener, dark)
+        page.evaluate('PCLINK.closeView();openIntegrations()')
+        page.locator('#integrationsPanel').get_by_role('button', name='保存', exact=True).click()
+        expect(page.locator('#integrationsPanel .intErr')).to_contain_text('wss URL')
+        assert page.evaluate(LOW_CONTRAST_JS, '#integrationsPanel') == []
+        assert page.locator('#integrationsPanel .intChip.on').count() == 2
+        assert not errors
         browser.close()

@@ -20,7 +20,7 @@
     droid.look(roi='top')           # 只检测上 1/3 屏(排序条/搜索框在上面时): 耗时随面积降; roi 也可 'upper'|'middle'|'lower'|'bottom' 或 (x1,y1,x2,y2); 屏幕没变时自动返回缓存('cached':True)
     w, h = droid.screen()           # 当前朝向屏幕尺寸; 位置判断用比例(顶栏 <0.12h, 底栏 >0.9h), 绝不把绝对坐标写进记忆
     droid.tap(x, y); droid.swipe(x1,y1,x2,y2,dur=300)  # 长按=swipe同点dur>=800(已验:弹快捷菜单); swipe端点已自动夹进安全带避开系统手势区
-    droid.scroll('up')              # 安全滚动; 必须检查 scrolled/evidence/uncertain; uncertain=True=观察不可用/结论不确定, 不是已验证未滚动, 禁盲目重试
+    droid.scroll_view('down')       # 安全滚动, 参数=浏览方向('down' 看下方内容/'up' 看上方); 必须检查 scrolled/evidence/uncertain; uncertain=True=观察不可用/结论不确定, 不是已验证未滚动, 禁盲目重试 (旧 scroll() 参数是手指方向, 与此相反)
     droid.back(); droid.home()
     droid.panel('right')            # 物理下拉控制中心(录屏/手电等磁贴; left/center=通知栏)。droid.quick_settings()/notifications()=AOSP 语义全局动作(部分 OEM 够不到控制中心→用 panel)
     droid.dismiss_shade()           # 用完快捷设置/通知栏必调: 确定性收起面板(Android16 上 home() 可能留下透明面板层吃掉后续所有 tap)
@@ -532,7 +532,8 @@ def ask_vision(image_input, prompt="描述当前界面", **options):
 
 
 def screen():
-    """(w, h): 当前朝向的屏幕像素尺寸(来自 ping). 相对布局判断用: y < 0.12h 顶栏区, y > 0.9h 底栏区, 0.28h-0.34h 常见 GA 状态胶囊带; 禁止把任何绝对坐标写进记忆."""
+    """(w, h): 当前朝向的屏幕像素尺寸(来自 ping). 相对布局判断用: y < 0.12h 顶栏区, y > 0.9h 底栏区; 禁止把任何绝对坐标写进记忆.
+    GA 自己的悬浮胶囊/回答面板在 shot() 里已按邻近像素抹平, 不会出现在 OCR/检测结果中; 点击该区域会穿透到下方 App."""
     p = ping()
     return int(p.get("w") or 0), int(p.get("h") or 0)
 def _text_change_ratio(before, after):
@@ -1062,6 +1063,7 @@ def _black_check(img):
 
 def shot(path=None, q=None):
     """截屏。path给出→写文件返回path(默认PNG, q=1~100则JPEG); 否则返回BGR ndarray。
+    画面只描述被操作的 App: GA 自身悬浮窗区域已按邻近像素抹平(物理屏上仍可见), 其状态文字不会污染 OCR/ui_detect。
     前台为防截屏窗口时(连续黑帧)抛 RuntimeError 而非返回黑图, 错误信息含降级路径。"""
     params = {"q": q} if q else {}
     try:
