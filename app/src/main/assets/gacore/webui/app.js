@@ -3253,17 +3253,14 @@ function editProvider(id){GAT.emit('view_enter',{view:'provider_edit',edit:!!id}
   $('pvModel').value=editing.model||(editing.models&&editing.models[0])||'';
   $('pvMaxRetries').value=p&&p.max_retries!=null?p.max_retries:'';$('pvReadTimeout').value=p&&p.read_timeout!=null?p.read_timeout:'';
   $('pvConnTimeout').value=p&&p.timeout!=null?p.timeout:'';$('pvUA').value=p?uaToVer(p.user_agent):'';   // 高级设置回显(需求#1)
-  $('pvEnable').classList.toggle('on',p?p.enabled!==false:true);$('pvEnable').setAttribute('aria-checked',(p?p.enabled!==false:true));
-  $('pvResp').classList.toggle('on',!!(p&&p.api_mode==='responses'));$('pvFakeCC').classList.toggle('on',p?!!p.fake_cc:false);   // 新建默认开启透传CC(命中 getoken GA 指纹; 仅 claude 生效)
   updateModelCount();updateUARow();syncEndpointSeg();
   $('setv').classList.add('on');$('setv').setAttribute('aria-hidden','false')}
 function uaToVer(ua){const m=/claude-cli\/([0-9][0-9.]*)/.exec(ua||'');return m?m[1]:''}                 // 'claude-cli/2.1.85 (external, cli)' → '2.1.85'
 function verToUA(v){v=(v||'').trim();return v?('claude-cli/'+v+' (external, cli)'):''}                    // 版本号 → 透传 CC 的完整 UA(llmcore native_ua 同款格式)
-function updateUARow(){const r=$('rowUA');if(r)r.style.display=(provType==='claude'&&$('pvFakeCC').classList.contains('on'))?'block':'none'}   // UA 高级项仅在 claude + 透传CC 开启时出现(需求#1)
+function updateUARow(){const r=$('rowUA');if(r)r.style.display=provType==='claude'?'block':'none'}   // UA 高级项仅 Anthropic 型服务商可见
 function setProvType(t){provType=t;document.querySelectorAll('#pvSeg button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
   if($('setvBrand').style.display!=='none')$('setvBrand').innerHTML=provGlyph({type:t,name:$('pvName').value.trim(),model:(editing&&editing.model)||''});
-  const oai=t==='oai';$('rowResp').style.display=oai?'flex':'none';$('rowFakeCC').style.display=oai?'none':'flex';
-  $('pvName').placeholder=oai?'gpt-native':'claude-native';$('pvBase').placeholder=oai?'https://api.openai.com/v1':'https://api.anthropic.com';updateUARow()}
+  $('pvName').placeholder=t==='oai'?'gpt-native':'claude-native';$('pvBase').placeholder=t==='oai'?'https://api.openai.com/v1':'https://api.anthropic.com';updateUARow()}
 const STEP_ENDPOINTS=['https://api.stepfun.com/step_plan/v1','https://api.stepfun.com/v1'];   // StepFun 官方 OpenAI 兼容双端点: Plan 推理专属路径 + 标准路径; 只填表单, 不内置/不上传任何 key
 function pickStepEndpoint(i){if(runLocked())return;$('pvBase').value=STEP_ENDPOINTS[i];if(!$('pvName').value.trim())$('pvName').value='StepFun';setProvType('oai');syncEndpointSeg();updateModelCount()}
 function syncEndpointSeg(){const b=$('pvBase').value.trim();document.querySelectorAll('#pvEpSeg button').forEach((el,i)=>el.classList.toggle('on',b===STEP_ENDPOINTS[i]))}   // 高亮=Base URL 命中的端点; 自定义 URL 则全不亮
@@ -3281,7 +3278,7 @@ function saveProvider(){if(runLocked())return;const v=id=>$(id).value.trim();
   if(providers.some(p=>p.name===backendName&&p.id!==editingId)){toast(t('t_nameExists'));return}
   const mtRaw=v('pvMaxTok');if(mtRaw&&!/^\d+$/.test(mtRaw)){toast(t('t_maxTokNum'));return}
   for(const _id of ['pvMaxRetries','pvReadTimeout','pvConnTimeout']){const _x=v(_id);if(_x&&!/^\d+$/.test(_x)){toast(t('t_maxTokNum'));return}}   // 高级数值项仅允许数字(需求#1)
-  const _uav=v('pvUA');if(provType==='claude'&&$('pvFakeCC').classList.contains('on')&&_uav&&!/^[0-9]+(\.[0-9]+)*$/.test(_uav)){toast(t('uaVerBad'));return}   // UA 仅接受版本号(如 2.1.85)
+  const _uav=v('pvUA');if(provType==='claude'&&_uav&&!/^[0-9]+(\.[0-9]+)*$/.test(_uav)){toast(t('uaVerBad'));return}   // UA 仅接受版本号(如 2.1.85)
   let models=(editing&&editing.models)||[];      // 模型来自子页管理(非逗号输入)
   let commitStrip=null;                          // favs/active 的持久化迁移延迟到后端保存成功后(失败路径不落 LS, 防状态分叉)
   if(provType!=='claude'&&models.some(is1m)){    // [1m] 语义仅属 Anthropic 型: 切到 OAI 保存时剥后缀(否则字面 'x[1m]' 直发上游 400 且无入口摘除)
@@ -3294,11 +3291,11 @@ function saveProvider(){if(runLocked())return;const v=id=>$(id).value.trim();
   const p={id:editingId||(editing&&editing.id)||uid(),type:provType,name:backendName,label:disp,fromMk:isMk||undefined,   // 类型一律取当前分段值(fromMk 只 pin name 不 pin 类型); 后端按 type 迁移块 var 名(协议类⟺var名)
     apikey,apibase,proxy:v('pvProxy')||undefined,
     model:(editing&&editing.model)||models[0],models,
-    enabled:$('pvEnable').classList.contains('on'),api_mode:(provType==='oai'&&$('pvResp').classList.contains('on'))?'responses':undefined,
-    fake_cc:provType==='claude'&&$('pvFakeCC').classList.contains('on'),max_tokens:mtRaw?+mtRaw:undefined};
+    enabled:editing?editing.enabled!==false:true,api_mode:(provType==='oai'&&editing&&editing.api_mode==='responses')?'responses':undefined,   // 「管理」模块已移除: 启用/API 模式/透传CC 无开关可拨, 一律沿用该服务商既有值(新建默认启用)
+    fake_cc:provType==='claude'&&!!(editing&&editing.fake_cc),max_tokens:mtRaw?+mtRaw:undefined};
   const _num=id=>{const x=v(id);return x?+x:undefined};                                  // 高级设置(需求#1): 重试次数 / 读取·连接超时 / 透传 UA 版本
   p.max_retries=_num('pvMaxRetries');p.read_timeout=_num('pvReadTimeout');p.timeout=_num('pvConnTimeout');
-  if(provType==='claude'&&$('pvFakeCC').classList.contains('on')){const _ua=verToUA(v('pvUA'));if(_ua)p.user_agent=_ua}
+  if(provType==='claude'){const _ua=verToUA(v('pvUA'));if(_ua)p.user_agent=_ua}   // UA 仅 Anthropic 型服务商可见(管理卡片已移除: fake_cc/enable/api_mode 无开关可拨, 一律沿用该服务商既有值)
   // Persist the draft first; a rejected write must not change selected/usable providers.
   const r=saveProvToMk(p,p.model);
   if(r&&/error|错误|失败|invalid/i.test(r)){toast(t('t_fetchFail')+r);GAT.emit('provider_save_failed',{cat:GAT.errCat(r),msg:GAT.errMsg(r),type:provType});return}

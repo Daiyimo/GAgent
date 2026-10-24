@@ -546,14 +546,8 @@ try{var _th=JSON.parse(localStorage.getItem('ga.theme')||'"system"');
     <div id="provEditPanel" style="display:none">
       <div class="secLbl"><span data-i18n="endpointPick">StepFun 端点(二选一)</span></div>
       <div class="seg" id="pvEpSeg">
-        <button type="button" onclick="pickStepEndpoint(0)" data-i18n="epPlan">Plan 推理 (step_plan)</button>
-        <button type="button" onclick="pickStepEndpoint(1)" data-i18n="epStd">标准 (/v1)</button>
-      </div>
-      <div class="secLbl"><span data-i18n="manage">管理</span></div>
-      <div class="card">
-        <div class="row"><span class="k" data-i18n="enable">启用</span><span class="v"><button class="sw on" id="pvEnable" role="switch" aria-checked="true" aria-label="启用" onclick="toggleSw(this)"></button></span></div>
-        <div class="row" id="rowResp"><span class="k" data-i18n="respApi">Response API (/responses)</span><span class="v"><button class="sw" id="pvResp" role="switch" aria-checked="false" aria-label="Response API" onclick="toggleSw(this)"></button></span></div>
-        <div class="row" id="rowFakeCC" style="display:none"><span class="k" data-i18n="passCC">透传 CC 系统提示</span><span class="v"><button class="sw" id="pvFakeCC" role="switch" aria-checked="false" aria-label="passthrough" onclick="toggleSw(this);updateUARow()"></button></span></div>
+        <button type="button" onclick="pickStepEndpoint(0)" data-i18n="epPlan">Plan</button>
+        <button type="button" onclick="pickStepEndpoint(1)" data-i18n="epStd">API</button>
       </div>
       <div class="field"><label for="pvName" data-i18n="name">名称</label><div class="inputwrap"><input id="pvName" placeholder="gpt-native" autocomplete="off" autocapitalize="off"></div></div>
       <div class="field"><label for="pvKey" data-i18n="apiKey">API Key</label><div class="inputwrap"><input id="pvKey" type="password" placeholder="sk-…" autocomplete="off" autocapitalize="off" spellcheck="false" oninput="updateModelCount()">
