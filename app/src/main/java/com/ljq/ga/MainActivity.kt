@@ -13,6 +13,7 @@ import android.speech.tts.TextToSpeech
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
+import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.webkit.JavascriptInterface
@@ -1124,6 +1125,9 @@ class MainActivity : Activity() {
         Analytics.flush()
         runCatching { tts?.shutdown() }
         runCatching { exec.shutdown() }
+        // System theme/locale/font changes recreate this Activity. Destroy the old page so its JS bridge,
+        // polling and timers stop instead of running beside the new one. 配置变更重建时销毁旧 WebView, 防止旧页继续轮询与常驻内存。
+        if (::web.isInitialized) runCatching { (web.parent as? ViewGroup)?.removeView(web); web.destroy() }
         super.onDestroy()
         if (live === this) live = null   // 实例重叠(新 Activity 已接管 live)时不清掉新实例
     }

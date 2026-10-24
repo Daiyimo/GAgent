@@ -20,7 +20,7 @@ complete native migration and automatic service onboarding are not marked done.
 | Task reliability | Improve observation-to-action and final-state verification | Fixed-query comparisons with initial state, model/protocol, failed attempts and manual assistance recorded |
 | GUI semantics | Resolve demonstrated filtering, product-type and ranking errors | Correct selected state and independent result evidence, without app-specific coordinate scripts |
 | Optional services | Define and validate compatible service/credential protocols | Disabled-by-default behavior, scoped/revocable credentials, server-side authorization and deployment acceptance |
-| Detector distribution | Resolve model provenance/licensing before any bundled YOLO redistribution | Rights and source/export contract recorded; OCR-only fallback remains usable |
+| Detector distribution | Keep YOLO user-installed until rights are clarified; evaluate a retrained detector whose code, data and weights are redistributable ([options](OPTIONAL_YOLO.md#能否随开源-apk-内置--can-the-default-apk-bundle-it)) | Recorded data/weight licenses, same output contract, on-device recall versus the current detector; OCR-only fallback remains usable |
 | Core maintainability | Extract coherent boundaries from large inherited modules when justified | Smaller change radius, explicit invariants and preserved behavior; no wrapper-only refactor |
 | Release evidence | Improve durable artifact provenance and repeatable acceptance | Source/CI/APK/signature correspondence and verified download metadata |
 

@@ -28,6 +28,21 @@ file to `.onnx` does not convert it. No model-provider key is used for local YOL
 - The model card says Apache-2.0, while the previous ONNX export embeds Ultralytics / AGPL-3.0 metadata. These conflicting notices remain unresolved. The framework license does not relicense model weights; obtain the applicable rights separately before redistribution.
 - [Ultralytics licensing](https://www.ultralytics.com/license), [ONNX export documentation](https://docs.ultralytics.com/modes/export/).
 
+### 能否随开源 APK 内置 / Can the default APK bundle it?
+
+**结论：当前不内置。** 项目自有代码采用 [Apache-2.0](../LICENSE)；无论是 Apache-2.0 还是 MIT，都只覆盖项目自有代码，不能替第三方权重改许可。这个检测器由 Ultralytics YOLOv8 训练和导出，而 Ultralytics 主张其框架训练出的模型适用 AGPL-3.0，除非另有企业授权；这与模型卡上的 Apache-2.0 冲突。在权利方澄清之前，默认 APK 不内置这份权重。以下是工程判断，不构成法律意见。
+
+**Current decision: do not bundle.** The repository code license (Apache-2.0 here; MIT would be the same) cannot relicense third-party weights. Ultralytics states that models trained with its framework fall under AGPL-3.0 unless an enterprise license applies, which conflicts with the model card. This is an engineering decision record, not legal advice.
+
+| Option / 方案 | When it fits / 适用条件 | Cost / 代价 |
+| --- | --- | --- |
+| A. User-installed ONNX (current) / 用户自装（现状） | Default APK keeps a clean permissive license / 默认包许可清晰 | One manual step / 用户多一步 |
+| B. Separate AGPL "full" artifact / 单独 AGPL 完整包 | Only if the whole distributed artifact meets AGPL-3.0 obligations and notices; closed derivatives cannot reuse it / 整个发行物须满足 AGPL 义务；闭源衍生版不可复用 | Two artifacts, separate notices / 两套发行物与声明 |
+| C. Retrain a permissive detector / 自训宽松许可检测器 | Training code and data both permit redistribution, e.g. MIT [MultimediaTechLab/YOLO](https://github.com/MultimediaTechLab/YOLO), Apache-2.0 [YOLOX](https://github.com/Megvii-BaseDetection/YOLOX) / [PP-PicoDet](https://github.com/PaddlePaddle/PaddleDetection) / [D-FINE](https://github.com/Peterande/D-FINE); labels from own accessibility dumps or datasets with clear terms / 训练代码与数据都允许再分发 | Labeling, training, on-device evaluation; Rico-derived screenshots need terms review even when annotations are CC BY / 标注、训练与真机评测；Rico 衍生截图需单独审查条款 |
+| D. OmniParser / OmniParser | Desktop or server-side optional module / 电脑端或服务端可选模块 | `icon_detect` v1/v2 are YOLOv8-based (AGPL); newer MIT-labelled weights and the Florence caption model are large and trained for generic screens — re-check before use / 早期版本同为 AGPL；新权重与描述模型体量大，使用前复核 |
+
+Bundling becomes acceptable only after the rights holder clarifies the license, or after option C produces a detector whose code, data and weights are all redistributable and pass the same output contract and device checks below. 只有权利方澄清许可，或方案 C 产出代码、数据、权重均可再分发且通过下述契约与真机核验的检测器后，才考虑内置。
+
 ## 2. 自行下载、导出 / Download and export yourself
 
 在独立桌面 Python 环境安装你已接受条款的 Ultralytics 导出工具，下载固定版本的 [best.pt](https://huggingface.co/yasirfaizahmed/android_ui_detection_yolov8/resolve/f692e68a3d7c92d51b5e94bba2fc13196a280e18/best.pt)。不要把 `.pt` 直接放进 APK。

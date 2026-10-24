@@ -20,6 +20,11 @@ publicly released. Exact artifacts and acceptance belong to their release record
   离屏虚拟屏：拒绝抢占用户前台同一 App、坐标越界拒绝、帧须新于最近输入并补尾帧。
 - Agent guidance uses view-direction `scroll_view()` consistently and warns that
   `back()` may leave the page instead of closing an in-page drawer.
+- Destroy the previous chat WebView when the system theme, locale or font size
+  recreates the main screen, so stale pages stop polling in the background.
+  系统深浅色等配置变更重建主界面时销毁旧 WebView，避免旧页面继续后台轮询。
+- Document why YOLO weights stay user-installed and the permissive alternatives
+  for a bundled detector. 说明 YOLO 不内置的原因及可再分发的替代路线。
 
 - Fix virtual-display adapter import: load `os` before reading the installation's
   package identity; cover default and debug identities without device access.
