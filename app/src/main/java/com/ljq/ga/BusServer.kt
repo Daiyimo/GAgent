@@ -27,6 +27,7 @@ object Bus {
         val auth = LocalBusAuth.create()
         val directory = File(ctx.filesDir, "ga").apply { mkdirs() }
         val tokenFile = File(directory, ".bus_token")
+        directory.resolve("bus_port.txt").delete()   // 不变量: 端口文件存在 ⇔ 本进程总线已在监听; 启动失败不能把 Python 指向旧端口
         // Prefer the documented port; coexist with another installed variant.
         val server = BusHttpd(PORT, auth)
         val bound = try {
