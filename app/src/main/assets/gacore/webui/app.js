@@ -3692,24 +3692,20 @@ function refreshShizuku(){
 }
 window.gaOnShizuku=function(){try{refreshShizuku()}catch(e){}};                  // 原生授权结果回推; 无参, JS 侧重读 shizukuStatus
 window.openShizukuPanel=function(){
+  // ⚠ gaModal 只收选项对象 {title,msg|html,okText,cancelText,onOk,onCancel,noCancel}(定义见 gaModal):
+  //   曾误按位置字符串调用 → o.title/o.html 均 undefined → 空 h4 + 空 body + 默认「取消/确定」按钮(真机实证空弹窗)。
+  //   按钮一律用 gaModal 自带的 okText/cancelText 两槽, 不自定义 HTML 按钮 —— 也就不依赖 renderA11yPersistPage 里的局部 btn()。
   const st=szStatus();
   if(!st){toast(t('szBridgeMissing'));return}
-  const installed=!!st.installed, ready=!!st.ready;
-  const _e=s=>String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  let body='',cta='';
-  if(ready){
-    body='<p class="hint">'+_e(t('szReadyHint'))+'</p>';
-  }else if(!installed){
-    body='<p class="hint">'+_e(t('szNotInstalledHint'))+'</p>';
-    cta=btn('szInstallBtn','szInstall',true);
-  }else{
-    body='<p class="hint">'+_e(t('szNotGrantedHint'))+'</p>';
-    cta=btn('szGrantBtn','szGrant',true)+btn('szOpenMgrBtn','szOpenMgr',false);
+  if(st.ready){                                    // 已就绪: 纯告知, 无可动作项, 单按钮
+    gaModal({title:t('szTitle'),msg:t('szReadyHint'),noCancel:true,okText:t('ok')});
+  }else if(!st.installed){                         // 未装管理器: 告知 + 安装指引, 单按钮
+    gaModal({title:t('szTitle'),msg:t('szNotInstalledHint'),noCancel:true,okText:t('ok')});
+  }else{                                           // 装了未授权: 主 CTA=授权(弹系统对话框), 次 CTA=打开管理器
+    gaModal({title:t('szTitle'),msg:t('szNotGrantedHint'),
+      okText:t('szGrant'),onOk:()=>{try{GA.shizukuRequest()}catch(e){toast(t('szBridgeMissing'))}},
+      cancelText:t('szOpenMgr'),onCancel:()=>{if(!GA.openShizukuManager())toast(t('szMgrNotFound'))}});
   }
-  gaModal('<h4>'+_e(t('szTitle'))+'</h4>'+body+(cta?'<div class="modalActs">'+cta+'</div>':''),t('szCancel'));
-  const gi=$('szGrantBtn');if(gi)gi.onclick=()=>{closeModal();try{GA.shizukuRequest()}catch(e){toast(t('szBridgeMissing'))}};
-  const oi=$('szOpenMgrBtn');if(oi)oi.onclick=()=>{if(!GA.openShizukuManager())toast(t('szMgrNotFound'))};
-  const ii=$('szInstallBtn');if(ii)ii.onclick=()=>{closeModal();toast(t('szInstallHint'))};
 };
 /* 点设置行「无线调试自连」→ 不再弹模态/深链系统页(旧版=开屏打扰), 而是回对话页开一个干净新会话,
    把引导 prompt 预填进输入框(复用编辑重发的填充范式), 用户选模型后自行发送 → GA 走 adb_self_setup SOP
