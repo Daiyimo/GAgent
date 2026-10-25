@@ -132,5 +132,8 @@ def test_chat_divider_says_failed_for_an_error_end():
         page.evaluate('''()=>{window.GA.notify=()=>{};onTaskDone(true,null,'error');onTaskDone(true,null,'done')}''')
         notes = page.evaluate('''()=>[...document.querySelectorAll('.doneNote')].map(n=>[n.className,n.textContent])''')
         assert notes[-2:] == [['doneNote err', 'Task failed'], ['doneNote', 'Task complete']]
+        heads = page.evaluate('''()=>{const out=[];for(const er of [1,0]){newTask('p','m',Date.now());task._err=er;
+          renderTaskStats({el:1000});const c=task.state.querySelector('.ck2');out.push([c.className,c.getAttribute('aria-label')])}return out}''')
+        assert heads == [['ck2 err', 'Task failed'], ['ck2', 'Done']]
         assert not errors
         browser.close()

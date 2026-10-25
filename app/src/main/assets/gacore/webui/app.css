@@ -200,7 +200,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
 .assistHead .assistState{margin-left:auto;font-size:11.5px;display:flex;align-items:center;gap:5px;font-variant-numeric:tabular-nums}
 .assistHead .assistState.run::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--acc);animation:pul 1s infinite alternate}
 .tipMark{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Segoe UI Symbol","Noto Sans Symbols2","Noto Sans",sans-serif}
-.assistState .ck2{display:inline-flex;color:var(--md-sys-color-success)}.assistState .ck2 svg{width:13px;height:13px}
+.assistState .ck2{display:inline-flex;color:var(--md-sys-color-success)}.assistState .ck2.err{color:var(--err)}.assistState .ck2 svg{width:13px;height:13px}
 /* 运行时间 + 输入/输出 token 渲染行 (GA 专属) */
 .runMeta{display:flex;align-items:center;gap:9px;margin:2px 0 2px 0;font-size:12px;color:var(--txt2);font-variant-numeric:tabular-nums}
 .runMeta .tok{display:inline-flex;align-items:center;gap:1px;font-weight:600;letter-spacing:.01em;color:var(--txt2)}
