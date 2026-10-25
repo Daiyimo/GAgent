@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -184,9 +185,11 @@ def test_unconfigured_voice_opens_settings_without_requesting_microphone():
         expect(page.locator('#toast')).to_contain_text('Optional modules')
         assert page.evaluate('micRequests') == 0
         page.evaluate('closeSettings();PCLINK.openView()')   # the PC view (above settings) has its own voice key
-        page.locator('#pcVoiceBtn').click()
-        expect(page.locator('#integrationsPanel')).to_be_in_viewport()
-        assert page.evaluate("document.getElementById('pcView').classList.contains('on')") is False
+        expect(page.locator('#setv')).not_to_have_class(re.compile(r'(^|\s)on(\s|$)'))
+        page.locator('#pcVoiceBtn').click()                 # voice start is asynchronous (waits two frames)
+        expect(page.locator('#pcView')).not_to_have_class(re.compile(r'(^|\s)on(\s|$)'))
+        expect(page.locator('#setv')).to_have_class(re.compile(r'(^|\s)on(\s|$)'))
+        expect(page.locator('#int_voice_url')).to_be_in_viewport()
         assert page.evaluate('micRequests') == 0
         assert not errors
         browser.close()
