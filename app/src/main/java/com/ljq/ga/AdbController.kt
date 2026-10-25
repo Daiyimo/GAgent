@@ -154,8 +154,7 @@ object AdbController {
         for (p in candidates) if (tryConnect(ctx, "127.0.0.1", p)) return manager!!
         val disc = discover(ctx, 5000)
         if (disc != null && tryConnect(ctx, "127.0.0.1", disc)) return manager!!
-        throw RuntimeException(
-            "无法建立自连: 无线调试可能已关(设置→开发者选项→无线调试), 或端口不可达。开着无线调试后 droid.adb_connect() 会自动发现端口重试")
+        throw RuntimeException(adbAutoConnectError(pairingRequired))
     }
 
     /** mDNS 自动发现连接端口(自 CountDownLatch 包住库 AdbMdns, 只取 TLS_CONNECT 服务)。忽略 host=null/port≤0 的丢失回调; 自连恒回 127.0.0.1:port。 */
@@ -432,3 +431,8 @@ object AdbController {
 /** 证书还在盘上不代表手机仍信任它: 系统撤销配对后连接会报 AdbPairingRequiredException, 只能由用户重新配对。纯函数, 便于单测。 */
 fun adbNeedsRepair(error: String?): Boolean =
     error != null && (error.contains("PairingRequired") || error.contains("pairing is required", ignoreCase = true))
+
+/** 自动发现全失败时的可行动错误: 有端口报过需配对 ⇒ 明说重新配对(重开开关没用), 否则才是开关/端口问题。纯函数, 便于单测。 */
+fun adbAutoConnectError(pairingRequired: Boolean): String =
+    if (pairingRequired) "无法建立自连: ADB pairing is required — 手机已不再信任 GAgent 的密钥, 需用户在 设置→开发者选项→无线调试→使用配对码配对设备 重新配对(droid.adb_pair(码, 配对端口)), 重开无线调试无效"
+    else "无法建立自连: 无线调试可能已关(设置→开发者选项→无线调试), 或端口不可达。开着无线调试后 droid.adb_connect() 会自动发现端口重试"

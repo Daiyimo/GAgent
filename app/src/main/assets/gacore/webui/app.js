@@ -2756,7 +2756,8 @@ function closeSettings(){if(_setAnim){_setAnim.cancel();_setAnim=null}setStack=[
 function openSettings(){GAT.emit('view_enter',{view:'settings'});closeDrawer();
   if(window.PCLINK&&_isOn('pcView'))PCLINK.closeView();   // PC 视图(z61)盖在设置(z60)之上: 从其中跳转设置(如语音未配置)须先收起, 否则引导开在下面
   setStack=[{panel:'homePanel',title:t('settings'),key:'settings'}];_setShow('homePanel',t('settings'));
-  $('setv').classList.add('on');$('setv').setAttribute('aria-hidden','false');}
+  $('setv').classList.add('on');$('setv').setAttribute('aria-hidden','false');
+  try{refreshAdb()}catch(e){}}                       // agent 刚调过 adb_connect 不会经 onResume: 打开设置即重读自连状态
 
 /* ---- APK 工厂额度(设置页行): 登录态实时读取, 失败/未登录回退静态文案; 尽力而为不阻塞设置页 ---- */
    // 与 apk_factory.py DEFAULT_BASES 同源

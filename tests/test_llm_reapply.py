@@ -78,4 +78,6 @@ def test_settings_row_says_repair_when_the_phone_revoked_self_adb_trust():
         assert page.locator('#adbVal').inner_text() == 'Not connected'
         page.evaluate("adb.connected=true;refreshAdb()")
         assert page.locator('#adbVal').inner_text() == 'Connected'
+        page.evaluate("adb.connected=false;adb.repair=true;openSettings()")   # agent 刚连失败, 没有 onResume
+        assert page.locator('#adbVal').inner_text() == 'Re-pair needed'
         browser.close()
