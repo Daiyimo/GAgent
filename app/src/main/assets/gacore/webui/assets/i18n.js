@@ -33,7 +33,7 @@ const I18N={zh:{integrations:"可选组件",
   t_resetTitle:'已重置为默认标题', t_proxyUpdated:'已更新代理', t_speakDev:'朗读功能开发中', t_transDev:'翻译功能开发中',
   t_speakStart:'开始朗读', t_speakNo:'设备不支持朗读', t_connOk:'✓ 连接正常 · 可用模型 ', t_connFail:'✗ 连接失败：',
   t_switchFail:'切换「', t_switchFailTail:'」失败：', t_attTooBig:' 过大(上限10MB)', t_attReadFail:'读取失败：', t_attSaveFail:'附件保存失败',
-  confirmClear:'清空全部对话？此操作不可恢复。', steps:'步', me:'我', logout:'退出登录', stepLabel:'步骤',
+  confirmClear:'清空全部对话？此操作不可恢复。', steps:'步', step1:'步', me:'我', logout:'退出登录', stepLabel:'步骤',
   stepFoldHead:'执行过程（{n} 步）', stepFoldAbort:'已中断 · 已完成 {n} 步', finalAnswer:'最终回答', stepThinking:'思考',   // STEPLABEL P3 兜底(无工具的纯思考步); stepLabel 保留不删(工具窗/浏览器面板/钉底条仍用)
   sbDupFinal:'本步正文即下方回答',   // DUPFINAL: 折叠组内答案源步卡的占位(正文已抽为 .finalMsg, 不再复读)
   citeSources:'来源',   /* D2 引用胶囊组 aria-label */
@@ -191,7 +191,7 @@ const I18N={zh:{integrations:"可选组件",
   t_resetTitle:'Title reset to default', t_proxyUpdated:'Proxy updated', t_speakDev:'Read-aloud coming soon', t_transDev:'Translation coming soon',
   t_speakStart:'Reading aloud', t_speakNo:'Device does not support read-aloud', t_connOk:'✓ Connected · models: ', t_connFail:'✗ Connection failed: ',
   t_switchFail:'Switch “', t_switchFailTail:'” failed: ', t_attTooBig:' too large (max 10MB)', t_attReadFail:'Read failed: ', t_attSaveFail:'Attachment save failed',
-  confirmClear:'Clear all chats? This cannot be undone.', steps:'steps', me:'Me', logout:'Log out', stepLabel:'Step',
+  confirmClear:'Clear all chats? This cannot be undone.', steps:'steps', step1:'step', me:'Me', logout:'Log out', stepLabel:'Step',
   stepFoldHead:'Steps ({n})', stepFoldAbort:'Aborted · {n} steps done', finalAnswer:'Final answer', stepThinking:'Thinking',   // STEPLABEL P3 fallback
   sbDupFinal:'Shown as the answer below',   // DUPFINAL placeholder
   citeSources:'Sources',

@@ -47,7 +47,7 @@ def test_pick_back_is_topmost_open_layer():
 def test_back_on_first_run_consent_returns_to_system_and_keeps_consent():
     with sync_playwright() as engine:
         browser, page, errors = open_page(engine, agree=False)
-        assert page.locator('#modalMask.on .pcAgree').is_visible()
+        page.locator('#modalMask.on .pcAgree').wait_for(state='visible', timeout=2000)   # entrance animation: sample after it starts
         assert page.evaluate('gaOnBack()') is False
         assert page.locator('#modalMask.on .pcAgree').is_visible()
         page.locator('.pcAgree').click()

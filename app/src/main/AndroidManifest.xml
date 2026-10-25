@@ -108,8 +108,9 @@
         <!-- gaagent://plan?rs=<码> 深链蹦床: 路演落地页「一键领取」→ 存码拉起主任务 → 引擎就绪后
              带码开订阅页(SPA 自动预填), 全程零手输。透明即关, 与 SenseQuickActivity 同型。 -->
         <!-- 无感开录透明中转(A14): 磁贴/桌面快捷方式的开录意图落点, 满足 A34「mic FGS 须由可见 Activity 起」。
-             透明主题 + 不进最近任务; 起完会话即 finish, 用户只感到「点一下就在录」。 -->
-        <activity android:name=".SenseQuickActivity" android:exported="true"
+             透明主题 + 不进最近任务; 起完会话即 finish, 用户只感到「点一下就在录」。
+             不导出: 磁贴 PendingIntent 与静态快捷方式都以本应用身份启动; 导出则任何 App 都能让 GA 开麦。 -->
+        <activity android:name=".SenseQuickActivity" android:exported="false"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:excludeFromRecents="true" android:noHistory="true"
             android:taskAffinity=":senseQuick"/>

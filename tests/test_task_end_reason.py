@@ -55,6 +55,13 @@ def test_normal_completion_is_done(entry, monkeypatch):
     assert poll['end'] == 'done' and poll['status'].startswith('完成')
 
 
+@pytest.mark.parametrize('lang,label', [('zh', '待命'), ('en', 'Idle')])
+def test_idle_status_is_shown_in_the_ui_language(entry, monkeypatch, lang, label):
+    """The header and capsule show the backend status verbatim, so idle must not be the raw word 'idle'."""
+    monkeypatch.setattr(entry, '_LANG', lang)
+    assert entry._new_state()['status'] == label
+
+
 def test_user_stop_is_reported_as_stopped(entry, monkeypatch):
     sess = _running(entry, monkeypatch, 'ga_stop')
     entry.abort2('c1')

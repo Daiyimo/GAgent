@@ -7,6 +7,19 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- Web tool: the foreground browser's screenshot no longer times out on Android WebView,
+  so `open_url` works on the first try (on a MEIZU 21 every web task used to lose about
+  45 s and two failed calls); a failed screenshot no longer discards an opened page.
+  前台浏览器截图不再超时，网页任务不再先失败两次。
+- Privacy: images in model replies are not fetched from the network (a prompt-injected
+  reply could carry chat text in an image URL), and the quick-record activity is no
+  longer exported, so other apps cannot make GAgent start the microphone. The launcher
+  shortcuts now target this app. 回复中的远程图片不再自动加载；其他 App 不能再让 GAgent 开麦；
+  桌面快捷方式改为指向本应用。
+- A finished task posts one notification instead of two; idle shows “待命/Idle” instead
+  of “idle”; “1 step” instead of “1 steps”; the placeholder translate button is hidden.
+  完成只发一条通知；待命状态本地化；单数步数；隐藏未实现的翻译键。
+
 ## 2.33.7 / 140 — 2026-10-25 (open-source prerelease / 开源预发布)
 
 - A task whose last model call failed (for example HTTP 429 when a provider quota runs
