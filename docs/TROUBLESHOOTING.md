@@ -37,6 +37,27 @@ If it still fails, report the source/version, OS/device, orientation, permission
 and preference state, whether the task continued and the exact transition.
 OEM background restrictions are a possible factor, not a diagnosis without evidence.
 
+## Accessibility turns off after a force stop / 强制停止后无障碍被关闭
+
+Some OEM builds (observed on Flyme, Android 16) remove GAgent's accessibility service
+from the enabled list when the app is force-stopped or killed by the system; tasks
+then stop and ask you to enable it. Reopen GAgent and use the amber permission item
+to turn it back on. To have GAgent restore it at startup, grant the developer
+permission once and enable automatic keeping on the permission page:
+
+~~~sh
+adb shell pm grant io.github.shenhaostu.gagent android.permission.WRITE_SECURE_SETTINGS
+~~~
+
+Use `io.github.shenhaostu.gagent.debug` for the debug build. The permission page can
+issue the same grant through a connected self-ADB session. Avoid force-stopping
+GAgent while testing; a stopped app cannot restore itself until it starts again.
+
+部分厂商系统（已在 Flyme / Android 16 上观察到）会在强制停止或系统杀进程后把 GAgent 的无障碍服务
+从已启用列表移除，任务会停下来请你开启。重新打开 GAgent，从琥珀色权限入口重新开启即可；若希望启动时自动恢复，
+用上面的命令授予一次开发者权限，并在权限页开启自动保持（debug 包改用对应包名，也可经已连接的自连 ADB 授权）。
+测试时避免强制停止 GAgent。
+
 ## Screenshot or coordinates fail / 截图或坐标失败
 
 The current screenshot path requires API 30+ and an active accessibility service.
