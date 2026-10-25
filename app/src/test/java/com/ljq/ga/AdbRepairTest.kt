@@ -12,4 +12,10 @@ class AdbRepairTest {
         for (e in listOf(null, "", "java.net.ConnectException: Connection refused", "shell 超时且传输已卡死"))
             assertFalse(e.toString(), adbNeedsRepair(e))
     }
+    @Test fun autoConnectFailureNamesTheRealCause() {
+        assertTrue(adbNeedsRepair(adbAutoConnectError(true)))
+        assertTrue(adbAutoConnectError(true).contains("重新配对"))
+        assertFalse(adbNeedsRepair(adbAutoConnectError(false)))
+        assertTrue(adbAutoConnectError(false).contains("无线调试可能已关"))
+    }
 }

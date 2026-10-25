@@ -11,6 +11,10 @@ publicly released. Exact artifacts and acceptance belong to their release record
   out) is reported as “Error” on the floating capsule, in the task status and in the
   chat's end-of-task divider (“Task failed”), not as a green “Done”.
   末轮模型请求失败（如额度用尽返回 429）的任务在浮窗、状态和会话结尾都显示“出错”，不再显示绿色完成。
+- Wireless ADB: when the phone no longer trusts GAgent's key, `droid.adb_connect()` now
+  says re-pairing is needed instead of “wireless debugging may be off”, and Settings
+  shows “Re-pair needed” as soon as it opens. 手机撤销信任时自连报错改为明确提示重新配对；
+  设置页打开即刷新“需重新配对”状态。
 
 ## 2.33.6 / 139 — 2026-10-25 (open-source prerelease / 开源预发布)
 
