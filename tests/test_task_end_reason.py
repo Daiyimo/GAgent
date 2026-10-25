@@ -40,10 +40,10 @@ def _running(entry, monkeypatch, cid):
     return sess
 
 
-def _finish(entry, sess, item):
+def _finish(entry, sess, item, outputs=('step text',)):
     q = queue.Queue()
-    q.put({'turn': 2, 'outputs': ['step text']})
-    q.put(dict(item, turn=2, outputs=['step text']))
+    q.put({'turn': 2, 'outputs': list(outputs)})
+    q.put(dict(item, turn=2, outputs=list(outputs)))
     t = threading.Thread(target=entry._drain, args=(q, sess.state['gen'], sess, 'c1'))
     t.start(); t.join(5)
     assert not t.is_alive()
@@ -71,8 +71,31 @@ def test_stop_after_finish_does_not_relabel(entry, monkeypatch):
 
 
 def test_error_final_is_reported_as_error(entry, monkeypatch):
-    poll = _finish(entry, _running(entry, monkeypatch, 'ga_err'), {'done': '!!!Error: provider unreachable'})
+    poll = _finish(entry, _running(entry, monkeypatch, 'ga_err'), {'done': '!!!Error: provider unreachable'}, outputs=())
     assert poll['end'] == 'error' and poll['status'].startswith('出错')
+
+
+H1, H2 = '\n\nLLM Running (Turn 1) ...\n\n', '\n\n**Turn 2 ...**\n\n'
+HTTP_429 = '!!!Error: HTTP 429: {"error":{"code":"1308","message":"Usage limit reached for 5 hour."}}'
+
+
+def test_http_error_after_the_turn_header_is_an_error(entry, monkeypatch):
+    """The kernel's done text starts with the turn header, so the old prefix test never fired (a 429 showed as Done)."""
+    last = H2 + HTTP_429
+    poll = _finish(entry, _running(entry, monkeypatch, 'ga_429'), {'done': H1 + 'opened settings' + last},
+                   outputs=(H1 + 'opened settings', last))
+    assert poll['end'] == 'error' and poll['status'].startswith('出错')
+
+
+@pytest.mark.parametrize('last, end', [
+    (H2 + '<thinking>x</thinking>!!!Error: ReadTimeout: read timed out', 'error'),
+    (H2 + 'Partial answer\n\n[!!! 流异常中断 ChunkedEncodingError: reset !!!]', 'error'),
+    (H2 + 'Done. Earlier the provider said !!!Error: HTTP 500 but the retry worked.' + ' Details follow.' * 10, 'done'),
+    (H2 + 'All settings applied.', 'done'),
+])
+def test_end_reason_reads_the_last_turn_like_the_kernel(entry, last, end):
+    assert entry._end_reason(False, H1 + '!!!Error: HTTP 429 on turn one' + last, last) == end
+    assert entry._end_reason(True, '', last) == 'stopped'
 
 
 def test_capsule_never_shows_done_for_stop_or_error():
