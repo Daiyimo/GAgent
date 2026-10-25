@@ -466,6 +466,7 @@ def _openai_stream(sess, messages):
         if sess.max_tokens: payload["max_completion_tokens" if ml.startswith(("gpt-5", "o1", "o2", "o3", "o4")) else "max_tokens"] = sess.max_tokens
         eff = _clamp_effort(sess.reasoning_effort, model)
         if eff: payload["reasoning_effort"] = eff
+        payload["enable_thinking"] = False   # 2026-10-25: step_plan 端点唯一实测有效的关思考开关（reasoning_effort 被端点忽略，单轮实测 12.2s 仍思考）；需推理质量的复杂任务删此行即可回退
     tools = getattr(sess, 'tools', None)
     if tools: payload["tools"] = _prepare_oai_tools(tools, api_mode)
     if sess.service_tier: payload["service_tier"] = sess.service_tier
