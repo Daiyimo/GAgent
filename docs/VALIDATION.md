@@ -1,6 +1,6 @@
 # Validation snapshot / 验收快照
 
-Latest update: [2.33.7 follow-up, 2026-10-25](#v2337).
+Latest update: [2.33.8 follow-up, 2026-10-25](#v2338).
 
 **Initial Pixel snapshot:** 2026-10-23
 
@@ -246,6 +246,36 @@ overlay error state, YOLO's effect at default effort, foldables and other OEMs.
 本轮未证明：App 自连 ADB 离屏（需用户重新配对）、光学扫码配对（需用户自建中继与电脑二维码）、
 全新安装（系统要求在手机上确认 USB 安装）、浮窗出错态、默认推理强度下 YOLO 的单独效果、折叠屏与其他厂商。
 结果摘要：display/sound 各组均 3/3；B站从 0/3 到 1/3（看图关推理）再到 2/3（推理强度 low，其中 1 次失败播放了视频）。
+
+<a id="v2338"></a>
+## 2.33.8 follow-up / 2.33.8 补充
+
+Same MEIZU 21 (Android 16, WebView 155.0.8059.43). First the published 2.33.7 was
+exercised end to end, then the release build of the fixes was installed over it
+(same signature, data kept) and each fix was checked once.
+同一台 MEIZU 21：先对已发布的 2.33.7 做整体回归，再覆盖安装修复后的 release 包逐项单次复核。
+
+- Web tool: on 2.33.7 every web task's `open_url` timed out twice (about 21 s each)
+  before the model fell back; the screenshot call waited for a new frame. With the fix
+  `open_url` succeeded on the first call in 1.8 s and returned a screenshot.
+  网页工具：2.33.7 每次先超时两次；修复后首次调用 1.8 s 成功并带截图。
+- In the chat WebView a remote image in rendered Markdown raised an `img-src`
+  violation and was not fetched; a local data image still rendered.
+  回复中的远程图片被策略拦截未请求，本地图片照常显示。
+- Starting the quick-record activity from outside the app (adb shell) is refused
+  (“not exported”); the launcher shortcuts are now published for this package.
+  外部无法再启动快捷录音入口；桌面快捷方式已正常发布。
+- A task finished in the background produced one notification instead of two; after a
+  restart the header and capsule show “待命”; the reply actions no longer include the
+  placeholder translate button. 后台完成只发一条通知；重启后显示“待命”；不再显示未实现的翻译键。
+- Also exercised without changes: a read-only Settings task (correct title, brightness
+  unchanged), stopping a running task, language switching, settings pages, the
+  composer sheets, copy, read-aloud and the share card.
+  其余回归项（只读设置任务、停止、语言切换、设置页、输入框弹层、复制、朗读、分享图）正常。
+
+Not established / 未证明: App self-ADB offscreen (needs the user to re-pair), optical
+QR pairing in this app, a fresh install, foldables and other OEMs.
+本次未证明：App 自连 ADB 离屏（需用户重新配对）、本 App 光学扫码配对、全新安装、折叠屏与其他厂商。
 
 <a id="v2337"></a>
 ## 2.33.7 follow-up / 2.33.7 补充

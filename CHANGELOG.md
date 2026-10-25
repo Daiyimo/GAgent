@@ -7,6 +7,8 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+## 2.33.8 / 141 — 2026-10-25 (open-source prerelease / 开源预发布)
+
 - Web tool: the foreground browser's screenshot no longer times out on Android WebView,
   so `open_url` works on the first try (on a MEIZU 21 every web task used to lose about
   45 s and two failed calls); a failed screenshot no longer discards an opened page.
