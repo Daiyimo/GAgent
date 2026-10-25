@@ -551,6 +551,11 @@ try{var _th=JSON.parse(localStorage.getItem('ga.theme')||'"system"');
     </div>
     <!-- editor panel -->
     <div id="provEditPanel" style="display:none">
+      <div class="secLbl"><span data-i18n="provType">供应商类型</span></div>
+      <div class="seg" id="pvSeg">
+        <button data-t="oai" class="on" onclick="setProvType('oai')" data-i18n="oaiCompat">OpenAI 兼容</button>
+        <button data-t="claude" onclick="setProvType('claude')" data-i18n="claudeCompat">Anthropic 兼容</button>
+      </div>
       <div class="secLbl"><span data-i18n="endpointPick">StepFun 端点(二选一)</span></div>
       <div class="seg" id="pvEpSeg">
         <button type="button" onclick="pickStepEndpoint(0)" data-i18n="epPlan">Plan</button>
