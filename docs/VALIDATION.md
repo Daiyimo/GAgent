@@ -1,6 +1,6 @@
 # Validation snapshot / 验收快照
 
-Latest update: [Meizu GUI and overlay regression, 2026-10-24](#meizu-gui-regression).
+Latest update: [2.33.7 follow-up, 2026-10-25](#v2337).
 
 **Initial Pixel snapshot:** 2026-10-23
 
@@ -246,6 +246,32 @@ overlay error state, YOLO's effect at default effort, foldables and other OEMs.
 本轮未证明：App 自连 ADB 离屏（需用户重新配对）、光学扫码配对（需用户自建中继与电脑二维码）、
 全新安装（系统要求在手机上确认 USB 安装）、浮窗出错态、默认推理强度下 YOLO 的单独效果、折叠屏与其他厂商。
 结果摘要：display/sound 各组均 3/3；B站从 0/3 到 1/3（看图关推理）再到 2/3（推理强度 low，其中 1 次失败播放了视频）。
+
+<a id="v2337"></a>
+## 2.33.7 follow-up / 2.33.7 补充
+
+Same MEIZU 21, release builds of the merged fixes installed over the existing app
+(same signature, data kept), GLM-5.3-flash. Single checks, not trials.
+同一台 MEIZU 21，覆盖安装合入后的 release 包（同签名、保留数据）；每项单次检查，不是成功率测试。
+
+- Failed tasks: one task that hit HTTP 429 (provider quota) and one that could not
+  reach the network through an unreachable proxy both showed “Error” on the capsule,
+  “Error · N steps” in the status, a red cross on the reply header and a “Task
+  failed” divider. The cross was still there after a cold start.
+  额度用尽（429）和代理不可达两种失败都显示“出错”，冷启动后回复头 ✕ 保持。
+- Reasoning effort: in a conversation created while effort was default, choosing
+  “low” applied to its next task and choosing “default” cleared it again, without
+  restarting the app. 推理强度在既有会话的下一次任务即生效，无需重启。
+- A task that ended by asking showed “Reply needed · tap to answer” on the capsule
+  until it was answered, then “Done”. 以提问结束时浮窗显示“需要你回复”，回答后变完成。
+- Wireless ADB after the phone revoked GAgent's key (adbd answered with
+  `CERTIFICATE_UNKNOWN`): `droid.adb_connect()` now says re-pairing is needed
+  (it previously said wireless debugging might be off), and Settings shows
+  “Re-pair needed” as soon as it opens. 手机撤销信任后，自连报错明确要求重新配对，设置页打开即显示“需重新配对”。
+
+Not established / 未证明: App self-ADB offscreen (needs the user to re-pair),
+optical QR pairing in this app, a fresh install, foldables and other OEMs.
+本次未证明：App 自连 ADB 离屏（需用户重新配对）、本 App 光学扫码配对、全新安装、折叠屏与其他厂商。
 
 ## Not established / 尚未证明
 

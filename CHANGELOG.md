@@ -7,6 +7,8 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+## 2.33.7 / 140 — 2026-10-25 (open-source prerelease / 开源预发布)
+
 - A task whose last model call failed (for example HTTP 429 when a provider quota runs
   out) is reported as “Error” on the floating capsule, in the task status and in the
   chat's end-of-task divider (“Task failed”), not as a green “Done”.
