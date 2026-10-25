@@ -22,7 +22,7 @@ agent = None
 _LANG = os.environ.get('GA_LANG', 'zh')   # UI 语言, 由 /lang 设置(写 env); 读 env 使重导入后语言不回退中文
 def _L(zh, en): return en if _LANG == 'en' else zh
 def _new_state():   # t0=本次运行起点(秒, send 时置), 此处先种键使"运行⇒有 t0"契约结构性显式(poll 仍带 running 守卫)
-    return {'running': False, 't0': 0, 'status': 'idle', 'gen': 0, 'steps': [], 'final': '', 'prompt': '', 'cmd_error': '', 'tok_in': 0, 'tok_out': 0, 'cache_read': 0, 'cache_write': 0, 'ask': None, 'ask_open': None, 'end': ''}
+    return {'running': False, 't0': 0, 'status': _L('待命', 'Idle'), 'gen': 0, 'steps': [], 'final': '', 'prompt': '', 'cmd_error': '', 'tok_in': 0, 'tok_out': 0, 'cache_read': 0, 'cache_write': 0, 'ask': None, 'ask_open': None, 'end': ''}
 _lock = threading.RLock()
 _state = _new_state()
 _jobs = {}            # 异步作业(如 /models 网络请求): id -> {'done':bool,'result':str}; 让桥调用立即返回, UI 轮询取结果, 不冻 UI
@@ -1477,7 +1477,7 @@ def _switch_convo(cid):
     with _lock:
         _focus_cid = cid
         _bind_focus_names(s)
-        s.state.update(running=False, status='idle', steps=[], final='', prompt='',
+        s.state.update(running=False, status=_L('待命', 'Idle'), steps=[], final='', prompt='',
                        gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, ask_open=None)
     _write_active_convo(cid)
     _safe(lambda: _sync_presets(s))
@@ -2126,7 +2126,7 @@ def _cmd_clear(text):                                          # UI "清空全�
         # clear(cid) 与 drain 竞态时必须先通过 running/quiesce gate；否则旧结果可能重新写回。
         if a and (s.state.get('running') or getattr(a, 'is_running', False)) and not _quiesce_agent(a): return 'busy'
         with s.lock:
-            s.state.update(running=False, status='idle', steps=[], final='', prompt='', gen=_next_gen(),
+            s.state.update(running=False, status=_L('待命', 'Idle'), steps=[], final='', prompt='', gen=_next_gen(),
                            tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, ask_open=None)
             h = _backend_history(a)
             if h is not None: h[:] = []
@@ -2158,7 +2158,7 @@ def _cmd_clear(text):                                          # UI "清空全�
     with _hist_lock:
         _hist[:] = []
     with _lock:
-        _state.update(running=False, status='idle', steps=[], final='', prompt='', gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, ask_open=None)
+        _state.update(running=False, status=_L('待命', 'Idle'), steps=[], final='', prompt='', gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, ask_open=None)
     # 完整删除聊天文件(不再 _save_hist 写空 []): chat.json + kv 会话列表(会话快照已由上面 _reset_convos rmtree) → "存储空间·聊天"真正归零(修"清空后仍残留")
     _rm = [os.path.join(GA_DIR, 'chat.json')]
     _kvd = os.path.join(GA_DIR, 'kv')

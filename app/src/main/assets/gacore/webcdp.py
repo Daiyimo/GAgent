@@ -511,7 +511,8 @@ def web_cookies(domain=None, timeout=_TIMEOUT):
 
 def web_shot(path=None, timeout=20):
     """Page.captureScreenshot → 存 png, 返回路径(backdrop-filter 等破图由调用者自行处理)。"""
-    res = _call("Page.captureScreenshot", {"format": "png"}, timeout=timeout)
+    # fromSurface 必须显式给: Android WebView(MEIZU 21 / WebView 155 实测)缺省时一直等新帧, 静态页 20s 超时; 显式 True 0.4s 返回
+    res = _call("Page.captureScreenshot", {"format": "png", "fromSurface": True}, timeout=timeout)
     data = base64.b64decode(res["data"])
     if path is None:
         path = os.path.join(_DIR, "temp", "webcdp_%d.png" % int(time.time() * 1000))
@@ -540,7 +541,11 @@ def open_url(url, wait_load=10, shot=True, background=False):
     res = web_open(url, wait_load=wait_load)
     res["where"] = "background" if background else "foreground"
     if shot:
-        res["shot"] = web_shot()
+        try:
+            res["shot"] = web_shot(timeout=8)
+        except RuntimeError as e:   # 页面已打开: 截图失败只记在结果里, 不让整次 open_url 报错(否则 agent 会重复打开同一页)
+            res["shot"] = None
+            res["shot_error"] = str(e)
     return res
 
 

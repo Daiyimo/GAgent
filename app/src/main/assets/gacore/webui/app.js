@@ -1365,10 +1365,10 @@ function addActions(){if(_noActs)return;/* PCLINK v2.2: 远程会话不挂 重�
     if(_speakBtn===spk){speakStop();return}                                       // 再次点同一朗读键=停止(不再从头重播)
     speakStop();                                                                  // 先停掉别处正在朗读的
     if(speakText(finalText())){_speakBtn=spk;spk.classList.add('on');spk.innerHTML=ICON_STOP;spk.setAttribute('aria-label',t('stopSpeak'))}});
-  mk(ICO_TRANS,t('translate'),()=>toast(t('t_transDev')));
+  // 翻译键未实现前不挂(原先只弹「翻译功能开发中」, 每条回复都多一个点了没用的键)
   const shb=mk(ICO_SHARE,t('share'),()=>{_shareHintSeen(true);openShareCard(self)});   // 分享: 非阻断, 完成后才出现; 仅用户主动点击才生成分享图(案例信息+下载二维码)
   shb.classList.add('shareBtnHi');   // A: 分享键常驻品牌绿高亮(可发现性)
-  const sp=el('span','tm',row);sp.style.marginLeft='auto';sp.textContent=self.steps.length?(self.steps.length+' '+t('steps')):'';
+  const sp=el('span','tm',row);sp.style.marginLeft='auto';sp.textContent=self.steps.length?(self.steps.length+' '+t(self.steps.length===1?'step1':'steps')):'';
   // B: 首次「成功」任务完成时冒一次气泡「✨生成分享图」引导, localStorage 记住不再弹。
   // ok 门槛(v2.24): 仅实时完成 + 非失败/中止(_fail) + 有步骤且有报告正文才弹——失败/报错任务不值得引导分享
   if(!_shareHintSeen()&&!replaying&&!self._fail&&self.steps.length>0&&finalText()){_showShareHint(shb,'task_done')}}
@@ -1888,6 +1888,7 @@ function playAsk(){if(!soundOn)return;try{   // "叮-叮"同音双击: 区别于
     o.start(t0);o.stop(t0+.17)})}catch(e){}}
 // 退到后台/锁屏时才发系统级提醒(前台有屏幕+提示音即可); ask 比 done 高一级: 振动更强 + 高优先级通知通道(issue#5)
 function notifyAway(level,c){if(!document.hidden)return;
+  if(floatState().running)return;   // 悬浮窗服务在跑时由原生 FloatService.notifyTaskEnd 按会话发通知(含 ask/出错), 这里再发就是每个任务两条
   try{if(navigator.vibrate)navigator.vibrate(level==='ask'?[0,90,70,90]:25)}catch(e){}
   try{if(typeof GA==='undefined'||!GA.notify)return;
     const cc=c||curConvo,title=t('appName'),body=(cc?convoTitle(cc).slice(0,40)+' · ':'')+t(level==='ask'?'t_needInput':level==='error'?'t_taskErr':'t_taskDone');   // c=任务归属会话(预览别会话时通知不错标)
@@ -2892,7 +2893,7 @@ function renderStatRange(){   // 范围切换: 只重渲染筛选条+总览+按�
     else arr.forEach(([name,v])=>{const r=el('div','mstRow',ms);
       r.innerHTML=modelGlyph(name)+'<div class="mmid"><div class="nm"></div><div class="sub"></div></div><div class="val"></div>';
       r.querySelector('.nm').textContent=name;
-      r.querySelector('.sub').textContent=v.n+t('unitMsgs')+' · '+v.steps+' '+t('steps');
+      r.querySelector('.sub').textContent=v.n+t('unitMsgs')+' · '+v.steps+' '+t(v.steps===1?'step1':'steps');
       r.querySelector('.val').innerHTML='↑'+humanTok(v.ti)+'<br>↓'+humanTok(v.to)})}}
 const HEAT_DOW={zh:['一','','三','','五','',''],en:['Mon','','Wed','','Fri','','']};
 const MON_EN=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];

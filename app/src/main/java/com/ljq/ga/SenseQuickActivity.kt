@@ -29,9 +29,8 @@ class SenseQuickActivity : Activity() {
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
-        // 防混淆代理: 本 Activity 必须 exported(磁贴 PendingIntent 与桌面快捷方式要启它), 但「开麦」是隐私动作,
-        // 只允许本应用(磁贴/快捷方式都是 GA 自身)与 launcher 发起。A34+ 能拿到发起方 uid, 非本应用直接拒;
-        // 低版本无此 API, 靠 mic 常驻指示灯 + FGS 通知兜底(开麦对用户永远可见)。
+        // 防混淆代理: 「开麦」是隐私动作, 本 Activity 已不导出(磁贴 PendingIntent 与静态快捷方式都以本应用身份启动)。
+        // 下面的发起方校验只是纵深防御: A34 的 launchedFromUid 在发起方未声明共享身份时为 -1, 单靠它挡不住外部 App。
         if (Build.VERSION.SDK_INT >= 34) {
             val fromUid = runCatching { launchedFromUid }.getOrDefault(-1)
             val launcherOk = fromUid == android.os.Process.myUid() || fromUid == android.os.Process.SYSTEM_UID

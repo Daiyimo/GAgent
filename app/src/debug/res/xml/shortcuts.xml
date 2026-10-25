@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 桌面长按图标直达(A14 无感开录的成本最低通道): 起录/停录两条静态快捷方式。
+     target = SenseQuickActivity(透明中转), 由它满足 A34「mic FGS 须由可见 Activity 起」。
+     debug 包副本: applicationId 带 .debug 后缀, 其余与 src/main 版相同。 -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="sense_start"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/sc_sense_start_short"
+        android:shortcutLongLabel="@string/sc_sense_start_long">
+        <intent
+            android:action="com.ljq.ga.SENSE_QUICK_START"
+            android:targetPackage="io.github.shenhaostu.gagent.debug"
+            android:targetClass="com.ljq.ga.SenseQuickActivity"/>
+        <categories android:name="android.shortcut.conversation"/>
+    </shortcut>
+    <shortcut
+        android:shortcutId="sense_stop"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/sc_sense_stop_short"
+        android:shortcutLongLabel="@string/sc_sense_stop_long">
+        <intent
+            android:action="com.ljq.ga.SENSE_QUICK_STOP"
+            android:targetPackage="io.github.shenhaostu.gagent.debug"
+            android:targetClass="com.ljq.ga.SenseQuickActivity"/>
+        <categories android:name="android.shortcut.conversation"/>
+    </shortcut>
+</shortcuts>
