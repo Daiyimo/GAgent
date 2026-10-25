@@ -80,3 +80,17 @@ def test_capsule_never_shows_done_for_stop_or_error():
     assert 'val done = ended && !stopped && !failed' in text
     assert 's("■ 已停止", "■ Stopped")' in text and 's("⚠ 出错", "⚠ Error")' in text
     assert 'x.optString("end") != "stopped") notifyTaskEnd' in text
+
+
+def test_pending_question_stays_visible_to_the_capsule_after_the_chat_reads_it(tmp_path, monkeypatch):
+    import json
+    monkeypatch.setenv('GA_DIR', str(tmp_path))
+    import android_entry as entry
+    sess = entry._Sess('askcid')
+    ask = {'question': 'Log in first?', 'candidates': ['Done', 'Skip']}
+    sess.state.update(running=False, status='done', final='waiting', nsteps=1, steps=[{'n': 1}], ask=ask, ask_open=ask, end='done')
+    assert json.loads(entry._poll_for(sess, '0'))['ask'] == ask            # chat consumes the one-shot field
+    assert json.loads(entry._poll_for(sess, '0'))['ask'] in (None, '')
+    assert json.loads(entry._poll_for(sess, '-1', summary=True))['ask'] == ask   # capsule (read-only) still sees it
+    sess.state.update(ask=None, ask_open=None)                              # what a new task does
+    assert json.loads(entry._poll_for(sess, '-1', summary=True))['ask'] in (None, '')

@@ -22,7 +22,7 @@ agent = None
 _LANG = os.environ.get('GA_LANG', 'zh')   # UI 语言, 由 /lang 设置(写 env); 读 env 使重导入后语言不回退中文
 def _L(zh, en): return en if _LANG == 'en' else zh
 def _new_state():   # t0=本次运行起点(秒, send 时置), 此处先种键使"运行⇒有 t0"契约结构性显式(poll 仍带 running 守卫)
-    return {'running': False, 't0': 0, 'status': 'idle', 'gen': 0, 'steps': [], 'final': '', 'prompt': '', 'cmd_error': '', 'tok_in': 0, 'tok_out': 0, 'cache_read': 0, 'cache_write': 0, 'ask': None, 'end': ''}
+    return {'running': False, 't0': 0, 'status': 'idle', 'gen': 0, 'steps': [], 'final': '', 'prompt': '', 'cmd_error': '', 'tok_in': 0, 'tok_out': 0, 'cache_read': 0, 'cache_write': 0, 'ask': None, 'ask_open': None, 'end': ''}
 _lock = threading.RLock()
 _state = _new_state()
 _jobs = {}            # 异步作业(如 /models 网络请求): id -> {'done':bool,'result':str}; 让桥调用立即返回, UI 轮询取结果, 不冻 UI
@@ -1473,7 +1473,7 @@ def _switch_convo(cid):
         _focus_cid = cid
         _bind_focus_names(s)
         s.state.update(running=False, status='idle', steps=[], final='', prompt='',
-                       gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None)
+                       gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, ask_open=None)
     _write_active_convo(cid)
     _safe(lambda: _sync_presets(s))
     return 'ok'
@@ -2122,7 +2122,7 @@ def _cmd_clear(text):                                          # UI "清空全�
         if a and (s.state.get('running') or getattr(a, 'is_running', False)) and not _quiesce_agent(a): return 'busy'
         with s.lock:
             s.state.update(running=False, status='idle', steps=[], final='', prompt='', gen=_next_gen(),
-                           tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None)
+                           tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, ask_open=None)
             h = _backend_history(a)
             if h is not None: h[:] = []
             hist = getattr(a, 'history', None) if a is not None else None
@@ -2153,7 +2153,7 @@ def _cmd_clear(text):                                          # UI "清空全�
     with _hist_lock:
         _hist[:] = []
     with _lock:
-        _state.update(running=False, status='idle', steps=[], final='', prompt='', gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None)
+        _state.update(running=False, status='idle', steps=[], final='', prompt='', gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, ask_open=None)
     # 完整删除聊天文件(不再 _save_hist 写空 []): chat.json + kv 会话列表(会话快照已由上面 _reset_convos rmtree) → "存储空间·聊天"真正归零(修"清空后仍残留")
     _rm = [os.path.join(GA_DIR, 'chat.json')]
     _kvd = os.path.join(GA_DIR, 'kv')
@@ -2337,7 +2337,7 @@ def _send_for(sess, text):
     for _try in range(2):
         with sess.lock:
             if not sess.retired:
-                sess.state.update(running=True, t0=time.time(), status=_L('思考中', 'Thinking…'), steps=[], final='', prompt=text, gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, end='')   # t0=本任务起点(秒): 供悬浮窗竖丸按真实运行时长加深颜色(比 FloatService 自计更准, 浮窗中途打开也对)
+                sess.state.update(running=True, t0=time.time(), status=_L('思考中', 'Thinking…'), steps=[], final='', prompt=text, gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, ask_open=None, end='')   # t0=本任务起点(秒): 供悬浮窗竖丸按真实运行时长加深颜色(比 FloatService 自计更准, 浮窗中途打开也对)
                 patches._ROUTE['cur'] = None                      # 新任务: 清空上一轮的故障转移路由, 由探针在本轮实际路由时重写
                 mygen = sess.state['gen']                         # 本次任务的代号, 用于作废 /clear 或新任务后的陈旧 drain
                 mycid = _pub_cid(sess.cid)
@@ -2383,7 +2383,7 @@ def _drain_loop(q, mygen, sess, cid=None):
                     if sess.retired or st['gen'] != mygen: return
                     turn = len(st['steps'])
                     st.update(running=False, status=_L(f'出错 · {turn}步', f'Error · {turn} steps'), end='error',
-                              final=_L('!!!Error: 会话线程已退出, 任务未完成', '!!!Error: session worker exited, task unfinished'), ask=None)
+                              final=_L('!!!Error: 会话线程已退出, 任务未完成', '!!!Error: session worker exited, task unfinished'), ask=None, ask_open=None)
                 _swallow('_drain', RuntimeError('session worker thread is dead'))
                 return
             continue
@@ -2399,7 +2399,7 @@ def _drain_loop(q, mygen, sess, cid=None):
                 end = 'stopped' if st.get('end') == 'stopped' else 'error' if final.startswith('!!!Error') else 'done'
                 status = {'stopped': _L(f'已停止 · {turn}步', f'Stopped · {turn} steps'),
                           'error': _L(f'出错 · {turn}步', f'Error · {turn} steps')}.get(end) or _L(f'完成 · {turn}步', f'Done · {turn} steps')
-                st.update(running=False, status=status, final=final, ask=ask, end=end)
+                st.update(running=False, status=status, final=final, ask=ask, ask_open=ask, end=end)
                 pcid = cid or _pub_cid(sess.cid)
                 with _hist_lock:
                     _hist.append({'prompt': st['prompt'], 'final': final, 'convo': pcid,   # 标记本轮归属的前端会话 id(随 chat.json 持久→跨进程被杀仍在): 冷启对账据此精确补全被后台完成截断的会话步骤(修「UI 显 N 步/实际更多步」)。不再靠 prompt 启发——payload 经 goal/附件/override 变换后与气泡 raw text 必不相等, 长多步任务正是命中此变换者
@@ -2450,7 +2450,7 @@ def _poll_for(sess, since='0', summary=False, legacy=False):
         if not readonly: st['cmd_error'] = ''
         d['tok_in'] = st.get('tok_in', 0); d['tok_out'] = st.get('tok_out', 0)
         d['cache_read'] = st.get('cache_read', 0); d['cache_write'] = st.get('cache_write', 0)
-        d['ask'] = st.get('ask')
+        d['ask'] = st.get('ask') or (st.get('ask_open') if readonly else None)   # 只读观察者(浮窗)在问题未答前一直看到它; 消费型轮询仍一次性取走
         d['end'] = st.get('end', '')
         d['llm'] = [] if summary else [dict(x) for x in (st.get('llm') or []) if x.get('gen') == st.get('gen')]   # 本任务各次主模型请求计时(patches.patch_llm_timing)
         if not readonly and st.get('ask'):
