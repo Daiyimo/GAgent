@@ -70,8 +70,14 @@ PUBLIC_RELAY_PRESET_FILES = {'app/src/main/assets/gacore/webui/integrations.js',
 PUBLIC_RELAY_PRESET_URL = b"'wss://p2p." + b"gaagent" + b".ai/ws'"   # split so this tool does not contain the literal
 
 
+PUBLIC_RELAY_PRESET_DECL = b'const PUBLIC_RELAY={url:'
+
+
 def public_relay_preset(name, data, start):
-    return name in PUBLIC_RELAY_PRESET_FILES and data[start - 1:start - 1 + len(PUBLIC_RELAY_PRESET_URL)] == PUBLIC_RELAY_PRESET_URL
+    # One occurrence, as the declared preset's url literal: a copy, a concatenation or a silent default fails.
+    decl = PUBLIC_RELAY_PRESET_DECL + PUBLIC_RELAY_PRESET_URL
+    return (name in PUBLIC_RELAY_PRESET_FILES and data.count(PUBLIC_RELAY_PRESET_URL[1:-1]) == 1
+            and data[start - 1 - len(PUBLIC_RELAY_PRESET_DECL):start - 1 + len(PUBLIC_RELAY_PRESET_URL)] == decl)
 
 
 def audit_blob(name, data, *, allow_public_docs=False):

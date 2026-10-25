@@ -26,12 +26,15 @@ Gradle、Docker 或 Shizuku。YOLO、self-ADB、跨设备服务、语音和 APK 
 <a id="download"></a>
 ## 1. Download and install / 下载与安装
 
-This is an **open-source preview**, with no stable APK release yet. To try this
-source, use its Actions build. Do not substitute an old draft or a different
-distribution just because its app name looks the same. See [channels](ECOSYSTEM.md).
+This is an **open-source preview**. The quickest download is the latest
+[prerelease](https://github.com/shenhao-stu/GAgent/releases) (no sign-in): take
+**GAgent-release.apk** and `SHA256SUMS`, check the hash, then continue at step 5.
+For a newer commit, use its Actions build below. Do not substitute an old draft or a
+different distribution just because its app name looks the same. See [channels](ECOSYSTEM.md).
 
-当前为**开源预览**，尚无稳定版 APK。测试本仓库请使用对应 Actions 构建；不要把旧草稿或同名的
-其他分发包当成本仓库最新版。[原生依赖迁移](DEPENDENCY_SECURITY.md)仍是稳定发布前的待办。
+当前为**开源预览**。最快的方式是从最新[预发布版](https://github.com/shenhao-stu/GAgent/releases)
+下载 **GAgent-release.apk** 与 `SHA256SUMS`（无需登录），核对哈希后从第 5 步继续；需要更新的提交时用下面的
+Actions 构建。不要把旧草稿或同名的其他分发包当成本仓库最新版。[原生依赖迁移](DEPENDENCY_SECURITY.md)仍是稳定发布前的待办。
 
 1. Sign in to GitHub and open [Android builds on main](https://github.com/shenhao-stu/GAgent/actions/workflows/android.yml?query=branch%3Amain).
 2. Open the run for the commit you want. Both **verify** and **build** must be green

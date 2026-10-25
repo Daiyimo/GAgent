@@ -498,6 +498,7 @@ def init(ga_dir):
     patches.patch_usage()                             # 猴补丁 token 用量采集 → poll 上报
     patches.patch_abort()                             # 让"停止"真正中断在飞 LLM 流(close socket + 不重试/不故障转移续命)
     _safe(patches.patch_route_probe)                   # 故障转移路由可视化: 记录当前实际路由到的成员 → poll.route → UI 显示
+    _safe(patches.patch_llm_reload)                    # /llm 让每个会话按刚保存的配置重建(推理强度等变更对所有会话生效)
     _safe(patches.patch_llm_timing)                    # 主模型请求计时: 首包/推理/文字/工具首 token、上下文规模、重试 → poll.llm(只观察)
     try: _hist[:] = json.load(open(os.path.join(ga_dir, 'chat.json'), encoding='utf-8'))
     except Exception as e: _swallow('init_load_hist', e)
@@ -1057,6 +1058,7 @@ def _rollback(n):
     h = _backend_history(a)
     if h is None: return 'no-history'
     with s.lock:                                 # 截断与 send 的 append 同锁, 防竞态
+        s.state.update(ask=None, ask_open=None)  # 被回退的轮次里的提问不再待答
         starts = [i for i, m in enumerate(h) if _is_user_turn(m)]   # ① LLM 上下文: 各用户轮起点
         if not starts: return 'no-user'
         k = max(1, min(n, len(starts)))          # 夹紧: 最多回退到最早一个用户轮
@@ -1143,16 +1145,9 @@ def _watch_preset_result(q):
     except Exception as e:
         _swallow('_watch_preset_result', e)
 
-def _queue_control(a, text):
-    """控制命令入队。/llm 先丢弃该 agent 缓存的会话表: 内核按 mykey 的 mtime 只报一次 changed, 多个会话里只有
-    第一个会重建; 丢弃后该 agent 处理 /llm 时必按当前配置重建(历史保留), 改推理强度等配置对每个会话都生效。"""
-    if re.match(_PRESET_LLM_RE, (text or '').strip()):
-        a.__dict__.pop('llmclients', None)
-    return a.put_task(text)
-
 def _apply_preset_cmd(a, c):
     try:
-        q = _queue_control(a, c)
+        q = a.put_task(c)
     except Exception as e:
         _swallow('_apply_preset_cmd', e); return
     try:
@@ -1166,7 +1161,7 @@ def _sync_presets(s):
     with _preset_lock:
         seq = _preset_seq
         if s.applied_seq >= seq: return
-        cmds = list(_PRESET_CMDS.values())
+        cmds = [c for k, c in _PRESET_CMDS.items() if k == 'llm'] + [c for k, c in _PRESET_CMDS.items() if k != 'llm']   # /llm 会重建会话, 先放它, /session.* 再叠加
     for c in cmds:
         _apply_preset_cmd(a, c)
     s.applied_seq = seq
@@ -2310,7 +2305,12 @@ def _send_for(sess, text):
     hit, result = _dispatch_cmds(text, _CMDS_POST)
     if hit: return result
     if re.match(r'/(session\.\w+=|llm\b)', text):   # 控制命令(切模型/推理/服务商): 入队即返回, 不阻塞 UI; 失败经 poll.cmd_error 上报
-        q = _queue_control(a, text)
+        q = a.put_task(text)
+        if re.match(_PRESET_LLM_RE, text.strip()):   # /llm 重建了该 agent 的会话: 重放已记录的 /session.* 设置, 不丢用户调过的参数
+            with _preset_lock:
+                again = [c for k, c in _PRESET_CMDS.items() if k.startswith('session.')]
+            for c in again:
+                _apply_preset_cmd(a, c)
         undo = None
         try: undo = _record_preset(text)
         except Exception as e: _swallow('_record_preset', e)
@@ -2450,7 +2450,7 @@ def _poll_for(sess, since='0', summary=False, legacy=False):
         if not readonly: st['cmd_error'] = ''
         d['tok_in'] = st.get('tok_in', 0); d['tok_out'] = st.get('tok_out', 0)
         d['cache_read'] = st.get('cache_read', 0); d['cache_write'] = st.get('cache_write', 0)
-        d['ask'] = st.get('ask') or (st.get('ask_open') if readonly else None)   # 只读观察者(浮窗)在问题未答前一直看到它; 消费型轮询仍一次性取走
+        d['ask'] = st.get('ask') or (st.get('ask_open') if readonly and sess.cid == _focus_cid else None)   # 只读观察者(浮窗)在当前会话问题未答前一直看到它; 后台会话的旧问题不霸占浮窗; 消费型轮询仍一次性取走
         d['end'] = st.get('end', '')
         d['llm'] = [] if summary else [dict(x) for x in (st.get('llm') or []) if x.get('gen') == st.get('gen')]   # 本任务各次主模型请求计时(patches.patch_llm_timing)
         if not readonly and st.get('ask'):

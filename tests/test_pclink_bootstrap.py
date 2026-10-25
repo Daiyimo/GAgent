@@ -105,3 +105,5 @@ def test_audit_allows_the_public_relay_preset_only_in_its_file():
     assert audit.audit_blob('app/src/main/assets/gacore/webui/app.js', src)        # anywhere else still fails
     other = ("'wss://relay." + 'gaagent' + ".ai/ws'").encode()
     assert audit.audit_blob('app/src/main/assets/gacore/webui/integrations.js', b'x=' + other)
+    assert audit.audit_blob('app/src/main/assets/gacore/webui/integrations.js', src + b'\nconst D=' + relay)   # a second copy fails
+    assert audit.audit_blob('app/src/main/assets/gacore/webui/integrations.js', b'url=' + relay)           # not the declared preset

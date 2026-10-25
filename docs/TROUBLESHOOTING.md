@@ -43,7 +43,7 @@ Some OEM builds (observed on Flyme, Android 16) remove GAgent's accessibility se
 from the enabled list when the app is force-stopped or killed by the system; tasks
 then stop and ask you to enable it. Reopen GAgent and use the amber permission item
 to turn it back on. To have GAgent restore it at startup, grant the developer
-permission once and enable automatic keeping on the permission page:
+permission once and turn on **Auto-keep** (自动保持) on the permission page:
 
 ~~~sh
 adb shell pm grant io.github.shenhaostu.gagent android.permission.WRITE_SECURE_SETTINGS

@@ -518,6 +518,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
 .intErr.bad{color:var(--err)}
 .intActs{display:flex;margin-top:var(--sp-4)}
 .intPreset{width:100%;margin-top:var(--sp-3);min-height:44px;border:1px solid var(--line);border-radius:var(--r-md);background:transparent;color:var(--acc);font:inherit;font-size:15px;font-weight:600}
+.intPreset:active{opacity:.7}
 .linkBtn{border:0;padding:0;background:transparent;color:var(--txt);font:inherit;font-weight:600;text-decoration:underline;text-decoration-color:var(--mut);text-underline-offset:3px;cursor:pointer}
 /* 模型列表子页 */
 #modelv{position:fixed;inset:0;z-index:var(--z-modelv);background:var(--bg);display:flex;flex-direction:column;

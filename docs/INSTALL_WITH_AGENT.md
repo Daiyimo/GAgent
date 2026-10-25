@@ -36,7 +36,9 @@ For a phone-only user, guide the taps instead of building a desktop environment.
 ## 2. Select and verify an APK / 选择与校验制品
 
 Canonical source: [shenhao-stu/GAgent](https://github.com/shenhao-stu/GAgent).
-Use **main**, the **Android** workflow (`android.yml`) and a run where **both jobs
+A published prerelease (not a draft) on the Releases page carries the APKs and
+`SHA256SUMS` for its tagged commit and needs no sign-in; verify the hash the same way.
+For anything newer, use **main**, the **Android** workflow (`android.yml`) and a run where **both jobs
 completed successfully**. Pin its full commit before downloading. If current main
 is still running or failed, report that; do not call an older successful build
 “latest main”. Artifacts expire after 14 days; fall back to an explicitly selected

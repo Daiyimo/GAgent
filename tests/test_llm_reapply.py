@@ -11,16 +11,23 @@ CORE = Path(__file__).parents[1] / 'app/src/main/assets/gacore'
 sys.path.insert(0, str(CORE))
 
 
-def test_llm_switch_makes_the_agent_rebuild_its_sessions(tmp_path, monkeypatch):
+def test_llm_switch_makes_the_agent_rebuild_its_sessions_on_its_own_thread(tmp_path, monkeypatch):
     monkeypatch.setenv('GA_DIR', str(tmp_path))
     import android_entry as entry
-    queued = []
-    agent = SimpleNamespace(llmclients=['stale'], put_task=lambda text: queued.append(text) or 'q')
-    entry._queue_control(agent, '/session.temperature=1')
-    assert hasattr(agent, 'llmclients')                       # other control commands keep the session list
-    entry._queue_control(agent, '/llm {"name": "GLM", "model": "glm-5.3-flash"}')
-    assert not hasattr(agent, 'llmclients')                   # load_llm_sessions will rebuild from the saved config
-    assert queued == ['/session.temperature=1', '/llm {"name": "GLM", "model": "glm-5.3-flash"}']
+    from agentmain import GenericAgent
+    seen = []
+    def original(self, raw_query, display_queue):
+        seen.append((raw_query, hasattr(self, 'llmclients')))
+        return None
+    for name in ('_ga_llm_reload_patched', '_ga_llm_reload_orig'):
+        monkeypatch.delattr(GenericAgent, name, raising=False)
+    monkeypatch.setattr(GenericAgent, '_handle_slash_cmd', original)
+    entry.patches.patch_llm_reload()
+    agent = SimpleNamespace(llmclients=['stale'])
+    GenericAgent._handle_slash_cmd(agent, '/session.temperature=1', None)
+    GenericAgent._handle_slash_cmd(agent, '/llm {"name": "GLM", "model": "glm-5.3-flash"}', None)
+    # the session list is dropped inside the agent's own handler, right before the kernel's /llm reload
+    assert seen == [('/session.temperature=1', True), ('/llm {"name": "GLM", "model": "glm-5.3-flash"}', False)]
 
 
 def test_choosing_an_effort_saves_then_reapplies_the_active_model():
