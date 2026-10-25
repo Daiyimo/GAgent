@@ -337,7 +337,9 @@ object AdbController {
     fun closeDetached(tag: String): Boolean =
         held.remove(tag)?.let { runCatching { it.close() }; true } ?: false
 
-    data class Status(val connected: Boolean, val paired: Boolean, val error: String?, val port: Int)
+    data class Status(val connected: Boolean, val paired: Boolean, val error: String?, val port: Int,
+                      val repairNeeded: Boolean = false)
+
 
     /**
      * paired 直接查磁盘证书文件是否存在, 不依赖内存 manager 实例:
@@ -350,6 +352,7 @@ object AdbController {
         paired = File(ctx.filesDir, CERT_NAME).exists() && File(ctx.filesDir, KEY_NAME).exists(),
         error = lastError,
         port = loadPort(ctx),
+        repairNeeded = adbNeedsRepair(lastError),
     )
 
     /** 断开并丢弃已配对证书(下次要重新 pair)。 */
@@ -421,3 +424,7 @@ object AdbController {
         return X509CertImpl(info).apply { sign(priv, "SHA512withRSA") }
     }
 }
+
+/** 证书还在盘上不代表手机仍信任它: 系统撤销配对后连接会报 AdbPairingRequiredException, 只能由用户重新配对。纯函数, 便于单测。 */
+fun adbNeedsRepair(error: String?): Boolean =
+    error != null && (error.contains("PairingRequired") || error.contains("pairing is required", ignoreCase = true))

@@ -3654,12 +3654,13 @@ window.openA11ySettings=function(){try{GA.openA11ySettings()}catch(e){}};       
 /* ════════════ 无线调试自连(app 内自连 ADB, 补无障碍之外的 shell 能力, 结构仿上方无障碍三层) ════════════
    状态来源: GA.adbSelfStatus()(原生读 adb_wifi_enabled + AdbController); 用户从开发者选项返回时 onResume→gaOnAdb() 回推刷新。
    真正的配对/连接由 agent 侧经 droid.adb_pair/adb_connect 完成(bus 已有) — UI 只负责引导 + 状态展示 + 深链, 不自己实现 SPAKE2。*/
-function adbOn(){try{return !!JSON.parse(GA.adbSelfStatus()).connected}catch(e){return true}}  // 桥缺失/解析异常时视为已连, 不误报
+function adbState(){try{const s=JSON.parse(GA.adbSelfStatus());return s.connected?'on':(s.repair?'repair':'off')}catch(e){return 'on'}}   // 桥缺失/解析异常时视为已连, 不误报
+function adbOn(){return adbState()==='on'}
 function refreshAdb(){
-  const on=adbOn();
+  const st=adbState(),on=st==='on';
   const dot=$('adbDot');if(dot)dot.hidden=on;                                    // 设置行红点(结构仿 a11yDot): 仅未连接时显示
   refreshGearDot();
-  const v=$('adbVal');if(v){v.textContent=t(on?'adbOn':'adbOff');v.className=on?'a11yValOn':'a11yValOff'}
+  const v=$('adbVal');if(v){v.textContent=t({on:'adbOn',off:'adbOff',repair:'adbRepair'}[st]);v.className=on?'a11yValOn':'a11yValOff'}   // repair: 手机已撤销信任, 需在系统里重新配对
 }
 window.gaOpenConvo=function(cid){           // 原生 per-cid 通知点击：冷热启动共用，精确切到该会话
   cid=cid==null?'':String(cid);if(!cid)return false;

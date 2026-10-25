@@ -49,3 +49,26 @@ def test_choosing_an_effort_saves_then_reapplies_the_active_model():
         assert switch == {'name': 'GLM', 'model': 'glm-5.3-flash'}
         assert not errors
         browser.close()
+
+
+def test_settings_row_says_repair_when_the_phone_revoked_self_adb_trust():
+    web = Path(__file__).parents[1] / 'app/src/main/assets/gacore/webui'
+    with sync_playwright() as engine:
+        browser = engine.chromium.launch(executable_path=os.environ.get('PLAYWRIGHT_CHROMIUM_EXECUTABLE'))
+        page = browser.new_page(viewport={'width': 390, 'height': 844}, locale='en')
+        page.route('http**://**', lambda route: route.abort())
+        page.add_init_script('''
+          window.adb={wifi:true,paired:true,connected:false,repair:true};
+          window.GA=new Proxy({ready:()=> 'ok', poll:()=> '{}', isDark:()=>false, adbSelfStatus:()=>JSON.stringify(adb),
+            send:(c)=>c==='/config'?'{"ok":true,"items":[]}':c.startsWith('/kv.get ')?'':'{}'
+          },{get:(t,k)=>t[k]||(()=> '{}')});
+        ''')
+        page.goto((web / 'index.html').as_uri())
+        page.locator('.pcAgree').click()
+        page.evaluate('openSettings();refreshAdb()')
+        assert page.locator('#adbVal').inner_text() == 'Re-pair needed'
+        page.evaluate("adb.repair=false;refreshAdb()")
+        assert page.locator('#adbVal').inner_text() == 'Not connected'
+        page.evaluate("adb.connected=true;refreshAdb()")
+        assert page.locator('#adbVal').inner_text() == 'Connected'
+        browser.close()

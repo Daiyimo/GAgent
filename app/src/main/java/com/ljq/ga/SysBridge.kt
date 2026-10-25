@@ -7,7 +7,8 @@ class SysBridge(private val activity: MainActivity) {
     // 无线调试自连状态(设置行+引导浮层用): wifi=系统「无线调试」开关是否已打开; paired/connected=AdbController(证书已持久化/传输已建立)。
     fun adbSelfStatus(): String {
         val st = AdbController.status(activity)
-        return org.json.JSONObject().put("wifi", activity.adbWifiOn()).put("paired", st.paired).put("connected", st.connected).toString()
+        return org.json.JSONObject().put("wifi", activity.adbWifiOn()).put("paired", st.paired).put("connected", st.connected)
+            .put("repair", st.repairNeeded).toString()
     }
     // 跳系统「开发者选项」(无线调试无独立直达 Intent)。返回是否真的拉起了某个设置页, JS 据此判断成败:
     //   1) ACTION_APPLICATION_DEVELOPMENT_SETTINGS 直达开发者选项(部分机型/高 API 已废弃或无 handler)
@@ -36,7 +37,7 @@ class SysBridge(private val activity: MainActivity) {
             .put("a11yOn", activity.isA11yOn())
             .put("hasWriteSecure", A11yPersist.hasWriteSecure(activity))
             .put("persistEnabled", A11yPersist.persistEnabled(activity))
-            .put("selfAdbOn", st.connected || (st.paired && activity.adbWifiOn()))
+            .put("selfAdbOn", st.connected || (st.paired && !st.repairNeeded && activity.adbWifiOn()))   // 手机已撤销信任时一键授权不可用
             .put("grantCmd", "adb shell " + A11yPersist.grantCmd(activity))
             .toString()
     }.getOrElse { """{"a11yOn":false,"hasWriteSecure":false,"persistEnabled":false,"selfAdbOn":false}""" }
