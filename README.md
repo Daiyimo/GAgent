@@ -23,10 +23,11 @@ provider's **API URL, key and model ID**. Python and the phone tools are inside 
 APK. No computer, root, Shizuku, Docker or separate Python installation is needed
 for ordinary use.
 
-1. **📦 Get the open-source APK.** Open [Android builds](https://github.com/shenhao-stu/GAgent/actions/workflows/android.yml?query=branch%3Amain),
-   sign in to GitHub, choose a successful **main** run with both **verify** and
-   **build** green, then download its **GAgent-android-…** artifact. Extract the ZIP
-   and install **GAgent-release.apk**. [Download, checksums and installation →](docs/GETTING_STARTED.md#download)
+1. **📦 Get the open-source APK.** Download **GAgent-release.apk** and `SHA256SUMS`
+   from the latest [prerelease](https://github.com/shenhao-stu/GAgent/releases) (no
+   sign-in needed) and check the hash. Newer builds are CI artifacts from
+   [Android builds](https://github.com/shenhao-stu/GAgent/actions/workflows/android.yml?query=branch%3Amain)
+   (sign in, pick a green **main** run, extract **GAgent-android-…**). [Download, checksums and installation →](docs/GETTING_STARTED.md#download)
 2. **🔑 Add your model.** Open **Settings → Providers & Models → Add provider**.
    Select the matching protocol and enter the URL, key and **Default model ID**;
    tap **Save**. Fetching a model list is optional. Leave Proxy empty unless needed.
@@ -51,8 +52,8 @@ Verify text, a harmless tool action and vision separately; report anything untes
 [📖 Step-by-step installation](docs/GETTING_STARTED.md) · [🤖 Agent setup guide](docs/INSTALL_WITH_AGENT.md) ·
 [🔧 Build from source](docs/BUILD.md) · [🩺 Troubleshooting](docs/TROUBLESHOOTING.md)
 
-> **Open-source preview.** There is no stable APK release yet; CI artifacts require
-> GitHub sign-in and expire after 14 days. Preserve existing apps and data: release
+> **Open-source preview.** Releases are prereleases, not a stable channel; CI
+> artifacts require GitHub sign-in and expire after 14 days. Preserve existing apps and data: release
 > (`io.github.shenhaostu.gagent`) and debug (`io.github.shenhaostu.gagent.debug`) have
 > separate identities. [app.gaagent.ai](https://app.gaagent.ai/) distributes the
 > separate official mobile edition. [Native dependency migration](docs/DEPENDENCY_SECURITY.md)
@@ -76,7 +77,7 @@ the entire APK or Android codebase**. [Core, memory and counting scope →](docs
 | 🎙️ **Step Voice streaming input** | Speak a task and review the transcript. The client supports the Step ASR streaming path through a configured compatible WSS service. |
 | 🛠️ **APK Factory** | Describe a small app, generate its project, then submit, track and fetch its APK through your configured build service. Templates and clients are included. |
 
-**Local tools are ready to configure; hosted integrations are opt-in.** PC Link ships without a default relay credential: enter the relay URL and access credential for a relay you run or are authorized to use, then scan the computer QR to pair. Voice and APK Factory do not include service credentials or build workers. [All setup steps](docs/CONFIGURATION.md) · [Component boundaries](docs/OFFICIAL_MODULES.md)
+**Local tools are ready to configure; hosted integrations are opt-in.** PC Link has no default relay: enter the relay you run or are authorized to use, or tap the explicit public GenericAgent relay preset and review its note, then scan the computer QR to pair. Voice and APK Factory do not include service credentials or build workers. [All setup steps](docs/CONFIGURATION.md) · [Component boundaries](docs/OFFICIAL_MODULES.md)
 
 ## 🧠 A small core, useful memory, less repeated context
 

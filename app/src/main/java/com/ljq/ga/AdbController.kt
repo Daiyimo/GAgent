@@ -64,6 +64,7 @@ object AdbController {
     // connect 成功后在无争用时刻捕获; connected 只读它的 lock-free 成员, 绝不走 manager.isConnected()(吃 mLock, wedge 期会阻塞 status 查询)。
     @Volatile private var conn: AdbConnection? = null
     @Volatile var lastError: String? = null
+    @Volatile private var pairingRequired = false   // 任一端口报过需配对即置位(后续端口的其他失败不覆盖); 连接或配对成功才清
         private set
 
     /** 派生存活真值(lock-free): socket 未关 ∧ CNXN 已建立。任一调用返回/抛出后, 此值恒等于 libadb 地面真相, 不存在脱节窗口。 */
@@ -98,6 +99,7 @@ object AdbController {
             throw RuntimeException("pair 失败: 配对码/端口错, 或配对弹窗已关闭(须保持前台)")
         }
         Analytics.track("""{"event":"adb_pair","props":{"ok":true}}""")   // 证书交换成功=自连能力关键里程碑
+        pairingRequired = false
         // pair 消耗/污染了 Mgr 单例(libadb 内部状态), 同实例立即 connect 必失败; 丢弃它让 connect 懒建净 Mgr
         // (复用磁盘已持久化的证书, 设备侧已信任本证书, 无需重新 pair)。
         teardown()
@@ -132,12 +134,13 @@ object AdbController {
             conn = m.adbConnection   // 捕获引用: 之后 connected 读它的 lock-free 成员, 不再吃 mLock
             savePort(ctx, port)
             lastError = null
+            pairingRequired = false
             true
         } else {
             teardown(); false
         }
     } catch (e: Exception) {
-        lastError = e.toString(); teardown(); false
+        lastError = e.toString(); if (adbNeedsRepair(lastError)) pairingRequired = true; teardown(); false
     }
 
     /** 已连接则直接返回; 否则 teardown 后按代价序试候选端口: 上次成功端口 → 5555(稳定明文TCP快路径) → mDNS 发现。全失败抛可行动错误。 */
@@ -337,7 +340,9 @@ object AdbController {
     fun closeDetached(tag: String): Boolean =
         held.remove(tag)?.let { runCatching { it.close() }; true } ?: false
 
-    data class Status(val connected: Boolean, val paired: Boolean, val error: String?, val port: Int)
+    data class Status(val connected: Boolean, val paired: Boolean, val error: String?, val port: Int,
+                      val repairNeeded: Boolean = false)
+
 
     /**
      * paired 直接查磁盘证书文件是否存在, 不依赖内存 manager 实例:
@@ -350,6 +355,7 @@ object AdbController {
         paired = File(ctx.filesDir, CERT_NAME).exists() && File(ctx.filesDir, KEY_NAME).exists(),
         error = lastError,
         port = loadPort(ctx),
+        repairNeeded = pairingRequired || adbNeedsRepair(lastError),
     )
 
     /** 断开并丢弃已配对证书(下次要重新 pair)。 */
@@ -357,6 +363,7 @@ object AdbController {
     fun reset(ctx: Context) {
         teardown()
         lastError = null
+        pairingRequired = false
         savePort(ctx, 0)
         File(ctx.filesDir, KEY_NAME).delete()
         File(ctx.filesDir, CERT_NAME).delete()
@@ -421,3 +428,7 @@ object AdbController {
         return X509CertImpl(info).apply { sign(priv, "SHA512withRSA") }
     }
 }
+
+/** 证书还在盘上不代表手机仍信任它: 系统撤销配对后连接会报 AdbPairingRequiredException, 只能由用户重新配对。纯函数, 便于单测。 */
+fun adbNeedsRepair(error: String?): Boolean =
+    error != null && (error.contains("PairingRequired") || error.contains("pairing is required", ignoreCase = true))

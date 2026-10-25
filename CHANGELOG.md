@@ -7,6 +7,21 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+## 2.33.6 / 139 — 2026-10-25 (open-source prerelease / 开源预发布)
+
+- PC Link offers an explicit **Use the public GenericAgent relay** preset in Optional
+  modules. It fills the form only after you confirm its note (the access value is the
+  one already public in the GenericAgent desktop client and is not a password) and is
+  used only after Save; there is still no default. PC Link 新增需确认的公共中继预设，不是默认值。
+- Reasoning-effort and provider changes now reach every open conversation instead of
+  only the first one. 推理强度等服务商变更会同步到所有会话。
+- A task that ends by asking you shows “Reply needed” on the floating capsule instead
+  of a green “Done”. 以提问结束的任务，浮窗显示“需要你回复”而不是绿色完成。
+- Wireless ADB shows “Re-pair needed” when the phone no longer trusts GAgent's key.
+  手机撤销无线调试信任后显示“需重新配对”。
+- Troubleshooting explains that some OEMs turn accessibility off after a force stop
+  and how to restore it automatically. 说明部分厂商强制停止后会关闭无障碍及自动恢复方法。
+
 - PC Link no longer ships a build-injected relay default. CI stops writing
   `pclink_defaults.json`, the APK audit rejects that asset, and runtime ignores a
   stale copy from older builds; configure your own relay URL and credential in

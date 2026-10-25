@@ -19,9 +19,10 @@
 **准备三样东西：arm64、Android 11+ 手机，网络，以及模型服务商的 API 地址、密钥和模型 ID。**
 APK 已内置 Python 与手机工具。日常使用无需电脑、root、Shizuku、Docker 或另装 Python。
 
-1. **📦 下载开源 APK。** 打开[Android 构建页](https://github.com/shenhao-stu/GAgent/actions/workflows/android.yml?query=branch%3Amain)，
-   登录 GitHub，选择 **main 分支上 verify 与 build 均成功**的记录，下载底部
-   **GAgent-android-…** 制品，解压后安装 **GAgent-release.apk**。
+1. **📦 下载开源 APK。** 从最新[预发布版](https://github.com/shenhao-stu/GAgent/releases)下载
+   **GAgent-release.apk** 与 `SHA256SUMS`（无需登录）并核对哈希。更新的构建在
+   [Android 构建页](https://github.com/shenhao-stu/GAgent/actions/workflows/android.yml?query=branch%3Amain)
+   （登录 GitHub，选 main 上全绿的记录，解压 **GAgent-android-…**）。
    [下载、校验与安装详解 →](docs/GETTING_STARTED.md#download)
 2. **🔑 配置模型。**「设置 → 服务商与模型 → 添加服务商」，选择匹配协议，填写 API 地址、
    密钥和 **默认模型 ID**，保存即可；**不必先获取模型列表**。没有代理需求就留空。
@@ -46,7 +47,7 @@ https://github.com/shenhao-stu/GAgent/blob/main/docs/INSTALL_WITH_AGENT.md
 [📖 完整安装指南](docs/GETTING_STARTED.md) · [🤖 Agent 安装指南](docs/INSTALL_WITH_AGENT.md) ·
 [🔧 源码构建](docs/BUILD.md) · [🩺 常见问题](docs/TROUBLESHOOTING.md)
 
-> **开源预览。** 暂无稳定版 APK；CI 制品需登录 GitHub 下载，保留 14 天。
+> **开源预览。** Releases 中是预发布版，不是稳定渠道；CI 制品需登录 GitHub 下载，保留 14 天。
 > 保留已有安装与数据：正式包 `io.github.shenhaostu.gagent`、调试包
 > `io.github.shenhaostu.gagent.debug` 使用独立身份。
 > [app.gaagent.ai](https://app.gaagent.ai/) 为独立的官方手机版渠道。
@@ -70,7 +71,7 @@ https://github.com/shenhao-stu/GAgent/blob/main/docs/INSTALL_WITH_AGENT.md
 | 🎙️ **Step Voice 流式语音输入** | 说出任务，核对转写后发送。通过配置的兼容 WSS 服务接入 Step ASR 流式路径。 |
 | 🛠️ **APK 工厂：做出你想要的 App** | 用自然语言描述小应用，生成工程，再通过已配置的构建服务提交、查询和下载 APK；仓库保留模板与客户端。 |
 
-**本地工具直接配置，可选服务主动接入。** PC Link 不附带默认中继凭据：先填写你自建或获授权使用的中继地址与访问凭据，再扫码配对电脑。语音和 APK 工厂不附带服务凭据或构建节点。[完整开启步骤](docs/CONFIGURATION.md) · [组件与服务端边界](docs/OFFICIAL_MODULES.md)
+**本地工具直接配置，可选服务主动接入。** PC Link 没有默认中继：填写你自建或获授权使用的中继，或点击需确认的 GenericAgent 公共中继预设并阅读说明，再扫码配对电脑。语音和 APK 工厂不附带服务凭据或构建节点。[完整开启步骤](docs/CONFIGURATION.md) · [组件与服务端边界](docs/OFFICIAL_MODULES.md)
 
 ## 🧠 小内核，长记忆，减少重复 Token
 

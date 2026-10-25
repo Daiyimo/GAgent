@@ -8,6 +8,12 @@ const MODULES={   // field order = service_config.SERVICES; scheme only drives t
   apk:{fields:['url','token'],scheme:'https',zh:['APK 构建服务','APK 工厂使用的云端构建服务'],en:['APK build service','Cloud build service used by the APK factory']},
 };
 const FIELD={url:['服务地址','Endpoint URL'],token:['访问令牌','Access token'],owner_id:['账户 ID（数字）','Owner ID (numeric)'],model:['模型','Model']};
+/* GenericAgent's public PC Link relay. Its access value is the default already published in the open-source
+   GenericAgent desktop client (frontends/p2p_ws_client.py), where it filters scans and is not a secret.
+   Filled into the form only after the user confirms; nothing is saved until Save. */
+const PUBLIC_RELAY={url:'wss://p2p.gaagent.ai/ws',token:'ljq-p2p-ws-default-access-key-v1-7f3c9a2e'};
+const PUBLIC_RELAY_NOTE=['公共中继由 GenericAgent 项目运营，访问值已在开源桌面端公开，只用于过滤扫描，不是密码。配对安全依赖电脑上出示的二维码/9 位短码和房间 ID：只在自己电脑上出示配对码、不要外传截图。中继运营方理论上可看到连接元数据，敏感用途请自建中继。电脑端 GA 也需使用同一中继。',
+  'The public relay is run by the GenericAgent project. Its access value is already published in the open-source desktop client; it filters scans and is not a password. Pairing relies on the QR or 9-digit code shown on your computer and the room ID: show the code only on your own computer and do not share screenshots. The relay operator could in principle see connection metadata; self-host for sensitive use. Your computer GA must use the same relay.'];
 const CHEV='<svg class="chev" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>';
 const el=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e};
 
@@ -61,6 +67,13 @@ function openIntegrations(focus){   // focus=module name: scroll its card into v
       if(field==='token'&&saved.has_token)input.placeholder=en?'Saved (leave blank to retain)':'已保存（留空保留）';
       input.addEventListener('focus',()=>setTimeout(()=>input.scrollIntoView({block:'center',behavior:'smooth'}),250));   // keyboard (adjustResize) must not cover the field
       box.appendChild(input);wrap.appendChild(label);wrap.appendChild(box);card.appendChild(wrap);inputs[name][field]=input;
+    }
+    if(name==='pclink'){   // 显式公共中继: 确认风险后只填入表单, 仍需用户点保存
+      const preset=el('button','intPreset',en?'Use the public GenericAgent relay':'使用 GenericAgent 公共中继');preset.type='button';
+      preset.onclick=()=>gaModal({title:en?'Public relay':'公共中继',msg:L(PUBLIC_RELAY_NOTE),okText:en?'Fill in':'填入',onOk:()=>{
+        inputs.pclink.url.value=PUBLIC_RELAY.url;inputs.pclink.token.value=PUBLIC_RELAY.token;
+        error.classList.remove('bad');error.textContent=en?'Public relay filled in. Review, then Save to enable.':'已填入公共中继，确认后点保存才会启用。'}});
+      card.appendChild(preset);
     }
   }
   const error=el('p','intErr');error.setAttribute('role','status');error.setAttribute('aria-live','polite');panel.appendChild(error);

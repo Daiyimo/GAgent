@@ -94,3 +94,16 @@ def test_apk_audit_fails_when_package_contains_relay_defaults(tmp_path, monkeypa
     assert audit.main() is True
     report = json.loads(capsys.readouterr().out)
     assert [f['path'] for f in report['findings']] == ['assets/gacore/pclink_defaults.json']
+
+
+def test_audit_allows_the_public_relay_preset_only_in_its_file():
+    audit = load_audit()
+    relay = ("'wss://p2p." + 'gaagent' + ".ai/ws'").encode()
+    src = b'const PUBLIC_RELAY={url:' + relay + b"};"
+    assert audit.audit_blob('app/src/main/assets/gacore/webui/integrations.js', src) == []
+    assert audit.audit_blob('assets/gacore/webui/integrations.js', src) == []      # same file inside the APK
+    assert audit.audit_blob('app/src/main/assets/gacore/webui/app.js', src)        # anywhere else still fails
+    other = ("'wss://relay." + 'gaagent' + ".ai/ws'").encode()
+    assert audit.audit_blob('app/src/main/assets/gacore/webui/integrations.js', b'x=' + other)
+    assert audit.audit_blob('app/src/main/assets/gacore/webui/integrations.js', src + b'\nconst D=' + relay)   # a second copy fails
+    assert audit.audit_blob('app/src/main/assets/gacore/webui/integrations.js', b'url=' + relay)           # not the declared preset

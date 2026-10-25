@@ -46,7 +46,9 @@ authenticated channel and reviewed before saving.
 
 PC Link has no default shared signing key in source or release APKs; see
 [Configuration](CONFIGURATION.md#pc-link-relay-profile--中继配置). The endpoint
-and credential come only from the user's Optional modules settings. Pairing remains
+and credential come only from the user's Optional modules settings, optionally filled
+by an explicit, confirmed public-relay preset whose access value is already public in
+the GenericAgent desktop client. Pairing remains
 explicit; a changed endpoint cannot inherit a saved room, clearing the settings
 stops relay use, and unpairing stops reconnection. Per-device, revocable
 credentials require a relay-side issuer, which this repository does not provide.

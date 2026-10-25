@@ -335,6 +335,24 @@ def patch_llm_timing():
     llmcore._ga_llmt_patched = _ae
 
 
+def patch_llm_reload():
+    """胶水猴补丁(不改 agentmain): /llm 在 agent 自己的线程里先丢弃缓存的会话表, 再交给内核处理。
+    内核按 mykey 的 mtime 只报一次 changed, 多个会话中只有第一个会重建; 丢弃后 load_llm_sessions 必按当前配置重建
+    (历史经 self.llmclient 保留)。放在 agent 线程内执行, 不与正在处理上一条命令的 worker 竞争。"""
+    import re
+    import android_entry as _ae
+    from agentmain import GenericAgent
+    if getattr(GenericAgent, '_ga_llm_reload_patched', None) is _ae: return
+    orig = getattr(GenericAgent, '_ga_llm_reload_orig', None) or GenericAgent._handle_slash_cmd
+    def _handle_slash_cmd(self, raw_query, display_queue):
+        if isinstance(raw_query, str) and re.match(r'/llm\s+\S', raw_query.strip()):
+            self.__dict__.pop('llmclients', None)
+        return orig(self, raw_query, display_queue)
+    GenericAgent._ga_llm_reload_orig = orig
+    GenericAgent._handle_slash_cmd = _handle_slash_cmd
+    GenericAgent._ga_llm_reload_patched = _ae
+
+
 def patch_abort():
     import android_entry as _ae
     import llmcore

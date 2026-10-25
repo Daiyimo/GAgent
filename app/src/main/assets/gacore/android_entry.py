@@ -22,7 +22,7 @@ agent = None
 _LANG = os.environ.get('GA_LANG', 'zh')   # UI 语言, 由 /lang 设置(写 env); 读 env 使重导入后语言不回退中文
 def _L(zh, en): return en if _LANG == 'en' else zh
 def _new_state():   # t0=本次运行起点(秒, send 时置), 此处先种键使"运行⇒有 t0"契约结构性显式(poll 仍带 running 守卫)
-    return {'running': False, 't0': 0, 'status': 'idle', 'gen': 0, 'steps': [], 'final': '', 'prompt': '', 'cmd_error': '', 'tok_in': 0, 'tok_out': 0, 'cache_read': 0, 'cache_write': 0, 'ask': None, 'end': ''}
+    return {'running': False, 't0': 0, 'status': 'idle', 'gen': 0, 'steps': [], 'final': '', 'prompt': '', 'cmd_error': '', 'tok_in': 0, 'tok_out': 0, 'cache_read': 0, 'cache_write': 0, 'ask': None, 'ask_open': None, 'end': ''}
 _lock = threading.RLock()
 _state = _new_state()
 _jobs = {}            # 异步作业(如 /models 网络请求): id -> {'done':bool,'result':str}; 让桥调用立即返回, UI 轮询取结果, 不冻 UI
@@ -498,6 +498,7 @@ def init(ga_dir):
     patches.patch_usage()                             # 猴补丁 token 用量采集 → poll 上报
     patches.patch_abort()                             # 让"停止"真正中断在飞 LLM 流(close socket + 不重试/不故障转移续命)
     _safe(patches.patch_route_probe)                   # 故障转移路由可视化: 记录当前实际路由到的成员 → poll.route → UI 显示
+    _safe(patches.patch_llm_reload)                    # /llm 让每个会话按刚保存的配置重建(推理强度等变更对所有会话生效)
     _safe(patches.patch_llm_timing)                    # 主模型请求计时: 首包/推理/文字/工具首 token、上下文规模、重试 → poll.llm(只观察)
     try: _hist[:] = json.load(open(os.path.join(ga_dir, 'chat.json'), encoding='utf-8'))
     except Exception as e: _swallow('init_load_hist', e)
@@ -1057,6 +1058,7 @@ def _rollback(n):
     h = _backend_history(a)
     if h is None: return 'no-history'
     with s.lock:                                 # 截断与 send 的 append 同锁, 防竞态
+        s.state.update(ask=None, ask_open=None)  # 被回退的轮次里的提问不再待答
         starts = [i for i, m in enumerate(h) if _is_user_turn(m)]   # ① LLM 上下文: 各用户轮起点
         if not starts: return 'no-user'
         k = max(1, min(n, len(starts)))          # 夹紧: 最多回退到最早一个用户轮
@@ -1159,7 +1161,7 @@ def _sync_presets(s):
     with _preset_lock:
         seq = _preset_seq
         if s.applied_seq >= seq: return
-        cmds = list(_PRESET_CMDS.values())
+        cmds = [c for k, c in _PRESET_CMDS.items() if k == 'llm'] + [c for k, c in _PRESET_CMDS.items() if k != 'llm']   # /llm 会重建会话, 先放它, /session.* 再叠加
     for c in cmds:
         _apply_preset_cmd(a, c)
     s.applied_seq = seq
@@ -1466,7 +1468,7 @@ def _switch_convo(cid):
         _focus_cid = cid
         _bind_focus_names(s)
         s.state.update(running=False, status='idle', steps=[], final='', prompt='',
-                       gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None)
+                       gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, ask_open=None)
     _write_active_convo(cid)
     _safe(lambda: _sync_presets(s))
     return 'ok'
@@ -2115,7 +2117,7 @@ def _cmd_clear(text):                                          # UI "清空全�
         if a and (s.state.get('running') or getattr(a, 'is_running', False)) and not _quiesce_agent(a): return 'busy'
         with s.lock:
             s.state.update(running=False, status='idle', steps=[], final='', prompt='', gen=_next_gen(),
-                           tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None)
+                           tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, ask_open=None)
             h = _backend_history(a)
             if h is not None: h[:] = []
             hist = getattr(a, 'history', None) if a is not None else None
@@ -2146,7 +2148,7 @@ def _cmd_clear(text):                                          # UI "清空全�
     with _hist_lock:
         _hist[:] = []
     with _lock:
-        _state.update(running=False, status='idle', steps=[], final='', prompt='', gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None)
+        _state.update(running=False, status='idle', steps=[], final='', prompt='', gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, ask_open=None)
     # 完整删除聊天文件(不再 _save_hist 写空 []): chat.json + kv 会话列表(会话快照已由上面 _reset_convos rmtree) → "存储空间·聊天"真正归零(修"清空后仍残留")
     _rm = [os.path.join(GA_DIR, 'chat.json')]
     _kvd = os.path.join(GA_DIR, 'kv')
@@ -2304,6 +2306,11 @@ def _send_for(sess, text):
     if hit: return result
     if re.match(r'/(session\.\w+=|llm\b)', text):   # 控制命令(切模型/推理/服务商): 入队即返回, 不阻塞 UI; 失败经 poll.cmd_error 上报
         q = a.put_task(text)
+        if re.match(_PRESET_LLM_RE, text.strip()):   # /llm 重建了该 agent 的会话: 重放已记录的 /session.* 设置, 不丢用户调过的参数
+            with _preset_lock:
+                again = [c for k, c in _PRESET_CMDS.items() if k.startswith('session.')]
+            for c in again:
+                _apply_preset_cmd(a, c)
         undo = None
         try: undo = _record_preset(text)
         except Exception as e: _swallow('_record_preset', e)
@@ -2330,7 +2337,7 @@ def _send_for(sess, text):
     for _try in range(2):
         with sess.lock:
             if not sess.retired:
-                sess.state.update(running=True, t0=time.time(), status=_L('思考中', 'Thinking…'), steps=[], final='', prompt=text, gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, end='')   # t0=本任务起点(秒): 供悬浮窗竖丸按真实运行时长加深颜色(比 FloatService 自计更准, 浮窗中途打开也对)
+                sess.state.update(running=True, t0=time.time(), status=_L('思考中', 'Thinking…'), steps=[], final='', prompt=text, gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, ask_open=None, end='')   # t0=本任务起点(秒): 供悬浮窗竖丸按真实运行时长加深颜色(比 FloatService 自计更准, 浮窗中途打开也对)
                 patches._ROUTE['cur'] = None                      # 新任务: 清空上一轮的故障转移路由, 由探针在本轮实际路由时重写
                 mygen = sess.state['gen']                         # 本次任务的代号, 用于作废 /clear 或新任务后的陈旧 drain
                 mycid = _pub_cid(sess.cid)
@@ -2376,7 +2383,7 @@ def _drain_loop(q, mygen, sess, cid=None):
                     if sess.retired or st['gen'] != mygen: return
                     turn = len(st['steps'])
                     st.update(running=False, status=_L(f'出错 · {turn}步', f'Error · {turn} steps'), end='error',
-                              final=_L('!!!Error: 会话线程已退出, 任务未完成', '!!!Error: session worker exited, task unfinished'), ask=None)
+                              final=_L('!!!Error: 会话线程已退出, 任务未完成', '!!!Error: session worker exited, task unfinished'), ask=None, ask_open=None)
                 _swallow('_drain', RuntimeError('session worker thread is dead'))
                 return
             continue
@@ -2392,7 +2399,7 @@ def _drain_loop(q, mygen, sess, cid=None):
                 end = 'stopped' if st.get('end') == 'stopped' else 'error' if final.startswith('!!!Error') else 'done'
                 status = {'stopped': _L(f'已停止 · {turn}步', f'Stopped · {turn} steps'),
                           'error': _L(f'出错 · {turn}步', f'Error · {turn} steps')}.get(end) or _L(f'完成 · {turn}步', f'Done · {turn} steps')
-                st.update(running=False, status=status, final=final, ask=ask, end=end)
+                st.update(running=False, status=status, final=final, ask=ask, ask_open=ask, end=end)
                 pcid = cid or _pub_cid(sess.cid)
                 with _hist_lock:
                     _hist.append({'prompt': st['prompt'], 'final': final, 'convo': pcid,   # 标记本轮归属的前端会话 id(随 chat.json 持久→跨进程被杀仍在): 冷启对账据此精确补全被后台完成截断的会话步骤(修「UI 显 N 步/实际更多步」)。不再靠 prompt 启发——payload 经 goal/附件/override 变换后与气泡 raw text 必不相等, 长多步任务正是命中此变换者
@@ -2443,7 +2450,7 @@ def _poll_for(sess, since='0', summary=False, legacy=False):
         if not readonly: st['cmd_error'] = ''
         d['tok_in'] = st.get('tok_in', 0); d['tok_out'] = st.get('tok_out', 0)
         d['cache_read'] = st.get('cache_read', 0); d['cache_write'] = st.get('cache_write', 0)
-        d['ask'] = st.get('ask')
+        d['ask'] = st.get('ask') or (st.get('ask_open') if readonly and sess.cid == _focus_cid else None)   # 只读观察者(浮窗)在当前会话问题未答前一直看到它; 后台会话的旧问题不霸占浮窗; 消费型轮询仍一次性取走
         d['end'] = st.get('end', '')
         d['llm'] = [] if summary else [dict(x) for x in (st.get('llm') or []) if x.get('gen') == st.get('gen')]   # 本任务各次主模型请求计时(patches.patch_llm_timing)
         if not readonly and st.get('ask'):

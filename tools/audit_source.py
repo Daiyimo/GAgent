@@ -64,6 +64,22 @@ def public_documentation_link(name, data, start, end):
             and url.fragment in PUBLIC_SITE_ANCHORS[url.netloc])
 
 
+# Optional modules offers one public relay as an explicit, user-confirmed preset (never a default).
+# Exact file and exact quoted URL only; any other hosted endpoint, in any file, still fails.
+PUBLIC_RELAY_PRESET_FILES = {'app/src/main/assets/gacore/webui/integrations.js', 'assets/gacore/webui/integrations.js'}
+PUBLIC_RELAY_PRESET_URL = b"'wss://p2p." + b"gaagent" + b".ai/ws'"   # split so this tool does not contain the literal
+
+
+PUBLIC_RELAY_PRESET_DECL = b'const PUBLIC_RELAY={url:'
+
+
+def public_relay_preset(name, data, start):
+    # One occurrence, as the declared preset's url literal: a copy, a concatenation or a silent default fails.
+    decl = PUBLIC_RELAY_PRESET_DECL + PUBLIC_RELAY_PRESET_URL
+    return (name in PUBLIC_RELAY_PRESET_FILES and data.count(PUBLIC_RELAY_PRESET_URL[1:-1]) == 1
+            and data[start - 1 - len(PUBLIC_RELAY_PRESET_DECL):start - 1 + len(PUBLIC_RELAY_PRESET_URL)] == decl)
+
+
 def audit_blob(name, data, *, allow_public_docs=False):
     path = Path(name)
     findings = []
@@ -72,6 +88,8 @@ def audit_blob(name, data, *, allow_public_docs=False):
         findings.append({'path': name, 'rule': 'credential-or-runtime-file', 'line': 0})
     for rule, pattern in RULES.items():
         for match in pattern.finditer(data):
+            if rule == 'hosted-endpoint' and public_relay_preset(name, data, match.start()):
+                continue
             if (rule == 'hosted-endpoint' and allow_public_docs
                     and public_documentation_link(name, data, match.start(), match.end())):
                 continue
