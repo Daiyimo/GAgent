@@ -928,6 +928,16 @@ def _clean(t):
     for p in _STRIP: t = p.sub('', t or '')
     return re.sub(r'\n{3,}', '\n\n', t).strip()
 
+_TURN_HEADER = re.compile(r'^\**(?:LLM Running \(Turn \d+\)|Turn \d+) \.\.\.\**\s*')
+
+def _end_reason(stopped, final, last_turn):
+    """结束原因(纯函数): 用户停止 > 末轮以内核错误标记结束 > 完成。done 是各轮拼接且以「LLM Running (Turn N) ...」
+    标题开头, 只看其开头永远判不出错; 改看末轮输出去掉标题后的文本, 判据与内核一致: 以 !!!Error 开头(BaseSession.ask
+    不入史的条件), 或末 100 字含 !!!Error:/流异常中断(ga_android.do_no_tool 的重试条件)。无分轮输出时退回 final。"""
+    if stopped: return 'stopped'
+    tail = _TURN_HEADER.sub('', _clean(last_turn or final))
+    return 'error' if tail.startswith('!!!Error') or any(m in tail[-100:] for m in ('!!!Error:', '[!!! 流异常中断')) else 'done'
+
 def _put_steps(state, turn, outputs):
     steps = state['steps']
     for k, out in enumerate(outputs):       # outputs尾部对齐当前turn号
@@ -2396,7 +2406,8 @@ def _drain_loop(q, mygen, sess, cid=None):
                 final = _clean(item['done']) or (st['steps'][-1]['summary'] if st['steps'] else _L('(空回复)', '(empty reply)'))
                 ask = _extract_ask(st['steps'][-1]['text'] if st['steps'] else item.get('done', ''))   # 本轮以 ask_user 退出 → 供 UI 弹选择框
                 # end: 结束原因(done/stopped/error) 供悬浮窗/通知如实区分, 不把用户中止或出错显示成「✔ 完成」; status 文案同步
-                end = 'stopped' if st.get('end') == 'stopped' else 'error' if final.startswith('!!!Error') else 'done'
+                outs = item.get('outputs') or []
+                end = _end_reason(st.get('end') == 'stopped', final, outs[-1] if outs else '')
                 status = {'stopped': _L(f'已停止 · {turn}步', f'Stopped · {turn} steps'),
                           'error': _L(f'出错 · {turn}步', f'Error · {turn} steps')}.get(end) or _L(f'完成 · {turn}步', f'Done · {turn} steps')
                 st.update(running=False, status=status, final=final, ask=ask, ask_open=ask, end=end)

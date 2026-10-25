@@ -646,7 +646,8 @@ function newTask(prompt,modelName,ts,stats){
 function renderTaskStats(s){if(!task)return;                                  // 完成态: 消息头只留 ✓; 用时·token 落在下方 runMeta 行
   stripRunSpin();   // 无条件摘 spin(在 hasEl||hasTok 守卫之前): 统计全空完成轮也不残留转圈
   const hasEl=s&&s.el!=null, hasTok=s&&(s.ti||s.to);
-  if(task.state){task.state.classList.remove('run');task.state.innerHTML='<span class="ck2" aria-label="'+t('done')+'">'+ICO_CK+'</span>'}
+  const err=task._err||(s&&s.er);   // 末轮模型请求失败(后端 end=error; 回放取存档 er): 头部不打绿勾
+  if(task.state){task.state.classList.remove('run');task.state.innerHTML=err?'<span class="ck2 err" aria-label="'+t('t_taskErr')+'">'+ICO_X+'</span>':'<span class="ck2" aria-label="'+t('done')+'">'+ICO_CK+'</span>'}
   if(task.meta&&(hasEl||hasTok)){const m=task.meta;m.style.display='flex';m._skel=0;m._sig=null;m._tin=m._tout=m._ger=m._el=null;   // R7 去噪: 默认只留用时, token(含缓存)收进点按展开的详情; 归档 el/ti/to/cr/cw 格式零改动(纯显示层)
     let dt=hasTok?tokChips((s&&s.ti)||0,(s&&s.to)||0):'';
     if(s&&(s.cr||s.cw))dt+='<span class="tok" title="cache">⟲'+humanTok(s.cr||0)+(s.cw?('+'+humanTok(s.cw)):'')+'</span>';
@@ -712,7 +713,7 @@ function renderMsgsInto(host,msgs,opts){opts=opts||{};   // PCLINK v2.2(#031-F3)
   _host=host||chat;replaying=true;_noActs=!!opts.noActions;
   try{(msgs||[]).forEach(m=>{if(opts.skip&&m===opts.skip)return;
     if(m.role==='user')userBubble(m.text,m.atts,m.ts,m);
-    else{newTask(m.prompt,m.model,m.ts,{el:m.el,ti:m.ti,to:m.to,cr:m.cr,cw:m.cw});task._arts=m.artifacts||[];task._citeArc=m.cites||[];try{if(m.fa)task._fail=1}catch(e){}   // 回放(D2: cites 透给 task, 同 _arts 既有范式): 产物行取存档; STEP_FOLD §2.4.3: 存档 fa → 恢复 _fail, finish 的 _fail 分支自动走中断形态(场景F, 不冒充完成态)
+    else{newTask(m.prompt,m.model,m.ts,{el:m.el,ti:m.ti,to:m.to,cr:m.cr,cw:m.cw,er:m.er});task._arts=m.artifacts||[];task._citeArc=m.cites||[];try{if(m.fa)task._fail=1}catch(e){}   // 回放(D2: cites 透给 task, 同 _arts 既有范式): 产物行取存档; STEP_FOLD §2.4.3: 存档 fa → 恢复 _fail, finish 的 _fail 分支自动走中断形态(场景F, 不冒充完成态)
       const steps=(m.steps&&m.steps.length)?m.steps:(m.final?[{n:1,summary:(m.final||'').slice(0,80),text:m.final}]:[]);
       steps.forEach(setStep);
       if(m.live){if(task.state){task.state.innerHTML='';task.state.classList.add('run')}   // PCLINK 快照重渲(#031-F5): 运行中 task 不 finish(不折叠不打勾), 头=脉冲点+末步展开; 归档 msgs 永无 live 字段, 主链不受影响
@@ -1208,7 +1209,7 @@ function finish(){task.done=true;if(!replaying)_flIdx=null;   // 实时轮产物
       task.msg.final=cleanReply(task.steps.map(s=>s._text||'').join('\n\n'));   // 存清洗后的报告正文(去 LLM Running 脚手架/思考块), 不再存末步摘要(消除 final 污染)
       if(task.snap)task.msg.artifacts=_newArtifacts(task.snap);   // 成品优先: file_write 产物必出 chip(内部文件已被后端谓词滤除); 无快照(重启接续轮)不写[]防永久掩盖
       try{if(!window.GA_CITE_OFF&&!task._fail){const _cs=citeList(task).slice(0,CITE_KEEP);if(_cs.length)task.msg.cites=_cs}}catch(e){}   // D2 §3.2.3: 引用落库(tool_events 从不落库 ⇒ 不写则换会话/杀进程全丢); 中断轮不写不渲(§3.2.5 H9)
-      if(task._fail)task.msg.fa=1;   // STEP_FOLD §2.4.2: 中断真相持久化(convoStore 存档 UI 侧字段, 非 poll 协议/不回灌模型); 纯数据不受 GA_STEPFOLD_OFF 控制
+      if(task._fail)task.msg.fa=1;if(task._err)task.msg.er=1;   // STEP_FOLD §2.4.2: 中断真相持久化(convoStore 存档 UI 侧字段, 非 poll 协议/不回灌模型); 纯数据不受 GA_STEPFOLD_OFF 控制
       task.msg.el=elMs;task.msg.ti=ti;task.msg.to=to;task.msg.cr=cr;task.msg.cw=cw;_saveN=-1;saveConvos()}
     try{   // 渲染层埋点: task_done 只证 Agent 循环结束(不证答案真写进 DOM); 此处量"屏幕实际可见字符 + 清洗后报告正文长度"→补 hanrui 报告盲区/BBS#46 待办2。task_done 数 − render_done 数 = 静默空白案例
       let _sb=null;for(let _i=task.steps.length-1;_i>=0;_i--){const _b=task.steps[_i].querySelector('.sb');if(_b&&(_b.textContent||'').trim()){_sb=_b;break}}   // 末步真实渲染体(取最后一个有可见文本的 .sb)
@@ -1889,14 +1890,14 @@ function playAsk(){if(!soundOn)return;try{   // "叮-叮"同音双击: 区别于
 function notifyAway(level,c){if(!document.hidden)return;
   try{if(navigator.vibrate)navigator.vibrate(level==='ask'?[0,90,70,90]:25)}catch(e){}
   try{if(typeof GA==='undefined'||!GA.notify)return;
-    const cc=c||curConvo,title=t('appName'),body=(cc?convoTitle(cc).slice(0,40)+' · ':'')+(level==='ask'?t('t_needInput'):t('t_taskDone'));   // c=任务归属会话(预览别会话时通知不错标)
+    const cc=c||curConvo,title=t('appName'),body=(cc?convoTitle(cc).slice(0,40)+' · ':'')+t(level==='ask'?'t_needInput':level==='error'?'t_taskErr':'t_taskDone');   // c=任务归属会话(预览别会话时通知不错标)
     if(level==='ask'){try{GA.notify(title,body,'high')}catch(e){GA.notify(title,body)}}   // 3参=高优先级通道(新APK); 旧APK无此重载→回退2参
     else GA.notify(title,body);
   }catch(e){}}
-function onTaskDone(show,c){playDone();   // show=false: 正在预览别会话, doneNote 不画进当前视图(T6); 提示音/通知照常
-  if(show!==false){const n=el('div','doneNote');n.innerHTML=ICO_CK+'<span></span>';n.querySelector('span').textContent=t('t_taskDone');scroll();
+function onTaskDone(show,c,end){playDone();const err=end==='error';   // show=false: 正在预览别会话, doneNote 不画进当前视图(T6); 提示音/通知照常; end=后端结束原因, 出错不写成「任务完成」
+  if(show!==false){const n=el('div','doneNote'+(err?' err':''));n.innerHTML=(err?ICO_X:ICO_CK)+'<span></span>';n.querySelector('span').textContent=t(err?'t_taskErr':'t_taskDone');scroll();
     if(pinned){_snDown.classList.add('done');_snDown.hidden=false;_snav.classList.add('on')}}   // C2C4(监察 F2): 顶置阅读态不抢滚, 改点亮回底钮; 点击/贴底自然清除
-  notifyAway('done',c)}                                 // 完成: 轻提示音 + 普通通知(署名任务归属会话)
+  notifyAway(err?'error':'done',c)}                     // 完成/出错: 轻提示音 + 普通通知(署名任务归属会话)
 function onNeedInput(c){playAsk();notifyAway('ask',c)}  // 需要回答 ask_user: 醒目提示音 + 高优先级通知
 let _askKey=null;
 function renderAskPicker(ask){if(!ask)return;
@@ -2204,10 +2205,10 @@ function render(j){
   if(ownRun&&typeof j.cache_write==='number')runStats.cacheWrite=j.cache_write;
   if(ownRun&&j.cmd_error){bubble('sys',j.cmd_error);stopRunClean()}  // 切模型失败: 提示 + 干净中止复位(stopRunClean 单一真相源; 否则按钮卡停止态、"切个模型啥都没反应")
   if(!j.running&&running&&(!j.cid||!(task&&task._cid)||String(j.cid)===String(task._cid))){const wasLive=curConvo===runConvo,rc=runConvo;   // 收尾前先记归属(setRunning 会清 runConvo): 预览态下瞬时 DOM 只进运行会话视图(T6); cid 归属守卫: 别会话的 running:false 拍(legacy 后台通知/闹钟切走后端焦点)不得误 finish 本任务
-    if(task&&!task.done){if(ownRun&&!task.steps.length&&j.final){setStep({n:1,summary:(j.final||'').slice(0,80),text:j.final});task._fail=1;GAT.emit('task_error',{cat:GAT.errCat(j.final),msg:GAT.errMsg(j.final),hasKey:GAT.hasKey()})}finish();GAT.emit('task_done',{ok:task.steps.length>0,steps:task.steps.length,secs:task.t0?Math.round((Date.now()-task.t0)/1000):-1})}  // 无步骤但有 final(常是报错): 显示出来, 不再"回复为空"; secs=任务时长(webui 口径, 与 agent_task_end.secs 互证)
+    if(task&&!task.done){if(ownRun&&j.end==='error'){task._fail=1;task._err=1}if(ownRun&&!task.steps.length&&j.final){setStep({n:1,summary:(j.final||'').slice(0,80),text:j.final});task._fail=1;GAT.emit('task_error',{cat:GAT.errCat(j.final),msg:GAT.errMsg(j.final),hasKey:GAT.hasKey()})}finish();GAT.emit('task_done',{ok:task.steps.length>0,steps:task.steps.length,secs:task.t0?Math.round((Date.now()-task.t0)/1000):-1})}  // 无步骤但有 final(常是报错): 显示出来, 不再"回复为空"; secs=任务时长(webui 口径, 与 agent_task_end.secs 互证)
     setRunning(false, rc&&rc.id);setStatus(modelLabel(),false);
     if(ownRun&&j.ask&&(j.ask.question||(j.ask.candidates&&j.ask.candidates.length))){if(wasLive)renderAskPicker(j.ask);else pendingAsk={cid:rc&&rc.id,ask:j.ask};if(!replaying&&!window._gaAnswering)onNeedInput(rc)}   // ask_user 退出 → 选择框(预览中不画进别会话, 存 pendingAsk 兜底——后端 ask 会被后续 /convo 切换清掉) + "需操作"提醒(issue#5)
-    else if(!replaying)onTaskDone(wasLive,rc)}                                                                                    // 真完成 → 完成提示音 + 普通通知(issue#5)
+    else if(!replaying)onTaskDone(wasLive,rc,j.end)}                                                                                    // 真完成 → 完成提示音 + 普通通知(issue#5)
   else if(!running)setStatus(j.status,j.running);   // 运行态由 liveTick 接管 header(gerund+计时); 仅非运行态用 poll 状态
   if(!running||curConvo===runConvo)scroll()}   // 预览别会话时不钉底: 700ms poll 每 tick 都会走到这, 贴底带内(stick=true)的慢滑用户会被循环拽回(与 gaOnResume 同门控)
 function setRunning(r, cid){   // P3b: multi 时第二参=目标 cid; 全局 running=anyRunning(); 按钮跟焦点
