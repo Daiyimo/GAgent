@@ -15,6 +15,7 @@ the same supported scope; deeper guides keep API names and commands unchanged.
 ## Specific topics / 专题
 
 - [Core size, memory and token measurement / 内核规模、记忆与 Token 统计](CORE_AND_MEMORY.md)
+- [DeepSeek Android comparison and pinned sources / DeepSeek 安卓对照与固定来源](COMPARISON.md)
 - [Ecosystem and download channels / 生态与下载渠道](ECOSYSTEM.md)
 - [News and dated development milestones / 新闻与开发节点](HISTORY.md)
 - [Troubleshooting / 排障](TROUBLESHOOTING.md)

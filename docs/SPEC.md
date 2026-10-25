@@ -119,13 +119,13 @@ does not.
 
 | Entry point | Returns | Cache |
 | --- | --- | --- |
-| `droid.dump(full)` `droid.py:306` | Accessibility nodes `[{t,d,x,y,b,cls,click,edit,range,sel}]` | none; sensitive or unresolved foreground yields `[]` (`droid.py:151,295,311`) |
-| `droid.look(conf,roi,cache)` `droid.py:509` | Elements with center x/y, label, class | `_LOOK_CACHE` `droid.py:505`, key = 36×80 grayscale thumbnail + roi, hit when thumbnail differs < 0.3% |
-| `droid.ui_detect(img)` `droid.py:1168` | 21-class YOLO boxes + OCR text | ORT session cached per model path |
-| `droid.ocr` / `droid.ocr_text` `droid.py:1189,1194` | 4-point boxes + text + score | PPOCR singleton |
-| `droid.ask_vision` `droid.py:555` | Text | none; empty response raises (`droid.py:568`) |
-| `droid.ui_snapshot` `droid.py:410` | Single-window snapshot + fingerprint + blockers | none |
-| `droid.shot(path,q)` `droid.py:1087` | BGR ndarray | none; two consecutive black frames raise (`_black_check` `droid.py:1066`) |
+| `droid.dump(full)` `droid.py:307` | Accessibility nodes `[{t,d,x,y,b,cls,click,edit,range,sel}]` | none; sensitive or unresolved foreground yields `[]` (`droid.py:147,313,315`) |
+| `droid.look(conf,roi,cache)` `droid.py:514` | Elements with center x/y, label, class | `_LOOK_CACHE` `droid.py:506`, key = 36×80 grayscale thumbnail + roi, hit when thumbnail differs < 0.3% |
+| `droid.ui_detect(img)` `droid.py:1202` | 21-class YOLO boxes + OCR text | ORT session cached per model path |
+| `droid.ocr` / `droid.ocr_text` `droid.py:1223,1228` | 4-point boxes + text + score | PPOCR singleton |
+| `droid.ask_vision` `droid.py:563` | Text | none; empty response raises (`droid.py:571`) |
+| `droid.ui_snapshot` `droid.py:411` | Single-window snapshot + fingerprint + blockers | none |
+| `droid.shot(path,q)` `droid.py:1112` | BGR ndarray | none; two consecutive black frames raise (`_black_check` `droid.py:1091`) |
 | `webcdp.web_scan` `webcdp.py:524` | DOM interactive elements with viewport bbox | none |
 | `jev_ui.tap_target` / `click_text` `jev_ui.py:216` | Target resolution from candidates | none |
 
@@ -133,7 +133,7 @@ does not.
 localization, and it is the foundation any fast channel must build on.
 
 **Known gap in the `look()` cache key:** it does not include package name or
-rotation (`droid.py:536`). A cached lookup can therefore be served after the
+rotation (`droid.py:543`). A cached lookup can therefore be served after the
 foreground app or orientation changed. This is a correctness defect in a cache
 that a fast path would depend on, and it is cheap to fix.
 
@@ -141,15 +141,15 @@ that a fast path would depend on, and it is cheap to fix.
 
 | Entry point | Transport | Settle / verification |
 | --- | --- | --- |
-| `droid.tap` `droid.py:390` | `/a11y/act` → `dispatchGesture`, 100 ms stroke | `sleep 1.0` then a screenshot; `expected_screen` pre-check |
-| `droid.swipe` `droid.py:440` | same, `dur` default 300 | `sleep 0.6`; endpoints clamped into the safe band by `swipePoint` |
-| `droid.scroll` `droid.py:627` | repeated `swipe(verify=False)` | 0.5s per segment; center = `w/2, h/2` |
-| `droid.tap_rel` `droid.py:491` | delegates to `tap` | `rx/1000*(w-1)` against the current frame's `screen()` |
-| `droid.paste` `droid.py:885` | clipboard + `ACTION_PASTE` | `selectAll` first; verified against edit-node text, then region OCR |
-| `droid.key` `droid.py:1044` | `ACTION_IME_ENTER` (API 30+) | ENTER only |
-| `droid.launch` `droid.py:1045` | shell `am start --windowingMode 1` preferred | `_wait_fg` polls every 0.05s up to 1.0s |
-| `back`/`home`/`notifications`/`panel` `droid.py:1053` | `performGlobalAction`; panel is a gesture from `y=3` | none |
-| `droid.adb_shell` `droid.py:1218` | self-ADB shell, gated by `_gate_injection` `droid.py:254` | none |
+| `droid.tap` `droid.py:391` | `/a11y/act` → `dispatchGesture`, 100 ms stroke | `sleep 1.0` then a screenshot; `expected_screen` pre-check |
+| `droid.swipe` `droid.py:441` | same, `dur` default 300 | `sleep 0.6`; endpoints clamped into the safe band by `swipePoint` |
+| `droid.scroll_view` / `droid.scroll` `droid.py:640,649` | repeated `swipe(verify=False)` | 0.5s per segment; center = `w/2, h/2`. `scroll_view` takes a browse direction and is the recommended name; `scroll` keeps the legacy finger direction |
+| `droid.tap_rel` `droid.py:492` | delegates to `tap` | `rx/1000*(w-1)` against the current frame's `screen()` |
+| `droid.paste` `droid.py:910` | clipboard + `ACTION_PASTE` | `selectAll` first; verified against edit-node text, then region OCR |
+| `droid.key` `droid.py:1069` | `ACTION_IME_ENTER` (API 30+) | ENTER only |
+| `droid.launch` `droid.py:1070` | shell `am start --windowingMode 1` preferred | `_wait_fg` polls every 0.05s up to 1.0s |
+| `back`/`home`/`notifications`/`panel` `droid.py:1085` | `performGlobalAction`; panel is a gesture from `y=3` | none |
+| `droid.adb_shell` `droid.py:1252` | self-ADB shell, gated by `_gate_injection` `droid.py:255` | none |
 | `vd_*` `vdisplay.py:174` | `input -d <vid> swipe/text/keyevent` | `vd_tap` is a same-point swipe (comment: `input tap` deadlocks with libadb) |
 | `webcdp.web_click` / `web_type` `webcdp.py:547,561` | CDP `Input.dispatch*` | none |
 
@@ -163,12 +163,12 @@ only route for them.
 
 | Check | Location | Rule |
 | --- | --- | --- |
-| Pixel diff | `droid.py:351` `_img_diff_str` | Grayscale `absdiff > 12`; `pct < 0.05%` hints "tapped nothing / did not scroll" |
-| Scroll verdict | `droid.py:603` `_scroll_verdict` | `text_ratio > 0.30` **or** `pixel > 1.5%`, both confirmed twice; evidence window `roi=(0, max(48, 5%h), w, min(h-60, 94%h))` |
-| Shape change | `droid.py:598` `_shape_changed` | Screenshot geometry change → `uncertain` |
-| Text change ratio | `droid.py:578` | Used for scroll and paste verdicts |
-| Paste verification | `droid.py:855` `_ocr_region`, `droid.py:821` `_classify_paste_rows` | Edit-node text match, else region OCR; any failed observation → `uncertain=True` (`droid.py:999`) |
-| Foreground change | `droid.py:739` | Package change mid-scroll → `uncertain` |
+| Pixel diff | `droid.py:352` `_img_diff_str` | Grayscale `absdiff > 12`; `pct < 0.05%` hints "tapped nothing / did not scroll" |
+| Scroll verdict | `droid.py:612` `_scroll_verdict` | `text_ratio > 0.30` **or** `pixel > 1.5%`, both confirmed twice; evidence window `roi=(0, max(48, 5%h), w, min(h-60, 94%h))` |
+| Shape change | `droid.py:607` `_shape_changed` | Screenshot geometry change → `uncertain` |
+| Text change ratio | `droid.py:587` | Used for scroll and paste verdicts |
+| Paste verification | `droid.py:880` `_ocr_region`, `droid.py:846` `_classify_paste_rows` | Edit-node text match, else region OCR; any failed observation → `uncertain=True` (`droid.py:906`) |
+| Foreground change | `droid.py:769` | Package change mid-scroll → `uncertain` |
 
 `uncertain` is a first-class outcome, not an error. That is the right shape: a
 fast path must be able to say "I cannot prove this worked" and escalate rather
@@ -224,8 +224,8 @@ From `memory/capabilities.json` (13 entries) cross-checked against source:
 | overlay / record_audio / install_unknown | `ui:*` / `perm:*` | **no code**; `onboarding_sop.md` states these are confirmed by the user replying |
 
 Also documented but not code-backed: the L3 "type key by key" fallback in
-`phone_use.md` §3 has no API (`droid.py:37` states there is no per-key typing);
-`appfn_*` requires Android 16+ with self-ADB connected (`droid.py:1276`).
+`phone_use.md` §3 has no API (`droid.py:38` states there is no per-key typing);
+`appfn_*` requires Android 16+ with self-ADB connected (`droid.py:1311`).
 
 ### 2.8 Test baseline / 测试基线
 
@@ -262,7 +262,7 @@ a device size, an orientation or an OEM layout.
 | S7 | Short-video feed | Screenshot; vertical swipe changes whole frame | relative swipe + pixel diff | `_scroll_verdict` | preload/buffer makes frame diff ambiguous |
 | S8 | Text entry into a protected/IME field | Edit node may be absent or unreadable | `paste` + edit-node verification, region OCR fallback | `_classify_paste_rows` → `ime_hint`/`ime_label` | silent no-op input; must surface `uncertain` |
 | S9 | Cross-app task (launch → act → return) | Package name from `ping()` | `launch` + `_wait_fg` | foreground-package assertion | IME window counted as foreground was a real defect, fixed in `5a5cbd7` |
-| S10 | Rotated / folded state | `ScreenGeometry(w,h,rot)` | any | gesture-time geometry re-check | `capture()` already refuses on rotation change (`droid.py:378`) |
+| S10 | Rotated / folded state | `ScreenGeometry(w,h,rot)` | any | gesture-time geometry re-check | `capture()` already refuses on rotation change (`droid.py:384`) |
 
 **Scene S5/S6/S7 have no semantic ground truth at all.** For these the spec
 requires an explicit confidence field on every action and forbids reporting
@@ -457,7 +457,7 @@ every phase below.
 **Geometry and state**
 - A gesture must never reuse coordinates from an incompatible observation.
   Rotation may change width and height; a 180° rotation changes neither and
-  already fails loudly (`droid.py:378`).
+  already fails loudly (`droid.py:384`).
 - Re-observe and re-verify after every action. `uncertain` is a legitimate
   terminal outcome for a step.
 - No hardcoded device size, orientation, OEM layout or app-specific workaround
