@@ -160,6 +160,22 @@ ignored. Network connection starts only after pairing or restoring an existing
 pair; unpair to stop saved-room reconnect. The `ga-pclink:v1:` nine-digit QR
 protocol is unchanged. Per-device, revocable credentials need a relay-side issuer.
 
+The PC Link card also offers **Use the public GenericAgent relay**. It is never a
+default: after you read and confirm its note it fills the relay URL and the access
+value already published in the open-source GenericAgent desktop client, and nothing
+is used until you press Save. That value filters scans; it is not a password, so it
+gives anyone the same signing ability the desktop client already gives. Pairing
+relies on the code shown on your computer and the unguessable room ID: show the code
+only on your own computer. The relay operator could in principle observe connection
+metadata, server-side rate limiting is not verified here, and unlinking only forgets
+the local room. Self-host for sensitive use. Your computer GA must use the same relay.
+
+可选组件的 PC Link 卡片还提供「使用 GenericAgent 公共中继」按钮。它不是默认值：阅读并确认说明后，
+只把中继地址与开源 GenericAgent 桌面端已公开的访问值填入表单，点保存后才生效。该值只用于过滤扫描、
+不是密码，不会赋予比桌面端更多的能力；配对安全依赖电脑上出示的配对码与不可猜测的房间 ID，
+请只在自己电脑上出示。中继运营方理论上可看到连接元数据，服务端限速本仓库未核实，解除配对只删除本地房间；
+敏感用途请自建中继，电脑端 GA 需使用同一中继。
+
 发布包与源码均不附带 PC Link 默认中继。APK 中的内容可被提取且所有安装共享，
 因此不能打包中继签名凭据；CI 不再注入，APK 审计发现 `pclink_defaults.json`
 即失败。请在「设置 → 可选组件 → PC Link」填写你自建或获授权使用的 WSS 信令地址

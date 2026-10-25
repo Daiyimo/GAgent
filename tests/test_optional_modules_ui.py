@@ -193,3 +193,36 @@ def test_unconfigured_voice_opens_settings_without_requesting_microphone():
         assert page.evaluate('micRequests') == 0
         assert not errors
         browser.close()
+
+
+def test_public_relay_preset_fills_the_form_only_after_confirmation():
+    relay = 'wss://p2p.' + 'gaagent' + '.ai/ws'
+    with sync_playwright() as engine:
+        browser = engine.chromium.launch(executable_path=os.environ.get('PLAYWRIGHT_CHROMIUM_EXECUTABLE'))
+        page = browser.new_page(viewport={'width': 390, 'height': 844}, locale='en')
+        errors = []
+        page.on('pageerror', lambda error: errors.append(str(error)))
+        page.route('http**://**', lambda route: route.abort())
+        page.add_init_script('''
+          window.saved=[];
+          window.GA=new Proxy({ready:()=> 'ok', poll:()=> '{}', isDark:()=>false,
+            send:(c)=>{if(c.startsWith('/integrations.save '))saved.push(JSON.parse(c.slice(19)));
+              return c==='/integrations.get'?'{}':c==='/config'?'{"ok":true,"items":[]}':c.startsWith('/kv.get ')?'':'{"ok":true}'}
+          },{get:(t,k)=>t[k]||(()=> '{}')});
+        ''')
+        page.goto((WEB / 'index.html').as_uri())
+        page.locator('.pcAgree').click()
+        page.evaluate("openIntegrations('pclink')")
+        page.locator('.intPreset').click()
+        expect(page.locator('#modalMask.on')).to_contain_text('not a password')
+        page.locator('#modalMask .cancel').click()
+        expect(page.locator('#int_pclink_url')).to_have_value('')
+        page.locator('.intPreset').click()
+        page.locator('#modalMask .ok').click()
+        expect(page.locator('#int_pclink_url')).to_have_value(relay)
+        assert len(page.locator('#int_pclink_token').input_value()) > 20
+        assert page.evaluate('saved.length') == 0                      # nothing is saved by the button itself
+        page.locator('#integrationsPanel').get_by_role('button', name='Save', exact=True).click()
+        assert page.evaluate('saved[0].pclink.url') == relay
+        assert not errors
+        browser.close()

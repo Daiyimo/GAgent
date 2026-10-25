@@ -88,12 +88,13 @@ Kotlin application paths are under `app/src/main/java/com/ljq/ga/`.
   public GenericAgent desktop client, which describes it as a scan filter rather than
   a secret and relies on the unguessable room ID. Limits remain: the key exchange is
   not bound to the short code, so a relay operator could interpose; short-code rate
-  limiting is unknown; unlinking only forgets the local room. This build packages
-  none and takes the relay URL and value from the user's Optional modules settings.
+  limiting is unknown; unlinking only forgets the local room. This build ships no
+  default; Optional modules offers an explicit, confirmed public-relay preset, and
+  nothing is used until the user saves it.
   官方自动登录、令牌续签和新逐用户签发器尚未实现；旧共享密钥中继仍需迁移，配置页不等于安全授权闭环。
   旧版打包的 PC Link 值与公开的 GenericAgent 桌面端默认访问值相同，上游称其只用于过滤扫描、
   不是秘密，并依赖不可猜测的房间 ID。仍有限制：密钥交换未与短码绑定，中继运营方理论上可介入；
-  短码限速未知；解除配对只删除本地房间。本版本不再打包，由用户在可选组件填写。
+  短码限速未知；解除配对只删除本地房间。本版本不设默认值；可选组件提供需确认的公共中继预设，用户保存后才使用。
 - **Model redistribution / 模型再分发：** optional YOLO installation is documented in
   [OPTIONAL_YOLO.md](OPTIONAL_YOLO.md). The upstream model-card and export notices
   conflict; no new redistribution license is claimed.
