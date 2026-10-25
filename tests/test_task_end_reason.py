@@ -135,5 +135,8 @@ def test_chat_divider_says_failed_for_an_error_end():
         heads = page.evaluate('''()=>{const out=[];for(const er of [1,0]){newTask('p','m',Date.now());task._err=er;
           renderTaskStats({el:1000});const c=task.state.querySelector('.ck2');out.push([c.className,c.getAttribute('aria-label')])}return out}''')
         assert heads == [['ck2 err', 'Task failed'], ['ck2', 'Done']]
+        saved = page.evaluate('''()=>JSON.parse(JSON.stringify(slimConvo({id:'c',msgs:[
+          {role:'assistant',prompt:'p',final:'f',er:1,fa:1},{role:'assistant',prompt:'p',final:'f'}]}))).msgs.map(m=>[m.er,m.fa])''')
+        assert saved == [[1, 1], [None, None]]   # the error mark survives the chat store, so a cold-start replay keeps the cross
         assert not errors
         browser.close()
