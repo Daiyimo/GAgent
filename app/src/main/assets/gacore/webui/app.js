@@ -563,7 +563,7 @@ function _slimCites(cs){   // 返工(监察#12): 落库侧防御性裁剪 — �
 function slimConvo(c){return {id:c.id,title:c.title,name:c.name,label:c.label,pinned:c.pinned,deleted:c.deleted,ts:c.ts,
   msgs:(c.msgs||[]).map(m=>m.role==='user'?{role:'user',text:(m.text||'').slice(0,2000),atts:m.atts||[],ts:m.ts}
     :{role:'assistant',prompt:(m.prompt||'').slice(0,400),final:(m.final||'').slice(0,400),model:m.model,ts:m.ts,el:m.el,ti:m.ti,to:m.to,cr:m.cr,cw:m.cw,artifacts:(m.artifacts||[]).slice(0,12),
-       fa:m.fa,cites:_slimCites(m.cites),   // U0.0(存量 bug 修复): fa 从未进白名单 → finish 写的中断标记落库即丢, 场景F回放冒充完成态; cites=D2 引用胶囊(纪律: 凡新增 task.msg.* 落库字段必须同改本白名单并以往返断言证明)
+       fa:m.fa,er:m.er,cites:_slimCites(m.cites),   // U0.0(存量 bug 修复): fa 从未进白名单 → finish 写的中断标记落库即丢, 场景F回放冒充完成态; cites=D2 引用胶囊(纪律: 凡新增 task.msg.* 落库字段必须同改本白名单并以往返断言证明)
        steps:(m.steps||[]).slice(-STEP_KEEP).map((s,i,arr)=>({n:s.n,summary:s.summary,text:(s.text||'').slice(0,i===arr.length-1?STEP_CAP_LAST:STEP_CAP)}))})}}
 function isEmptyAssistant(m){return m&&m.role==='assistant'&&!(m.steps&&m.steps.length)&&!(m.final&&m.final.trim())}
 function pruneEmptyAssistants(c){if(!c||!c.msgs)return;   // P3d: 豁免所有 runs 在飞的 live msg + 全局 task.msg(多路并存不误剪)
