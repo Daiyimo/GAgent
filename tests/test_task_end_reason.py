@@ -121,3 +121,16 @@ def test_pending_question_stays_visible_to_the_capsule_after_the_chat_reads_it(t
     monkeypatch.setattr(entry, '_focus_cid', 'askcid')
     sess.state.update(ask=None, ask_open=None)                              # what a new task does
     assert json.loads(entry._poll_for(sess, '-1', summary=True))['ask'] in (None, '')
+
+
+def test_chat_divider_says_failed_for_an_error_end():
+    """The chat's end-of-task divider follows the backend end reason instead of always saying "Task complete"."""
+    from playwright.sync_api import sync_playwright
+    from test_motion_navigation_ui import open_page
+    with sync_playwright() as engine:
+        browser, page, errors = open_page(engine)
+        page.evaluate('''()=>{window.GA.notify=()=>{};onTaskDone(true,null,'error');onTaskDone(true,null,'done')}''')
+        notes = page.evaluate('''()=>[...document.querySelectorAll('.doneNote')].map(n=>[n.className,n.textContent])''')
+        assert notes[-2:] == [['doneNote err', 'Task failed'], ['doneNote', 'Task complete']]
+        assert not errors
+        browser.close()

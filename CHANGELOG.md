@@ -8,8 +8,9 @@ publicly released. Exact artifacts and acceptance belong to their release record
 ## Unreleased / 未发布变更
 
 - A task whose last model call failed (for example HTTP 429 when a provider quota runs
-  out) is reported as “Error” on the floating capsule and in the task status, not as a
-  green “Done”. 末轮模型请求失败（如额度用尽返回 429）的任务显示“出错”，不再显示绿色完成。
+  out) is reported as “Error” on the floating capsule, in the task status and in the
+  chat's end-of-task divider (“Task failed”), not as a green “Done”.
+  末轮模型请求失败（如额度用尽返回 429）的任务在浮窗、状态和会话结尾都显示“出错”，不再显示绿色完成。
 
 ## 2.33.6 / 139 — 2026-10-25 (open-source prerelease / 开源预发布)
 

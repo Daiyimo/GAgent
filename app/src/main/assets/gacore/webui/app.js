@@ -1889,14 +1889,14 @@ function playAsk(){if(!soundOn)return;try{   // "叮-叮"同音双击: 区别于
 function notifyAway(level,c){if(!document.hidden)return;
   try{if(navigator.vibrate)navigator.vibrate(level==='ask'?[0,90,70,90]:25)}catch(e){}
   try{if(typeof GA==='undefined'||!GA.notify)return;
-    const cc=c||curConvo,title=t('appName'),body=(cc?convoTitle(cc).slice(0,40)+' · ':'')+(level==='ask'?t('t_needInput'):t('t_taskDone'));   // c=任务归属会话(预览别会话时通知不错标)
+    const cc=c||curConvo,title=t('appName'),body=(cc?convoTitle(cc).slice(0,40)+' · ':'')+t(level==='ask'?'t_needInput':level==='error'?'t_taskErr':'t_taskDone');   // c=任务归属会话(预览别会话时通知不错标)
     if(level==='ask'){try{GA.notify(title,body,'high')}catch(e){GA.notify(title,body)}}   // 3参=高优先级通道(新APK); 旧APK无此重载→回退2参
     else GA.notify(title,body);
   }catch(e){}}
-function onTaskDone(show,c){playDone();   // show=false: 正在预览别会话, doneNote 不画进当前视图(T6); 提示音/通知照常
-  if(show!==false){const n=el('div','doneNote');n.innerHTML=ICO_CK+'<span></span>';n.querySelector('span').textContent=t('t_taskDone');scroll();
+function onTaskDone(show,c,end){playDone();const err=end==='error';   // show=false: 正在预览别会话, doneNote 不画进当前视图(T6); 提示音/通知照常; end=后端结束原因, 出错不写成「任务完成」
+  if(show!==false){const n=el('div','doneNote'+(err?' err':''));n.innerHTML=(err?ICO_X:ICO_CK)+'<span></span>';n.querySelector('span').textContent=t(err?'t_taskErr':'t_taskDone');scroll();
     if(pinned){_snDown.classList.add('done');_snDown.hidden=false;_snav.classList.add('on')}}   // C2C4(监察 F2): 顶置阅读态不抢滚, 改点亮回底钮; 点击/贴底自然清除
-  notifyAway('done',c)}                                 // 完成: 轻提示音 + 普通通知(署名任务归属会话)
+  notifyAway(err?'error':'done',c)}                     // 完成/出错: 轻提示音 + 普通通知(署名任务归属会话)
 function onNeedInput(c){playAsk();notifyAway('ask',c)}  // 需要回答 ask_user: 醒目提示音 + 高优先级通知
 let _askKey=null;
 function renderAskPicker(ask){if(!ask)return;
@@ -2207,7 +2207,7 @@ function render(j){
     if(task&&!task.done){if(ownRun&&!task.steps.length&&j.final){setStep({n:1,summary:(j.final||'').slice(0,80),text:j.final});task._fail=1;GAT.emit('task_error',{cat:GAT.errCat(j.final),msg:GAT.errMsg(j.final),hasKey:GAT.hasKey()})}finish();GAT.emit('task_done',{ok:task.steps.length>0,steps:task.steps.length,secs:task.t0?Math.round((Date.now()-task.t0)/1000):-1})}  // 无步骤但有 final(常是报错): 显示出来, 不再"回复为空"; secs=任务时长(webui 口径, 与 agent_task_end.secs 互证)
     setRunning(false, rc&&rc.id);setStatus(modelLabel(),false);
     if(ownRun&&j.ask&&(j.ask.question||(j.ask.candidates&&j.ask.candidates.length))){if(wasLive)renderAskPicker(j.ask);else pendingAsk={cid:rc&&rc.id,ask:j.ask};if(!replaying&&!window._gaAnswering)onNeedInput(rc)}   // ask_user 退出 → 选择框(预览中不画进别会话, 存 pendingAsk 兜底——后端 ask 会被后续 /convo 切换清掉) + "需操作"提醒(issue#5)
-    else if(!replaying)onTaskDone(wasLive,rc)}                                                                                    // 真完成 → 完成提示音 + 普通通知(issue#5)
+    else if(!replaying)onTaskDone(wasLive,rc,j.end)}                                                                                    // 真完成 → 完成提示音 + 普通通知(issue#5)
   else if(!running)setStatus(j.status,j.running);   // 运行态由 liveTick 接管 header(gerund+计时); 仅非运行态用 poll 状态
   if(!running||curConvo===runConvo)scroll()}   // 预览别会话时不钉底: 700ms poll 每 tick 都会走到这, 贴底带内(stick=true)的慢滑用户会被循环拽回(与 gaOnResume 同门控)
 function setRunning(r, cid){   // P3b: multi 时第二参=目标 cid; 全局 running=anyRunning(); 按钮跟焦点
