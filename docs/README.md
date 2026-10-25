@@ -24,6 +24,7 @@ the same supported scope; deeper guides keep API names and commands unchanged.
 - [Official modules and credential boundaries / 官方组件与密钥边界](OFFICIAL_MODULES.md)
 - [Retained, removed and excluded features / 功能范围](FEATURE_SCOPE.md)
 - [Extraction review and its limits / 剥离审查与局限](REVIEW.md)
+- [Hybrid phone agent spec / 混合式手机 Agent 规格](SPEC.md)
 - [Engineering priorities / 工程路线图](ROADMAP.md)
 - [Security reporting and data flows / 安全报告与数据流](../SECURITY.md)
 - [Third-party notices / 第三方声明](../THIRD_PARTY.md)
