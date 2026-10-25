@@ -1143,9 +1143,16 @@ def _watch_preset_result(q):
     except Exception as e:
         _swallow('_watch_preset_result', e)
 
+def _queue_control(a, text):
+    """控制命令入队。/llm 先丢弃该 agent 缓存的会话表: 内核按 mykey 的 mtime 只报一次 changed, 多个会话里只有
+    第一个会重建; 丢弃后该 agent 处理 /llm 时必按当前配置重建(历史保留), 改推理强度等配置对每个会话都生效。"""
+    if re.match(_PRESET_LLM_RE, (text or '').strip()):
+        a.__dict__.pop('llmclients', None)
+    return a.put_task(text)
+
 def _apply_preset_cmd(a, c):
     try:
-        q = a.put_task(c)
+        q = _queue_control(a, c)
     except Exception as e:
         _swallow('_apply_preset_cmd', e); return
     try:
@@ -2303,7 +2310,7 @@ def _send_for(sess, text):
     hit, result = _dispatch_cmds(text, _CMDS_POST)
     if hit: return result
     if re.match(r'/(session\.\w+=|llm\b)', text):   # 控制命令(切模型/推理/服务商): 入队即返回, 不阻塞 UI; 失败经 poll.cmd_error 上报
-        q = a.put_task(text)
+        q = _queue_control(a, text)
         undo = None
         try: undo = _record_preset(text)
         except Exception as e: _swallow('_record_preset', e)

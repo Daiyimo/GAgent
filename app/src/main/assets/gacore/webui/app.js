@@ -2586,8 +2586,11 @@ function openEffSheet(){const wrap=$('effList');wrap.innerHTML='';
     o.innerHTML=`<div class="mid"><div class="nm"></div><div class="sub"></div></div><span class="ck">${ICO_CK}</span>`;
     o.querySelector('.nm').textContent=t(e.k);o.querySelector('.sub').textContent=t(e.k+'_d');o.onclick=()=>selectEff(e.v)});
   openSheet('effSheet')}
+function reapplyActiveLlm(a){a=a||active;if(!a)return;   // 重放当前选择: /llm 预设同步到各会话, 各自按刚保存的配置重建(推理强度等对已有会话生效)
+  if(a.pid==='__auto__'){sendLlmSwitch(a.auto||'auto',null,{noAbort:true});return}
+  const p=providers.find(x=>x.id===a.pid);if(p)sendLlmSwitch(p.name,a.model,{noAbort:true})}
 function selectEff(v){if(anyRunning()){toast(t('t_taskBusy'));return}   // P3d   // 运行中冻结推理强度: saveProvToMk 会触发后端 reload_mykeys, 不应扰动在飞任务
-  curEff=v;LS.set('eff',v);const p=curProvider();if(p){p.reasoning=v||undefined;LS.set('providers',providers);saveProvToMk(p)}
+  curEff=v;LS.set('eff',v);const p=curProvider();if(p){p.reasoning=v||undefined;LS.set('providers',providers);saveProvToMk(p);reapplyActiveLlm()}
   closeSheets();refreshModelUI();toast(t('t_effSet')+effName(v))}
 
 /* 快捷指令 (/goal /hive /conductor): 提示注入 → 选中后填入输入框, 用户补内容再发(手机端单进程: hive/conductor 适配为单 agent 串行编排) */
@@ -3785,9 +3788,7 @@ window.apOpenSys=function(which){let ok=false;try{ok=GA.openAppSysSettings(which
   if(_noSel&&providers.length){                                // 首次/未选过模型 → 默认选第一个
     try{const p=providers[0];selectModel(p,p.model||(p.models&&p.models[0])||'')}catch(e){}}
   else if(!_noSel){                                             // 已有选择 → 启动时同步到后端(选择即切换,无延迟apply)
-    const a=LS.get('active',null);if(a){
-      if(a.pid==='__auto__'){try{sendLlmSwitch(a.auto||'auto',null,{noAbort:true})}catch(e){}}
-      else{const p=providers.find(x=>x.id===a.pid);if(p){try{sendLlmSwitch(p.name,a.model,{noAbort:true})}catch(e){}}}}}
+    const a=LS.get('active',null);if(a){try{reapplyActiveLlm(a)}catch(e){}}}
   try{const _a=(typeof getAuth==='function')?getAuth():null,_ok=!!(_a&&_a.token&&(!_a.exp||Date.now()<_a.exp));   // boot 校正埋点账号态: 修 token 过期未显式登出留下的脏 user_id
     if(typeof GA!=='undefined'){if(_ok&&_a.userId!=null&&GA.setUser)GA.setUser(String(_a.userId));else if(!_ok&&GA.clearUser)GA.clearUser();}}catch(e){}
   let _li={};try{_li=JSON.parse((window.GA&&GA.launchInfo&&GA.launchInfo())||'{}')}catch(e){}   // src=唤起来源(launcher|float|notif_*), notif=通知总开关(回访钩子可触达面基线)
