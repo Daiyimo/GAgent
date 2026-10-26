@@ -336,7 +336,8 @@ def _act(**body):
     _record_path("launch" if op == "launch" else "a11y")   # 任务路径归属: 拉起 app vs 无障碍操作外部 app
     run_guard.check()   # 门禁可能等待；取消后不得再派发。
     ret = _check(_SESSION.post(_base() + "/a11y/act", json=body, timeout=30))
-    run_metrics.mark_action_dispatched()   # 只观测(SPEC Phase 0): 记"动作已下发"时刻, 供 run_metrics 把随后的稳态等待/截图/对比分摊为 verify_wait; 不影响返回值与行为
+    try: run_metrics.mark_action_dispatched()   # 只观测(SPEC Phase 0): 记"动作已下发"时刻, 供 run_metrics 把随后的稳态等待/截图/对比分摊为 verify_wait。手势已发出, 观测失败绝不能把它变成失败
+    except Exception: pass
     return ret
 
 

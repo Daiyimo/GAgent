@@ -4,13 +4,20 @@
 任何失败静默(hooks.trigger 已吞异常, 这里再兜一层); 指标只写文件, 不回灌模型上下文。
 
 落盘: <GA_DIR>/temp/model_responses/sessions/metrics_<logid>.jsonl
-  —— _clear_temp() 唯一保留的子树, 与 session_*.json 同级; 每次任务开局限量:
-  除本次运行外最多保留 DEFAULT_KEEP 个历史记录(故目录稳态是 DEFAULT_KEEP+1 个文件)。
+  —— _clear_temp() 唯一保留的子树, 与 session_*.json 同级。
+  <logid> 取自 handler.parent.log_path 的文件名根(与既有 LLM 响应日志同根, 可互相印证),
+  **每个会话一份**: 同一会话的多个任务追加到同一文件(agentmain 只在历史截断时轮换 log_path),
+  所以 prune_oldest 的"保留最近 N 个"实际是"保留最近 N 个会话的文件"。
 已知限制(如实记录):
   - 今天所有手机动作都埋在 code_run 的 stdout 里(droid.tap 的返回值不经过工具结果),
-    所以工具级判定今天取不到 → 记录里 tools_without_verdict 会等于工具调用数。
-    这是现状而不是缺陷: 该计数把这处空白显式记下来, 等结构化动作空间(Phase 1+)落地,
-    同一段 extract_verdict/attrib_verifier 直接开始产出 verified/uncertain 与判定来源。
+    所以工具级判定今天取不到 → 落在 tools_no_verdict 桶里。这是现状而不是缺陷:
+    该计数把这处空白显式记下来, 等结构化动作空间(Phase 1+)落地, 同一段
+    extract_verdict/attrib_verifier 直接开始产出 verified/uncertain 与判定来源。
+  - layer 恒为 'L4'、escalations 恒为空: 今天没有路由器, 没有"层"可选。
+    字段先立住, Phase 3 路由落地后由路由决策填真值。
+  - 后验计时累加器是模块级的(打点在 code_run 子线程, 结算在循环线程, 跨线程)。
+    一个 agent 同时只有一个工具调用在飞, 串行场景归属正确; 多会话并行时两段后验
+    会落进同一累加器, 归属不再精确——这是已知的取舍, 比"恒为 0"好。
   - 任务被用户中止或抛异常时, agent_loop 的 agent_after 不触发 → 只落已完成的 turn 行,
     没有汇总行; 下一次任务开局会把上次补一条 end_reason='unfinished' 的汇总。
   - 一轮里供应商侧重试/故障转移产生的多次 HTTP 请求只记一次 model_wait(墙钟已含重试)。
@@ -26,7 +33,7 @@ import run_metrics
 _PREFIX = 'metrics_'
 _SUFFIX = '.jsonl'
 _lock = threading.Lock()
-_rec = None                      # 当前任务的 RunRecorder(任务在 run 线程上串行)
+_tls = threading.local()          # 当前线程(agent 循环线程)的 RunRecorder: 每会话一条线程, 必须按线程隔离
 
 
 def _safe(fn, *a):
@@ -34,6 +41,14 @@ def _safe(fn, *a):
         fn(*a)
     except Exception:
         pass
+
+
+def _current_rec():
+    return getattr(_tls, 'rec', None)
+
+
+def _set_rec(rec):
+    _tls.rec = rec
 
 
 def _ga_dir():
@@ -74,8 +89,8 @@ def _gen():
 
 
 def _resend_chars(ctx):
-    """本轮真正重发的历史字符数 = BaseSession.history 序列化长度(协议路径每轮整体重发)。
-    取不到返回 None——不猜。"""
+    """本轮请求往返完成后 BaseSession.history 的序列化字符数(含本轮 user+assistant),
+    即下一轮实际重发量的基线。取不到返回 None——不猜, 也不落 0。"""
     try:
         hist = getattr(getattr(ctx.get('client'), 'backend', None), 'history', None)
         if isinstance(hist, list):
@@ -86,8 +101,8 @@ def _resend_chars(ctx):
 
 
 def _make_sink(run_id):
-    """每个 run 自带写入口(不读全局 _rec): end_run 可能在 _rec 已指向下一次任务后才回调,
-    届时读全局会静默丢弃整次运行的记录。"""
+    """每个 run 自带写入口(不读全局/线程变量): end_run 可能在 recorder 已经换人之后才回调,
+    届时读"当前 recorder"会静默丢弃整次运行的记录。"""
     def sink(lines):
         run_metrics.append_jsonl(
             os.path.join(_metrics_dir(), _PREFIX + run_id + _SUFFIX), lines)
@@ -104,38 +119,37 @@ def _install_usage_observer():
 
 
 def _on_usage(in_tok, out_tok, cached_tok):
-    rec = _rec
+    rec = _current_rec()
     if rec is not None:
         _safe(rec.note_tokens, in_tok, out_tok)
 
 
 def _on_agent_before(ctx):
-    global _rec
-    with _lock:
-        prev, _rec = _rec, None
+    prev = _current_rec()
+    _set_rec(None)
     if prev is not None:                     # 上一轮被中止/异常弃掉: 补一条汇总, 不丢也不假完成
         _safe(prev.end_run, 'unfinished')
     run_id = _logid(ctx)
-    with _lock:
-        _rec = run_metrics.RunRecorder(run_id=run_id, gen=_gen(), sink=_make_sink(run_id))
+    _set_rec(run_metrics.RunRecorder(run_id=run_id, gen=_gen(), sink=_make_sink(run_id)))
     _install_usage_observer()
+    run_metrics.reset_verify_accumulator()   # 上一轮被中止时可能有僵尸线程还在打点
     _safe(run_metrics.prune_oldest, _metrics_dir(), _PREFIX, run_metrics.DEFAULT_KEEP)
 
 
 def _on_turn_before(ctx):
-    rec = _rec
+    rec = _current_rec()
     if rec is not None:
         _safe(rec.start_turn, int(ctx.get('turn') or 0))
 
 
 def _on_llm_before(ctx):
-    rec = _rec
+    rec = _current_rec()
     if rec is not None:
         _safe(rec.llm_start)
 
 
 def _on_llm_after(ctx):
-    rec = _rec
+    rec = _current_rec()
     if rec is None:
         return
     n = _resend_chars(ctx)
@@ -147,7 +161,7 @@ def _on_llm_after(ctx):
 def _on_tool_before(ctx):
     if (ctx.get('tool_name') or '') == 'no_tool':
         return                              # 引擎自动触发, 不是工具调用
-    rec = _rec
+    rec = _current_rec()
     if rec is not None:
         _safe(rec.tool_start)
 
@@ -155,23 +169,24 @@ def _on_tool_before(ctx):
 def _on_tool_after(ctx):
     if (ctx.get('tool_name') or '') == 'no_tool':
         return                              # 引擎自动触发, 不是工具调用
-    rec = _rec
+    rec = _current_rec()
     if rec is None:
+        run_metrics.take_verify_seconds()   # 没有进行中的运行也要清账, 别把耗时漏给下一段
         return
+    verify_s = run_metrics.take_verify_seconds()   # 先取: 取的过程自己出问题不应连带丢掉工具耗时
     _safe(rec.tool_end, str(ctx.get('tool_name') or ''),
-          getattr(ctx.get('ret'), 'data', None), run_metrics.take_verify_seconds())
+          getattr(ctx.get('ret'), 'data', None), verify_s)
 
 
 def _on_turn_after(ctx):
-    rec = _rec
+    rec = _current_rec()
     if rec is not None:
         _safe(rec.end_turn)
 
 
 def _on_agent_after(ctx):
-    global _rec
-    with _lock:
-        rec, _rec = _rec, None
+    rec = _current_rec()
+    _set_rec(None)
     if rec is None:
         return
     reason = ctx.get('exit_reason')

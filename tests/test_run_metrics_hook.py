@@ -4,6 +4,8 @@
 """
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -74,6 +76,7 @@ class _Handler(agent_loop.BaseHandler):
         今天所有手机动作都埋在 code_run 的 stdout 里, 工具级判定确实取不到(见模块已知限制),
         所以这条路径用替身覆盖, 不冒充真实现状。"""
         run_metrics.mark_action_dispatched()     # 模拟"动作已下发"(真实路径由 droid._act 打点)
+        time.sleep(0.02)                         # 替身代 droid.tap 的稳态等待(真机 wait=1.0s)
         return StepOutcome({'verified': True, 'diff': 'diff: 1.500% bbox=[0,0,9,9]'},
                            next_prompt='next')
 
@@ -84,14 +87,27 @@ class _Handler(agent_loop.BaseHandler):
 @pytest.fixture
 def run_dir(tmp_path, monkeypatch):
     monkeypatch.setenv('GA_DIR', str(tmp_path))
-    saved, hook._rec = hook._rec, None
+    saved = hook._current_rec()
+    hook._set_rec(None)
     yield tmp_path / 'temp' / 'model_responses' / 'sessions'
-    hook._rec = saved
+    hook._set_rec(saved)
 
 
-def _drive(tmp_path, script=('tap', None), logid='1700000000000000000'):
+@pytest.fixture(scope='module', autouse=True)
+def _unregister_plugin_hooks_after_module():
+    """插件在 import 时注册进程级 hook; 本模块跑完后摘掉, 否则会污染后续驱动
+    agent_runner_loop 的测试文件(那些测试没有 GA_DIR, 会往源码树里写指标)。"""
+    yield
+    import plugins.hooks as ph
+    mine = {hook._on_agent_before, hook._on_turn_before, hook._on_llm_before, hook._on_llm_after,
+            hook._on_tool_before, hook._on_tool_after, hook._on_turn_after, hook._on_agent_after}
+    for name, fns in list(ph._HANDLERS.items()):
+        ph._HANDLERS[name] = [f for f in fns if f not in mine]
+
+
+def _drive(tmp_path, script=('tap', None), logid='1700000000000000000', handler_cls=None):
     parent = SimpleNamespace(log_path=str(tmp_path / f'model_responses_{logid}.txt'), task_dir=None)
-    handler = _Handler(parent)
+    handler = (handler_cls or _Handler)(parent)
     # agent_runner_loop 是生成器: 必须消费掉循环体才真正执行(与 agentmain.run 的 for chunk in gen 一致)
     list(agent_loop.agent_runner_loop(_Client(list(script)), 'sys', 'read three headlines',
                                       handler, [], max_turns=5, verbose=False))
@@ -112,7 +128,8 @@ def test_one_task_writes_the_phase_zero_metric_set(run_dir, tmp_path):
     assert len(turns) == 2 and len(summary) == 1
     t1 = turns[0]
     assert t1['layer'] == 'L4' and t1['turn'] == 1
-    assert t1['model_wait_s'] >= 0 and t1['tool_exec_s'] >= 0 and t1['verify_wait_s'] >= 0
+    assert t1['model_wait_s'] >= 0 and t1['tool_exec_s'] >= 0
+    assert t1['verify_wait_s'] > 0          # 本工具调用派发过动作 → 必须真的有后验耗时
     assert (t1['in_tok'], t1['out_tok']) == (1975, 42)
     assert t1['resend_chars'] > 0
     assert t1['tools'] == ['tap']
@@ -125,7 +142,41 @@ def test_one_task_writes_the_phase_zero_metric_set(run_dir, tmp_path):
     assert s['p50_turn_s'] is not None and s['p95_turn_s'] is not None
     assert s['in_tok'] == 3950 and s['out_tok'] == 84
     assert s['tools_verified'] == 1
-    assert s['tools_uncertain'] == 0 and s['tools_without_verdict'] == 0
+    assert s['tools_uncertain'] == 0 and s['tools_no_verdict'] == 0
+
+
+def test_verify_wait_survives_the_code_run_child_thread(run_dir, tmp_path):
+    """真实路径: droid._act 在 code_run 的子线程里打点(ga_android.do_code_run 起 Thread),
+    结算在 agent 循环线程。线程本地累加器会把这里整段丢成 0.0——真机上实测过。"""
+    class _ChildThreadHandler(_Handler):
+        def do_tap(self, args, response):
+            t = threading.Thread(target=run_metrics.mark_action_dispatched, daemon=True)
+            t.start(); t.join()
+            time.sleep(0.02)
+            return StepOutcome({'verified': True, 'diff': 'diff: 1.500% bbox=[0,0,9,9]'},
+                               next_prompt='next')
+
+    _drive(tmp_path, handler_cls=_ChildThreadHandler)
+    t1 = [x for x in _lines(next(run_dir.glob('metrics_*.jsonl'))) if x['type'] == 'turn'][0]
+    assert t1['verify_wait_s'] >= 0.02          # 子线程打的那段稳态等待必须被算进来
+
+
+def test_concurrent_sessions_do_not_share_a_recorder(run_dir, tmp_path):
+    """android_entry 每个会话一条 agent 线程; recorder 必须按线程隔离,
+    否则两个会话的 turn/用量会互相污染, 还会给仍在运行的会话补一条假汇总。"""
+    def run(logid):
+        _drive(tmp_path, script=['tap', 'tap', None], logid=logid)
+
+    a = threading.Thread(target=run, args=('111',), daemon=True)
+    b = threading.Thread(target=run, args=('222',), daemon=True)
+    a.start(); time.sleep(0.01); b.start(); a.join(); b.join()
+    for logid in ('111', '222'):
+        lines = _lines(run_dir / f'metrics_{logid}.jsonl')
+        turns = [x for x in lines if x['type'] == 'turn']
+        summaries = [x for x in lines if x['type'] == 'run_summary']
+        assert [t['turn'] for t in turns] == [1, 2, 3], logid   # 只有自己的三轮
+        assert len(summaries) == 1 and summaries[0]['turns'] == 3, logid
+        assert summaries[0]['end_reason'] == 'CURRENT_TASK_DONE', logid
 
 
 def test_metrics_file_sits_beside_the_session_snapshots(run_dir, tmp_path):

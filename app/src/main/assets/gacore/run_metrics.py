@@ -9,13 +9,13 @@
 字段口径:
   model_wait_s  本轮 llm_before→llm_after 的墙钟(verbose 路径含流式消费时间)
   tool_exec_s   本轮各工具 tool_before→tool_after 之和(含后验)
-  verify_wait_s  上一段"动作已下发"到工具调用结束的时间; 未派发过动作的工具不计(≠0)
+  verify_wait_s  上一段"动作已下发"到工具调用结束的时间; 未派发过动作的工具不计(落 null, ≠0)
                 → action_s = tool_exec_s - verify_wait_s
   in_tok/out_tok 同一轮只有一次模型请求, 但一次请求分多事件上报(Claude: message_start
                 的占位 output + message_delta 的终值) → 取最大值避免重复计
-  resend_chars  BaseSession.history 的序列化字符数(协议路径每轮整体重发; 实际扁平化
-                提示词略大于此值)
-线程: RunRecorder 自带锁; mark/take 用线程本地(code_run 子线程与循环线程不同)。
+  resend_chars  本轮请求往返完成后 BaseSession.history 的序列化字符数(含本轮 user+assistant),
+                即下一轮实际重发量的基线。不是本轮请求发出时的体量——那个时刻没有 hook 可达。
+线程: RunRecorder 自带锁; 后验累加器跨线程(见下), recorder 由调用方按线程隔离。
 """
 import json
 import os
@@ -30,16 +30,29 @@ LAYER_TODAY = 'L4'                      # 当前只有通用 ReAct 一层; Phase
 
 # 判定白名单: 这些键由既有判定函数产出(_img_diff_str/_scroll_verdict/_classify_paste_rows),
 # 值为布尔或短枚举, 可安全落盘; 其余工具结果一律不记录。
-# 今天手机动作都在 code_run 的 stdout 里, 工具结果不带这些键 → 记录为 tools_without_verdict;
+# 今天手机动作都在 code_run 的 stdout 里, 工具结果不带这些键 → 记入 tools_no_verdict;
 # 结构化动作空间落地后同一段代码直接开始产出判定与判定来源。
-VERDICT_KEYS = ('verified', 'uncertain', 'scrolled', 'evidence', 'performed')
+VERDICT_KEYS = ('verified', 'uncertain', 'scrolled', 'evidence', 'performed', 'hit')
 
 # 判定函数归因表: (工具名, 见到的白名单键) → 既有判定函数名。归不出返回 None, 不猜。
 _VERIFIER_TABLE = (
     (('tap', 'tap_rel', 'swipe'), ('diff_pct',), '_img_diff_str'),
     (('scroll', 'scroll_view'), ('evidence',), '_scroll_verdict'),
-    (('paste',), ('verified',), '_classify_paste_rows'),
+    (('paste',), ('hit',), '_classify_paste_rows'),
 )
+
+# 判定汇总的三个互斥桶(与 tools_no_verdict 一起穷尽 tool_records):
+#   uncertain 优先于 negative —— 观察不可用不等于"没成功", 更不是成功。
+_SUCCESS_KEYS = ('hit', 'scrolled')
+
+
+def _is_success(verdict: dict) -> bool:
+    return bool(verdict.get('hit') or verdict.get('scrolled') or verdict.get('verified') is True)
+
+
+def _is_negative(verdict: dict) -> bool:
+    return (verdict.get('hit') is False or verdict.get('verified') is False
+            or verdict.get('scrolled') is False or verdict.get('evidence') == 'none')
 
 
 def diff_pct(value) -> Optional[float]:
@@ -117,10 +130,9 @@ class TurnRecord:
     verify_wait_s: float = 0.0
     in_tok: int = 0
     out_tok: int = 0
-    resend_chars: int = 0
+    resend_chars: Optional[int] = None
     escalations: list = field(default_factory=list)
     tool_records: list = field(default_factory=list)
-
     def to_dict(self) -> dict:
         return {'type': 'turn', 'v': SCHEMA_VERSION, 'turn': self.turn, 'layer': self.layer,
                 't_start': self.t_start, 'model_wait_s': round(self.model_wait_s, 3),
@@ -147,6 +159,11 @@ def summarize(run: RunRecord) -> dict:
     turns = run.turns
     model = [t.model_wait_s for t in turns]
     end_to_end = [t.model_wait_s + t.tool_exec_s for t in turns]
+    recs = [r for t in turns for r in t.tool_records]
+    verified = sum(1 for r in recs if _is_success(r.verdict))
+    uncertain = sum(1 for r in recs if r.verdict.get('uncertain') is True)
+    negative = sum(1 for r in recs if not _is_success(r.verdict)
+                   and r.verdict.get('uncertain') is not True and _is_negative(r.verdict))
     return {
         'type': 'run_summary', 'v': SCHEMA_VERSION, 'run_id': run.run_id, 'gen': run.gen,
         'layer': run.layer, 'started_at': run.started_at, 'ended_at': run.ended_at,
@@ -157,16 +174,17 @@ def summarize(run: RunRecord) -> dict:
         'tool_exec_s': round(sum(t.tool_exec_s for t in turns), 3),
         'verify_wait_s': round(sum(t.verify_wait_s for t in turns), 3),
         'in_tok': sum(t.in_tok for t in turns), 'out_tok': sum(t.out_tok for t in turns),
-        'resend_chars_last': turns[-1].resend_chars if turns else 0,
+        'resend_chars_last': turns[-1].resend_chars if turns else None,
         'p50_turn_s': percentile(end_to_end, 50), 'p95_turn_s': percentile(end_to_end, 95),
         'p50_model_wait_s': percentile(model, 50), 'p95_model_wait_s': percentile(model, 95),
         'escalations': sum(len(t.escalations) for t in turns),
-        # Part 7.2 verified-action rate 的分子; uncertain 记"未验证", 绝不是成功;
-        # 无判定证据的工具单列, 不混入任何成功率
-        'tools_verified': sum(1 for t in turns for r in t.tool_records
-                              if r.verdict.get('verified') or r.verdict.get('scrolled')),
-        'tools_uncertain': sum(1 for t in turns for r in t.tool_records if r.verdict.get('uncertain')),
-        'tools_without_verdict': sum(1 for t in turns for r in t.tool_records if not r.verdict),
+        # Part 7.2 verified-action rate 的分子。四桶互斥且穷尽 tool_records:
+        # uncertain 记"未验证", 绝不是成功; 无判定键的单列, 不混入任何成功率。
+        'tools_total': len(recs),
+        'tools_verified': verified,
+        'tools_uncertain': uncertain,
+        'tools_negative': negative,
+        'tools_no_verdict': len(recs) - verified - uncertain - negative,
     }
 
 
@@ -206,30 +224,46 @@ def prune_oldest(directory: str, prefix: str, keep: int = DEFAULT_KEEP) -> int:
         return 0
 
 
-# ---------- 动作后验计时(线程本地; droid._act 打点, 插件在 tool_after 结算) ----------
-_tls = threading.local()
+# ---------- 动作后验计时(跨线程; droid._act 打点, 插件在 tool_after 结算) ----------
+# 打点发生在 code_run 的子线程(ga_android.do_code_run 起 Thread), 结算发生在 agent 循环线程
+# —— 线程本地累加器会把真实路径上的后验整段丢成 0(真机实测), 所以用模块级累加器 + 锁。
+# 一个 agent 同一时刻只有一个工具调用在飞(循环线程阻塞等 code_run 返回), 串行场景归属正确;
+# 多会话并行时两段后验会落进同一累加器, 归属不再精确(已知限制)。
+_VERIFY_LOCK = threading.Lock()
+_VERIFY = {'t0': None, 'total': 0.0}
 
 
 def mark_action_dispatched():
     """droid._act() 派发成功后调用: 记录"动作已下发"时刻。
-    同一线程上一次未结算的标记先入账——code_run 里连续多个动作由此正确切分。"""
-    now = time.time()
-    prev = getattr(_tls, 'verify_t0', None)
-    if prev is not None:
-        _tls.verify_total = getattr(_tls, 'verify_total', 0.0) + max(0.0, now - prev)
-    _tls.verify_t0 = now
+    同一段内上一次未结算的标记先入账——code_run 里连续多个动作由此正确切分。
+    绝不抛异常: 手势已经发出, 观测失败不能把它变成失败。"""
+    try:
+        now = time.time()
+        with _VERIFY_LOCK:
+            t0 = _VERIFY['t0']
+            if t0 is not None:
+                _VERIFY['total'] += max(0.0, now - t0)
+            _VERIFY['t0'] = now
+    except Exception:
+        pass          # 手势已发出; 观测失败绝不能把它变成失败
 
 
 def take_verify_seconds() -> Optional[float]:
-    """结算并取走本线程累计的"动作后验"秒数; 本线程没派发过动作返回 None。"""
-    now = time.time()
-    t0 = getattr(_tls, 'verify_t0', None)
+    """结算并取走累计的"动作后验"秒数; 期间没有派发过动作返回 None。"""
+    with _VERIFY_LOCK:
+        t0, total = _VERIFY['t0'], _VERIFY['total']
+        _VERIFY['t0'] = None
+        _VERIFY['total'] = 0.0
     if t0 is None:
         return None
-    total = getattr(_tls, 'verify_total', 0.0) + max(0.0, now - t0)
-    _tls.verify_t0 = None
-    _tls.verify_total = 0.0
-    return round(total, 3)
+    return round(total + max(0.0, time.time() - t0), 3)
+
+
+def reset_verify_accumulator():
+    """丢弃未结算的后验计时(新任务开局调: 上一轮被中止时可能有僵尸线程还在打点)。"""
+    with _VERIFY_LOCK:
+        _VERIFY['t0'] = None
+        _VERIFY['total'] = 0.0
 
 
 class RunRecorder:

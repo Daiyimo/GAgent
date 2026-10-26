@@ -5,6 +5,7 @@
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -27,11 +28,11 @@ def clean_verify():
 class TestExtractVerdict:
     def test_booleans_and_short_enums_are_kept(self):
         data = {'verified': True, 'uncertain': False, 'scrolled': True,
-                'evidence': 'pixel', 'performed': True, 'hint': 'x' * 500,
-                'fg': 'com.example.app'}
+                'evidence': 'pixel', 'performed': True, 'hit': True,
+                'hint': 'x' * 500, 'fg': 'com.example.app'}
         assert run_metrics.extract_verdict(data) == {
             'verified': True, 'uncertain': False, 'scrolled': True,
-            'evidence': 'pixel', 'performed': True}
+            'evidence': 'pixel', 'performed': True, 'hit': True}
 
     def test_diff_becomes_a_bare_percentage_without_bbox(self):
         v = run_metrics.extract_verdict({'diff': 'diff: 1.234% bbox=[10,20,30,40]'})
@@ -55,7 +56,8 @@ class TestAttribVerifier:
         ('swipe', {'diff_pct': 2.0}, '_img_diff_str'),
         ('scroll_view', {'scrolled': True, 'evidence': 'text'}, '_scroll_verdict'),
         ('scroll', {'scrolled': False, 'evidence': 'none'}, '_scroll_verdict'),
-        ('paste', {'verified': True}, '_classify_paste_rows'),
+        ('paste', {'hit': True}, '_classify_paste_rows'),
+        ('paste', {'hit': False, 'uncertain': True}, '_classify_paste_rows'),
         ('tap', {'verified': True}, None),          # 无像素证据 → 不归因
         ('file_read', {'verified': True}, None),    # 非判定类工具 → 不归因
         ('dump', {}, None),
@@ -80,6 +82,9 @@ class TestPercentile:
 
 
 class TestVerifyAccumulator:
+    """打点发生在 code_run 的子线程(ga_android.do_code_run 起 Thread), 结算发生在 agent
+    循环线程 —— 累加器必须跨线程, 否则 verify_wait_s 在真实路径上恒为 0。"""
+
     def test_no_mark_means_no_verify_time(self, clean_verify):
         assert run_metrics.take_verify_seconds() is None
 
@@ -97,6 +102,19 @@ class TestVerifyAccumulator:
         time.sleep(0.02)
         total = run_metrics.take_verify_seconds()
         assert total >= 0.04
+
+    def test_mark_from_a_child_thread_is_still_counted(self, clean_verify):
+        """droid._act 在 code_run 子线程里打点; 线程本地累加器会把这里全丢成 0。"""
+        t = threading.Thread(target=run_metrics.mark_action_dispatched, daemon=True)
+        t.start(); t.join()
+        time.sleep(0.02)
+        total = run_metrics.take_verify_seconds()
+        assert total is not None and total >= 0.02
+
+    def test_reset_drops_a_stale_mark(self, clean_verify):
+        run_metrics.mark_action_dispatched()
+        run_metrics.reset_verify_accumulator()
+        assert run_metrics.take_verify_seconds() is None
 
 
 class TestJsonlIO:
@@ -182,7 +200,8 @@ class TestRunRecorder:
         assert summary['turns'] == 1 and summary['model_calls'] == 1
         assert summary['p50_turn_s'] == 6.15 and summary['p95_turn_s'] == 6.15
         assert summary['tools_verified'] == 1
-        assert summary['tools_uncertain'] == 0 and summary['tools_without_verdict'] == 0
+        assert summary['tools_total'] == 1
+        assert summary['tools_uncertain'] == 0 and summary['tools_no_verdict'] == 0
 
     def test_tokens_are_attributed_to_the_turn_that_asked(self):
         sink = _Sink()
@@ -221,22 +240,34 @@ class TestRunRecorder:
         rec.start_turn(1); rec.llm_start(); rec.llm_end(); rec.end_turn()
         rec.end_run('done')          # 不抛即通过
 
-    def test_summary_counts_uncertain_and_unverified_separately(self):
+    def test_summary_counters_partition_every_tool_record(self):
+        """四个计数器必须互斥且穷尽, 否则 verified-action rate 会悄悄漏算最常见动作。"""
         sink = _Sink()
         rec, clock = self._rec(sink)
         rec.start_turn(1)
         rec.tool_start(); clock.advance(1.0)
-        rec.tool_end('droid.tap', {'uncertain': True}, None)
+        rec.tool_end('droid.tap', {'uncertain': True}, None)                      # uncertain
         rec.tool_start(); clock.advance(1.0)
-        rec.tool_end('droid.scroll_view', {'scrolled': True, 'evidence': 'text'}, 0.4)
+        rec.tool_end('droid.scroll_view', {'scrolled': True, 'evidence': 'text'}, 0.4)   # verified
         rec.tool_start(); clock.advance(1.0)
-        rec.tool_end('file_read', {'content': 'x' * 100}, None)
+        rec.tool_end('droid.paste', {'hit': False}, None)                          # negative
+        rec.tool_start(); clock.advance(1.0)
+        rec.tool_end('file_read', {'content': 'x' * 100}, None)                    # 无判定键
         rec.end_turn(); rec.end_run('done')
         s = json.loads(sink.lines[-1])
-        assert s['tools_uncertain'] == 1          # uncertain 记"未验证", 绝不是成功
-        assert s['tools_without_verdict'] == 1    # 无判定证据的工具单列, 不混入成功率
+        assert (s['tools_verified'], s['tools_uncertain'], s['tools_negative'],
+                s['tools_no_verdict']) == (1, 1, 1, 1)
+        assert s['tools_verified'] + s['tools_uncertain'] + s['tools_negative'] \
+            + s['tools_no_verdict'] == s['tools_total'] == 4
         assert s['verify_wait_s'] == 0.4
-        assert s['tool_exec_s'] == 3.0
+        assert s['tool_exec_s'] == 4.0
+
+    def test_unknown_resend_chars_stays_null_not_zero(self):
+        """取不到重发体量时必须落 null; 0 会被读成"历史是空的"。"""
+        sink = _Sink()
+        rec, clock = self._rec(sink)
+        rec.start_turn(1); rec.llm_start(); rec.llm_end(); rec.end_turn()
+        assert json.loads(sink.lines[0])['resend_chars'] is None
 
     def test_tool_without_a_dispatched_action_has_no_verify_time(self):
         sink = _Sink()
@@ -263,7 +294,8 @@ class TestActionMark:
         assert droid._act(op='tap', x=1, y=2) == {'ok': True, 'x': 1}
         assert marks == [1]
 
-    def test_a_failing_mark_does_not_break_the_action(self, monkeypatch, clean_verify):
+    def test_a_failing_mark_never_breaks_a_dispatched_action(self, monkeypatch, clean_verify):
+        """观测绝不能把"已经发出去的手势"报成失败——那会诱发结局未知的重试。"""
         import droid
 
         def boom():
@@ -275,5 +307,4 @@ class TestActionMark:
         monkeypatch.setattr(droid, '_base', lambda: 'http://127.0.0.1:1')
         monkeypatch.setattr(droid, '_check', lambda r: {'ok': True})
         monkeypatch.setattr(droid, '_SESSION', type('S', (), {'post': staticmethod(lambda *a, **k: None)})())
-        with pytest.raises(RuntimeError, match='observer bug'):
-            droid._act(op='tap', x=1, y=2)
+        assert droid._act(op='tap', x=1, y=2) == {'ok': True}
