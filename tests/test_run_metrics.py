@@ -246,3 +246,34 @@ class TestRunRecorder:
         rec.tool_end('file_read', {}, None)
         rec.end_turn()
         assert json.loads(sink.lines[0])['tool_records'][0]['verify_s'] is None
+
+
+class TestActionMark:
+    """droid._act() 是动作派发唯一入口; 打完点必须原样返回, 且任何异常路径不得被观测改变。"""
+
+    def test_act_marks_the_dispatch_and_returns_unchanged(self, monkeypatch, clean_verify):
+        import droid
+        marks = []
+        monkeypatch.setattr(droid.run_metrics, 'mark_action_dispatched', lambda: marks.append(1))
+        monkeypatch.setattr(droid, '_gate_injection', lambda op: None)
+        monkeypatch.setattr(droid, '_record_path', lambda kind: None)
+        monkeypatch.setattr(droid, '_base', lambda: 'http://127.0.0.1:1')   # 否则回退分支会 ping 真机总线
+        monkeypatch.setattr(droid, '_check', lambda r: {'ok': True, 'x': 1})
+        monkeypatch.setattr(droid, '_SESSION', type('S', (), {'post': staticmethod(lambda *a, **k: None)})())
+        assert droid._act(op='tap', x=1, y=2) == {'ok': True, 'x': 1}
+        assert marks == [1]
+
+    def test_a_failing_mark_does_not_break_the_action(self, monkeypatch, clean_verify):
+        import droid
+
+        def boom():
+            raise RuntimeError('observer bug')
+
+        monkeypatch.setattr(droid.run_metrics, 'mark_action_dispatched', boom)
+        monkeypatch.setattr(droid, '_gate_injection', lambda op: None)
+        monkeypatch.setattr(droid, '_record_path', lambda kind: None)
+        monkeypatch.setattr(droid, '_base', lambda: 'http://127.0.0.1:1')
+        monkeypatch.setattr(droid, '_check', lambda r: {'ok': True})
+        monkeypatch.setattr(droid, '_SESSION', type('S', (), {'post': staticmethod(lambda *a, **k: None)})())
+        with pytest.raises(RuntimeError, match='observer bug'):
+            droid._act(op='tap', x=1, y=2)

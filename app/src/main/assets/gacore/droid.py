@@ -58,6 +58,7 @@ import time
 import requests
 import bus_auth
 import run_guard   # 僵尸线程护栏: code_run 超时/被停后, 后台线程每次操作手机在 _act/adb_shell 被拒, 不再驱动整机
+import run_metrics   # 只观测: 动作后验计时打点(SPEC Phase 0); 不参与任何门禁/几何判定
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 BUNDLE = os.path.join(_DIR, "models", "ui_detect_v1")  # 管线py+onnx 捆绑目录
@@ -334,7 +335,9 @@ def _act(**body):
                                                 # 不在这里改动作形态(不加抖动/不拟人化, phone_use §5): 防封靠"少做+先问+硬预算", 不靠伪装
     _record_path("launch" if op == "launch" else "a11y")   # 任务路径归属: 拉起 app vs 无障碍操作外部 app
     run_guard.check()   # 门禁可能等待；取消后不得再派发。
-    return _check(_SESSION.post(_base() + "/a11y/act", json=body, timeout=30))
+    ret = _check(_SESSION.post(_base() + "/a11y/act", json=body, timeout=30))
+    run_metrics.mark_action_dispatched()   # 只观测(SPEC Phase 0): 记"动作已下发"时刻, 供 run_metrics 把随后的稳态等待/截图/对比分摊为 verify_wait; 不影响返回值与行为
+    return ret
 
 
 def _track(event, props=None):
