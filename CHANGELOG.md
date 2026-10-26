@@ -7,6 +7,15 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- Diagnostics: each task now writes a per-turn run record to
+  `temp/model_responses/sessions/metrics_<id>.jsonl` — model wait, tool execution and
+  post-action verification time, input/output tokens, re-sent history size, and the
+  verifier that produced each verdict, plus a run summary with P50/P95. Recording is
+  observation only: it adds no model calls and no device operations, and a failed write
+  never affects the task. 每个任务落一份按 turn 的记录：模型等待、工具执行与动作后验耗时、
+  输入输出 token、重发历史大小与每轮判定来源，附 P50/P95 汇总。只观察，不增加模型调用与
+  设备操作，写盘失败不影响任务。
+
 ## 2.33.8 / 141 — 2026-10-25 (open-source prerelease / 开源预发布)
 
 - Web tool: the foreground browser's screenshot no longer times out on Android WebView,
