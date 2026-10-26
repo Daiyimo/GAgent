@@ -2,7 +2,8 @@
 
 [Documentation index](README.md) · [Architecture](ARCHITECTURE.md) ·
 [Roadmap](ROADMAP.md) · [Validation](VALIDATION.md) ·
-[Core & memory](CORE_AND_MEMORY.md)
+[Core & memory](CORE_AND_MEMORY.md) ·
+[Empowerment addendum / 赋能增补](SPEC-EMPOWERMENT.md)
 
 ## Status of this document / 文档性质
 

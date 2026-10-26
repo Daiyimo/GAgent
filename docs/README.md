@@ -26,6 +26,7 @@ the same supported scope; deeper guides keep API names and commands unchanged.
 - [Retained, removed and excluded features / 功能范围](FEATURE_SCOPE.md)
 - [Extraction review and its limits / 剥离审查与局限](REVIEW.md)
 - [Hybrid phone agent spec / 混合式手机 Agent 规格](SPEC.md)
+- [Empowerment addendum: research findings, device adaptation and work items / 赋能增补：研究发现、真机适配与工作项](SPEC-EMPOWERMENT.md)
 - [Engineering priorities / 工程路线图](ROADMAP.md)
 - [Security reporting and data flows / 安全报告与数据流](../SECURITY.md)
 - [Third-party notices / 第三方声明](../THIRD_PARTY.md)
