@@ -305,16 +305,26 @@ def _wait_fg(want="", sec=1.0):
     return last
 
 
-def dump(full=False):
+def dump_state(full=False):
+    """dump() 的结构化增量化版本: {nodes, degraded, pkg}。degraded 非空=本次树不可用及原因——
+    路由器(L0)据此区分「策略置空(走视觉)/前台未解析(重查后再看)/真空树(真无可交互元素)」,
+    这是 SPEC 路由器不变式 1(不选证据缺失通道)的前置; dump() 契约不变(仍返回 list)。"""
     # 敏感 App(SENSITIVE_APPS)会对读 a11y 树者返回**投毒/伪造控件树**并据此上报风控(gandroid-wechat-yolo 红线):
     # 策略 dump="blank" 时一律置空, 迫使上层走纯视觉 shot()+ui_detect/ocr, 绝不拿假节点行动。
     # 未解析前台(ping 抖动)按敏感处理(fail-closed): 漏判=读树=封号, 误判仅多走一次视觉路径, 代价不对称→宁可置空。
-    # 返回 [] = 敏感置空信号(非真空壳树): 上层直接转视觉, 勿当空 UI 反复重试(语义见 phone_use.md §1/§5)。
     pkg = _resolve_fg(_fg())
     if _sensitive_fg(pkg):
         _track("droid_dump_blank", {"pkg_class": "sensitive" if pkg else "unresolved"})   # 只报枚举不报包名: 区分敏感置空与 fail-closed 抖动
-        return []
-    return _get("/a11y/dump", **({"full": 1} if full else {}))
+        reason = "sensitive_blank" if pkg else "unresolved_fg"
+        return {"nodes": [], "degraded": {"reason": reason, "channel": "dump"}, "pkg": pkg}
+    nodes = _get("/a11y/dump", **({"full": 1} if full else {}))
+    # 返回 [] 且前台可信 = 真空壳树(SurfaceView 游戏/自绘页): 语义见 phone_use.md §1/§5, 上层直接转视觉, 勿当空 UI 反复重试
+    degraded = {"reason": "tree_empty", "channel": "dump"} if not nodes else None
+    return {"nodes": nodes, "degraded": degraded, "pkg": pkg}
+
+def dump(full=False):
+    """树观测(纯 list 契约, 历史语义不变): 敏感/未解析置空=[] 信号, 上层转视觉。需要原因码用 dump_state()。"""
+    return dump_state(full=full)["nodes"]
 
 
 def _record_path(kind):
