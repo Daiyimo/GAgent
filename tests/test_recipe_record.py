@@ -105,3 +105,18 @@ class TraceToRecipeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeadingResetTest(unittest.TestCase):
+    def test_leading_home_is_dropped(self):
+        trace = [_op("home", result={"diff_pct": 12.0}),
+                 _op("launch", args={"pkg": "com.tencent.news"}, result={"pkg": "com.tencent.news"}),
+                 _op("tap", args={"x": 1, "y": 1}, result={"diff_pct": 3.0}, obs=_obs([SEARCH_NODE]))]
+        r = recipe.trace_to_recipe(trace, {"app": "腾讯新闻"})
+        self.assertEqual([s.action["kind"] for s in r.steps], ["launch", "tap"])
+
+    def test_home_after_actions_is_kept(self):
+        trace = [_op("launch", args={"pkg": "p"}, result={"pkg": "p"}),
+                 _op("home", result={"diff_pct": 12.0})]
+        r = recipe.trace_to_recipe(trace, {"app": "X"})
+        self.assertEqual([s.action["kind"] for s in r.steps], ["launch", "home"])

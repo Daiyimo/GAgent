@@ -401,6 +401,10 @@ def trace_to_recipe(trace, task_hint):
     steps, fragile, app_pkg = [], False, None
     for op in trace:
         kind = op.get("kind")
+        # 前置 reset 操作(home/back)不进配方: 它是环境归位而非任务意图,
+        # 录进去会让「从桌面回放再按 home 无变化」必然升级(真机实证)。
+        if kind in ("home", "back") and not steps:
+            continue
         args = op.get("args") or {}
         result = op.get("result") or {}
         obs = op.get("obs") or {}
