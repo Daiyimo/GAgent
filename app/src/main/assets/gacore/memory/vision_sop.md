@@ -2,13 +2,21 @@
 
 ## 前置规则
 1. **能不用 vision 就不用**：droid.dump()(a11y树) / droid.ui_detect()(检测框+OCR) 能解决就不调 vision API。Vision 是最后手段(看图答疑/验证上屏/OCR搞不定的版式)。
-2. 截图用 `droid.shot()`(返回BGR ndarray, 直接传给ask_vision) 或 `droid.shot(path)`。
+2. **感知双通道皆不可用时就停**：dump 为空/敏感置空、look()/ocr 无有效结果、ask_vision 抛错(含"已熔断")——此时禁止自行编写 OpenCV/PIL 图像分析代码去盲猜(真机实证: 手写阈值/HV/降采样分析棋盘, 每轮 5-37s 模型调用花在写 CV 代码上, 仍看不出图案, 300s 未完成)。正确做法: ask_user 报告感知缺口, 或换不需要看画面的路径。
+3. 截图用 `droid.shot()`(返回BGR ndarray, 直接传给ask_vision) 或 `droid.shot(path)`。
 
 ## 用法
 ```python
-from vision_api import ask_vision
-ask_vision(droid.shot(), '描述当前界面')  # 返回str; 失败为 'Error: ...'
+# 必须用 droid.ask_vision（已预导入，勿再从 vision_api 导入！）
+# 它统一提供: roi(0-1000 裁剪)/max_pixels(降采样)/timeout(单次上限30s)/连续失败熔断120s
+ask_vision(droid.shot(), '描述当前界面')                          # 全屏(仅首次问边界)
+ask_vision(droid.shot(), '卡槽有哪几张牌', roi=[0,700,1000,1000])  # 只送局部, 快 3-6 倍
+ask_vision(droid.shot(), '可交互区域百分比边界', max_pixels=300000) # 强降插图问边界
 ```
+
+**禁止 `from vision_api import ask_vision`**：裸调用没有 ROI/超时/熔断，
+真机实证单次全屏 60s 超时后 agent 放弃视觉、盲玩 20 轮（白烧 300s+）。
+code_run 已预导入 `from droid import ask_vision`，直接调用即可。
 
 ## 没有 memory/vision_api.py 时(初次自建)
 按 `memory/vision_api.template.py` 头部三步说明操作：复制为 vision_api.py → 扫 mykey 配置变量名(禁止输出key值)填头部 → 小图实测。
