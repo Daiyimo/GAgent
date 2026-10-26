@@ -128,3 +128,21 @@ class RecipeRunTest(_Bus):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ActionResultNormalizeTest(unittest.TestCase):
+    """tap/swipe 返回 → 期望判定字段的归一(真机实证: 不归一会永远 uncertain)。"""
+
+    def test_diff_string_parsed(self):
+        out = droid._norm_action_result({"diff": "diff: 43.547% bbox=[0, 0, 1199, 2533]", "fg": "com.tencent.news"})
+        self.assertEqual(out["diff_pct"], 43.547)
+        self.assertEqual(out["pkg"], "com.tencent.news")
+
+    def test_numeric_diff_passthrough(self):
+        self.assertEqual(droid._norm_action_result({"diff_pct": 8.0})["diff_pct"], 8.0)
+
+    def test_missing_diff_yields_no_key(self):
+        self.assertEqual(droid._norm_action_result({"fg": "x"}), {"pkg": "x"})
+
+    def test_unparseable_diff_yields_no_key(self):
+        self.assertEqual(droid._norm_action_result({"diff": "weird"}), {})

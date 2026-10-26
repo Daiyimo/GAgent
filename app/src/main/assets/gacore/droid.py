@@ -1788,6 +1788,24 @@ def recipe_record(hint=None):
     return r
 
 
+def _norm_action_result(ret):
+    """tap/swipe 的返回(diff 字符串/fg)归一成期望判定用的 {diff_pct, pkg}。
+    真机实证的坑: tap() 返回的 diff 是 'diff: 43.5% bbox=...' 字符串、前台字段叫 fg,
+    不归一会让期望判定永远读不到 diff_pct → 误升级 uncertain。"""
+    out = {}
+    d = ret.get("diff")
+    if isinstance(d, str):
+        try:
+            out["diff_pct"] = float(d.split("%", 1)[0].split()[-1])
+        except Exception:
+            pass
+    elif isinstance(ret.get("diff_pct"), (int, float)):
+        out["diff_pct"] = ret["diff_pct"]
+    if ret.get("fg"):
+        out["pkg"] = ret["fg"]
+    return out
+
+
 def recipe_run(hint=None):
     """按提示回放配方(零模型调用)。无匹配/已 unstable 返回 None; 升级返回 ReplayResult 交上层走 L4。"""
     import recipe
@@ -1811,11 +1829,11 @@ def recipe_run(hint=None):
     def act(action, resolved):
         k = action.get("kind")
         if k == "tap" and resolved.get("point"):
-            return tap(*resolved["point"])
+            return _norm_action_result(tap(*resolved["point"]))
         if k == "swipe":
             d = action.get("direction") or "up"
             ret = scroll(d) if d in ("up", "down", "left", "right") else scroll("up")
-            return {"diff_pct": 8.0 if ret.get("scrolled") else 0.0, "pkg": ret.get("pkg")}
+            return {"diff_pct": 8.0 if ret.get("scrolled") else 0.0, "pkg": ret.get("pkg")}   # scroll 的判定即其既有 verdict
         if k == "paste":
             return paste(action.get("value") or "")
         if k == "launch":

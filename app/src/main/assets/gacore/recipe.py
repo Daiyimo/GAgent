@@ -395,9 +395,14 @@ def trace_to_recipe(trace, task_hint):
             continue
         if kind in ("look", "dump"):
             nodes = obs.get("nodes") or []
-            n = len([x for x in nodes if (x.get("t") or x.get("d") or x.get("label") or "").strip()])
+            dets = obs.get("detections") or []
+            n = len([x for x in nodes if (x.get("t") or x.get("d") or "").strip()])
+            n += len([x for x in dets if (x.get("label") or "").strip()])
+            # 观测步期望「页面有内容」而非「和录制时一样多」: 信息流节点数天然波动,
+            # 录多少就期望多少会把回放变成一次性脚本(真机实证: 录 58 节点, 重放时 48 → 误升级)。
+            # 取录制值与一个小天花板的较小者: 页面确实有实质内容即通过, 内容被清空才升级。
             steps.append(Step("读取当前页", {"kind": "roi", "value": [0, 100, 1000, 900]},
-                              {"kind": "observe"}, {"kind": "min_nodes", "value": max(n, 1)}))
+                              {"kind": "observe"}, {"kind": "min_nodes", "value": max(1, min(n, 5))}))
             continue
         if kind == "scroll":
             steps.append(Step("滚动列表", {"kind": "roi", "value": [0, 100, 1000, 900]},
