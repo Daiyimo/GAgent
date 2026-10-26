@@ -5,6 +5,8 @@
 > 姊妹文档：《GUI-Agent成熟实现调研.md》《mobile-agent-GUI实现分析.md》《豆包手机实现调研.md》《Amoo-ADB-GUI方案.md》《Amoo-端侧GUI方案.md》（均在 E:\project\daiyimo\）。
 > 状态：设计完成，待用户对第八节决策点（D1-D8）拍板后进入实施。
 
+> **2026-10-26 实施记录（第一轮）**：W4 关闭（前提被推翻，见 §1.2）、W5 与 W3 已实现并真机验证（commit f357556 / 3fc9709 / 0544dbf / 1c52a08，52 个新测试，全套 448 passed / 38 failed+5 errors 均为预存 Playwright/GBK 环境问题）。agent 面对契约已同步（memory/phone_use.md §0.5-7 循环守卫）。执行台账与全部 Ruling：`.superpowers/sdd/GAgent赋能Spec/progress.md`。其余工作项（W1/W2/W6-W10、P0 验证项）与 D1-D8 决策点状态不变。
+
 ---
 
 ## 1. 实机适配基线（2026-10-26 实测，全部可复现）
@@ -28,7 +30,7 @@
 
 | 项 | 结果 | 归属 |
 |---|---|---|
-| `pkgs` 模糊匹配 | **只搜包名不搜中文应用名**："微信""王者"返回空，"tencent"才命中 | W4（通用缺陷，非 per-app 补丁） |
+| `pkgs` 模糊匹配 | ~~只搜包名不搜中文名~~ **前提被推翻（2026-10-26 更正）**：首次实测用 curl 传中文被 Git Bash 编码破坏出现假阴性；改用 Python 显式 UTF-8 后「王者/微信/设置」全部唯一命中——label 匹配自初始框架提交即存在（BusA11yService.kt:431） | W4 关闭，无代码变更 |
 | self-ADB | 无线调试未开 → `/adb/shell` 报"无法建立自连"；`vd_*`（虚拟屏/离屏 App）因此**当前整链不可用**；叠加 StepOS 虚拟屏放 Activity 必崩 system_server 的历史结论，本机执行通道**只走 a11y 前台路线** | 适配结论 A1 |
 | YOLO 权重 | 设备未装 → `look()` 实际退化为**纯 OCR**，S2/S4/S5 的控件级定位只剩 ask_vision | W1（P0 验证项） |
 | dump 降级不可观测 | 微信 `[]` 与"树真空"同形，L0 路由器无法区分"策略置空/FLAG_SECURE/真真空" | W5 |
@@ -164,9 +166,9 @@ def locate(observation: Observation, intent: str) -> list[Candidate] | NOT_FOUND
 |---|---|---|---|---|
 | W1 | 检测器补齐与评测 | L2 | V1 | `look()` 在本机 S2/S5 场景产出控件级候选；误报率对照 phone_use.md §0.5 误差带记录。**默认不换 OmniParser**（决策规则见 D5）：先调参（YOLO_SIZE 640→960 换召回），再混合 caption，自训是长期路线 |
 | W2 | 低信息闸门机械化 | L0 | — | `route()` 单测：树<阈值 → L2；策略置空/FLAG_SECURE/真真空三路分流各有命名用例 |
-| W3 | 动作账本+三档防循环 | 横切 | Phase 0 指标 | 合成 fixture 覆盖：等价×5 提示、TAP 恢复阶梯、5 步拒绝、滚动豁免、ABORT 有界；真机 C 用例无死循环 |
-| W4 | pkgs 中文应用名匹配 | L0 | — | "微信"/"王者荣耀"等 10 个中文名唯一命中；歧义名走 LLM 消歧；纯函数单测 |
-| W5 | dump 降级原因码 | L0 | — | `[]` 三种成因可区分；Kotlin 端点+Python 壳+单测三处同步 |
+| W3 | 动作账本+三档防循环 | 横切 | Phase 0 指标 | **✅ 已实现（3fc9709/0544dbf/1c52a08）+ 真机验证**：等价×5 提示、TAP 恢复阶梯 WAIT→BACK→HOME→ABORT、swipe 第 5 次拒绝、滚动豁免、ABORT 有界；真机（PC 侧 gacore+adb forward）连续 tap 1-2 派发 / 3→WAIT / 4→BACK / 5→HOME / 6-7→ABORT，连续 swipe 第 5 次 rejected，真实行跳转（diff 20.137%）后 hint 清除 |
+| W4 | pkgs 中文应用名匹配 | L0 | — | **✅ 关闭（无代码）**：label 匹配一直存在，初版"缺口"是 curl/GBK 编码假阴性（见 §1.2）；NFKC 硬化按仓库纪律留待复现失败 |
+| W5 | dump 降级原因码 | L0 | — | **✅ 已实现（f357556）**：`dump_state()` 返回 `{nodes, degraded, pkg}`，reason ∈ sensitive_blank/unresolved_fg/tree_empty；`dump()` 委派保持 list 契约；`_track` 事件名不变（指标对齐）。纯 Python 增量化（blanking 所有者是 droid.py，无需改 Kotlin） |
 | W6 | SoM 编号图 | L2/L3 | W1 | 编号→bbox 映射正确（旋转/横屏用例）；标注图不进 L2；标注失败降级原图不报错 |
 | W7 | prompt 稳定前缀 | L4 适配器 | Phase 0 | re-sent history size 与 P50/P95 before/after 记录；无改善则回滚（不 merge） |
 | W8 | 风控策略引擎 | 横切 | — | 策略表单测（分级/动作/登录墙即停）；微信既有行为零回归；条例外留档 |
