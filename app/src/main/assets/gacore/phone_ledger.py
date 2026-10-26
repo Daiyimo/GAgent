@@ -156,37 +156,54 @@ def repetition_hint(records):
     return None
 
 
-def reject_reason(records):
-    """拒绝级: 最近 REJECT_WINDOW 步全部已结算 + 截图逐次一致 + 互相等价 → 不下发。"""
-    tail = [r for r in records[-REJECT_WINDOW:] if r.settled]
-    if len(tail) < REJECT_WINDOW:
+def reject_reason(records, pending=None):
+    """拒绝级: 最近 REJECT_WINDOW 步全部已结算 + 截图逐次一致 + 互相等价 → 不下发。
+    pending=待发动作: 它将是第 REJECT_WINDOW 次等价(只要求已结算部分有强证据, 待发动作无证据可验)。"""
+    settled = [r for r in records[-REJECT_WINDOW:] if r.settled]
+    if pending is not None:
+        if not settled or not equivalent(settled[-1], pending):
+            return None
+        need = REJECT_WINDOW - 1
+    else:
+        need = REJECT_WINDOW
+    window = settled[-need:]
+    if len(window) < need:
         return None
-    if not all(r.exact_same for r in tail):
+    if not all(r.exact_same for r in window):
         return None
-    if not all(equivalent(tail[0], r) for r in tail[1:]):
+    if not all(equivalent(window[0], r) for r in window[1:]):
         return None
     return "repeated_no_effect"
 
 
-def _ladder(records, kind, threshold, ladder):
-    n, tail = _equivalent_count(records, kind)
+def _ladder(records, kind, threshold, ladder, pending=None):
+    """恢复阶梯: 末尾连续等价无效动作达到 threshold 即启动。
+    pending=待发动作(无证据, 不参与断尾): 次数按已结算部分算, pending 与末尾等价时+1;
+    强证据只看已结算部分(逐次一致)。"""
+    base = records[:-1] if pending is not None else records
+    n, tail = _equivalent_count(base, kind)
+    if pending is not None:
+        if not tail or not equivalent(tail[-1], pending):
+            return None
+        n += 1
     if n < threshold:
         return None
-    evidence = tail[-threshold:]
+    need = threshold - 1 if pending is not None else threshold
+    evidence = tail[-need:] if need else []
     if not all(r.exact_same for r in evidence):
-        return None                      # 强证据门槛: 至少最近 threshold 步逐次一致
+        return None                      # 强证据门槛: 已结算部分逐次一致
     idx = min(n - threshold, len(ladder) - 1)
     return ladder[idx]
 
 
-def click_recovery(records):
+def click_recovery(records, pending=None):
     """改写级(点击): 连续等价无效点击 → WAIT→BACK→HOME→ABORT(有界)。"""
-    return _ladder(records, "tap", CLICK_THRESHOLD, CLICK_LADDER)
+    return _ladder(records, "tap", CLICK_THRESHOLD, CLICK_LADDER, pending)
 
 
-def type_recovery(records):
+def type_recovery(records, pending=None):
     """改写级(输入): 连续等价无效输入 → REFOCUS→RETRY→ABORT(有界)。"""
-    return _ladder(records, "paste", TYPE_RECOVERY_THRESHOLD, TYPE_LADDER)
+    return _ladder(records, "paste", TYPE_RECOVERY_THRESHOLD, TYPE_LADDER, pending)
 
 
 def guard_hint(records):
@@ -209,6 +226,9 @@ class Ledger:
 
     def recent(self, n=10):
         return list(self.records)[-n:]
+
+    def clear(self):
+        self.records.clear()
 
     def hint(self):
         return guard_hint(list(self.records))

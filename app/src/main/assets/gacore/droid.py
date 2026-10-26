@@ -59,6 +59,8 @@ import requests
 import bus_auth
 import run_guard   # 僵尸线程护栏: code_run 超时/被停后, 后台线程每次操作手机在 _act/adb_shell 被拒, 不再驱动整机
 import run_metrics   # 只观测: 动作后验计时打点(SPEC Phase 0); 不参与任何门禁/几何判定
+import phone_ledger   # 动作账本与三档防循环(SPEC W3): 纯函数模块; droid 落账+执行边界守卫, agent 侧读 hint
+_LEDGER = phone_ledger.Ledger()
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 BUNDLE = os.path.join(_DIR, "models", "ui_detect_v1")  # 管线py+onnx 捆绑目录
@@ -402,10 +404,68 @@ def capture(q=None):
     return {'image': img, 'screen': before}
 
 
+# ---------------- 循环守卫(SPEC W3): 执行边界落账 + 恢复/拒绝 ----------------
+def _new_record(kind, point=(), point2=(), value="", screen=()):
+    return phone_ledger.ActionRecord(kind=kind, point=point, point2=point2, value=value, screen=screen)
+
+def _settle(rec, **outcome):
+    """动作结算落账。铁律: 只落已验证事实(verdict/diff_pct/exact_same), 缺省字段的记录不计入判定。"""
+    if rec is not None:
+        rec.outcome = outcome
+        _LEDGER.append(rec)
+    return rec
+
+def _pre_dispatch(rec):
+    """下发前守卫: 恢复级(系统改写动作)优先, 其次拒绝级; None=放行。只消费已结算记录, 不猜未落地结果。
+    rec 是待发动作(无证据): 阶梯/拒绝把它算作第 N 次等价, 已结算部分仍需逐次一致的强证据。"""
+    records = _LEDGER.recent(16) + [rec]
+    if rec.kind in ("tap", "longpress"):
+        recovery = phone_ledger.click_recovery(records, pending=rec)
+    elif rec.kind in ("paste", "adb_input_text"):
+        recovery = phone_ledger.type_recovery(records, pending=rec)
+    else:
+        recovery = None
+    if recovery == "ABORT":
+        return {"abort": True}
+    if recovery:
+        return {"recovery": recovery}
+    reject = phone_ledger.reject_reason(records, pending=rec)
+    return {"reject": reject} if reject else None
+
+def _apply_guard(rec, guard, label):
+    """守卫命中: 恢复=系统代为执行并如实结算(恢复后再截图算 diff——屏幕变了等价尾自断, 阶梯解除);
+    拒绝=记 REJECTED 不下发; ABORT=恢复手段用尽, 记 aborted 不下发。全部有界, 无未知结果重试。"""
+    if guard.get("abort"):
+        _settle(rec, verdict="aborted", screenshot_exactly_same=True)
+        return {"ok": 0, "aborted": True,
+                "hint": "循环守卫: 同一动作连续无可观察变化且恢复手段已用尽, 本次未执行。请重新观察当前屏幕, 更换目标或策略, 或 ask_user 说明阻塞。"}
+    if guard.get("recovery"):
+        action = guard["recovery"]
+        before = shot()
+        if action == "WAIT": time.sleep(1.0)
+        elif action == "BACK": _act(op="back")
+        elif action == "HOME": _act(op="home")
+        time.sleep(0.3)
+        try:
+            pct = float(_img_diff_str(before, shot()).split("%", 1)[0].split()[-1])
+        except Exception:
+            pct = 100.0
+        _settle(rec, verdict="recovered", recovery=action, diff_pct=pct, screenshot_exactly_same=pct == 0.0)
+        return {"ok": 1, "recovered": action, "diff": "%.3f%%" % pct,
+                "hint": "循环守卫: 检测到连续等价的无效%s, 已代为执行 %s。请重新观察当前屏幕再决定下一步, 不要原样重发同一动作。" % (label, action)}
+    _settle(rec, verdict="rejected", screenshot_exactly_same=True)
+    return {"ok": 0, "rejected": guard["reject"],
+            "hint": "循环守卫: 最近多步动作互为等价且前后截图逐次完全一致, 本次未下发。请比较前后截图, 更换目标或策略。"}
+
+
 def tap(x, y, verify=True, wait=1.0, human=False, *, screen=None):
     """human=True only adds small motor-tolerance jitter; it is not an anti-abuse bypass.
     Sensitive apps must use state-driven waits and stop on security checks."""
     geometry = _gesture_screen(ping(), [(x, y)], screen)
+    rec = _new_record("tap", point=(int(x), int(y)), screen=(geometry.get("w"), geometry.get("h")))
+    guard = _pre_dispatch(rec)
+    if guard is not None:
+        return _apply_guard(rec, guard, "点击")
     before = shot() if verify else None
     ret = _act(op="tap", x=int(x), y=int(y), human=bool(human), expected_screen=geometry); ret.pop("ok", None)
     if not verify: return ret
@@ -414,6 +474,7 @@ def tap(x, y, verify=True, wait=1.0, human=False, *, screen=None):
     diff = _img_diff_str(before, after); ret["diff"] = diff
     if _shape_changed(before, after):
         ret.update(verified=False, uncertain=True, hint='屏幕尺寸变化；重新截图定位，不复用旧坐标。', fg=_fg())
+        _settle(rec, verdict="uncertain", diff_pct=100.0)
         return ret
     try: pct = float(diff.split("%", 1)[0].split()[-1])
     except Exception: pct = 0.0
@@ -421,6 +482,7 @@ def tap(x, y, verify=True, wait=1.0, human=False, *, screen=None):
         ret["hint"] = "tap后屏幕变化很小；可能点到非热区，或前台有弹窗/浮层导致后层页面不响应。请看截图/diff后再重试。"
         _track("droid_tap_miss", {"diff_pct": round(pct, 3)})   # 只在验证失败时上报(自限量): 手机操控版"中止率", 与 a11y_act_stats 的 tap 总数配对算命中率
     ret["fg"] = _fg()
+    _settle(rec, verdict="settled", diff_pct=pct, screenshot_exactly_same=pct == 0.0, fg=ret["fg"])
     return ret
 def ui_snapshot(package):
     """单窗口的受保护快照；不支持此接口的旧 APK 必须回退，不能用 dump 冒充。"""
@@ -457,6 +519,11 @@ def swipe(x1, y1, x2, y2, dur=300, verify=True, wait=0.6, *, screen=None):
     返回 hint 要求重新观察而非原样重发; 屏幕形态变化(旋转/折叠)置 uncertain。长按(同点 dur>=800)同样受益: 菜单没弹出=无变化=hint。
     普通翻页滚动优先 scroll()(自带稳态证据+文本对比, 段内 swipe 已关此验证防重复截图); swipe 是按坐标精细滑/拖的底稿。"""
     geometry = _gesture_screen(ping(), [(x1, y1), (x2, y2)], screen)
+    rec = _new_record("swipe", point=(int(x1), int(y1)), point2=(int(x2), int(y2)),
+                      screen=(geometry.get("w"), geometry.get("h")))
+    guard = _pre_dispatch(rec)
+    if guard is not None:
+        return _apply_guard(rec, guard, "滑动")
     before = shot() if verify else None
     ret = _act(op="swipe", x1=int(x1), y1=int(y1), x2=int(x2), y2=int(y2), dur=int(dur), expected_screen=geometry); ret.pop("ok", None)
     if not verify: return ret
@@ -465,6 +532,7 @@ def swipe(x1, y1, x2, y2, dur=300, verify=True, wait=0.6, *, screen=None):
     diff = _img_diff_str(before, after); ret["diff"] = diff
     if _shape_changed(before, after):
         ret.update(verified=False, uncertain=True, hint='屏幕尺寸变化；重新截图定位，不复用旧坐标。', fg=_fg())
+        _settle(rec, verdict="uncertain", diff_pct=100.0)
         return ret
     try: pct = float(diff.split("%", 1)[0].split()[-1])
     except Exception: pct = 0.0
@@ -472,6 +540,7 @@ def swipe(x1, y1, x2, y2, dur=300, verify=True, wait=0.6, *, screen=None):
         ret["hint"] = "swipe后屏幕变化很小；可能没滚成/没拖动，或列表已在端点。请重新观察当前内容再决定下一步，勿原样重发同一手势。"
         _track("droid_swipe_miss", {"diff_pct": round(pct, 3)})   # 与 droid_tap_miss 同款自限量上报, 配对算手势命中率
     ret["fg"] = _fg()
+    _settle(rec, verdict="settled", diff_pct=pct, screenshot_exactly_same=pct == 0.0, fg=ret["fg"])
     return ret
 
 
