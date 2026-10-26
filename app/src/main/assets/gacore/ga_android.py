@@ -8,6 +8,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from agent_loop import BaseHandler, StepOutcome, json_default
 import run_guard   # 僵尸线程协作取消护栏(超时/停止后仍在后台派发手势的线程, 下一次操作手机即自毁)
+import phone_ledger   # 动作账本(SPEC W3): 每轮 [LOOP-GUARD] 提示注入; 与 droid 执行边界守卫共用 ACTIVE 实例(本模块保持设备无关, 不 import droid)
 run_guard.install_thread_inheritance()   # 让用户代码派生的子线程也继承取消令牌(僵尸孙线程同样受护栏); 幂等
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -460,6 +461,9 @@ class GenericAgentHandler(BaseHandler):
         elif turn % 7 == 0:
             next_prompt += f"\n\n[DANGER] 已连续执行第 {turn} 轮。禁止无效重试。若无有效进展，必须切换策略：1. 探测物理边界 2. 请求用户协助。如有需要，可调用 update_working_checkpoint 保存关键上下文。"
         elif turn % 10 == 0: next_prompt += get_global_memory()
+
+        _guard = phone_ledger.ACTIVE.hint()   # 循环守卫(SPEC W3 提示级): 动作等价/界面粘滞等机械信号; 无信号零注入
+        if _guard: next_prompt += f"\n\n{_guard}\n"
 
         if _plan and turn >= 10 and turn % 5 == 0:
             next_prompt = f"[Plan Hint] 正在计划模式。必须 file_read({_plan}) 确认当前步骤，回复开头引用：📌 当前步骤：...\n\n" + next_prompt

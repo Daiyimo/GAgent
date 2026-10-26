@@ -59,8 +59,8 @@ import requests
 import bus_auth
 import run_guard   # 僵尸线程护栏: code_run 超时/被停后, 后台线程每次操作手机在 _act/adb_shell 被拒, 不再驱动整机
 import run_metrics   # 只观测: 动作后验计时打点(SPEC Phase 0); 不参与任何门禁/几何判定
-import phone_ledger   # 动作账本与三档防循环(SPEC W3): 纯函数模块; droid 落账+执行边界守卫, agent 侧读 hint
-_LEDGER = phone_ledger.Ledger()
+import phone_ledger   # 动作账本与三档防循环(SPEC W3): 纯函数模块; droid 落账+执行边界守卫, agent 侧(ga_android)读 hint
+_LEDGER = phone_ledger.ACTIVE   # 进程级共享账本: 与 ga_android 每轮提示注入同一实例
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 BUNDLE = os.path.join(_DIR, "models", "ui_detect_v1")  # 管线py+onnx 捆绑目录
@@ -421,7 +421,7 @@ def _pre_dispatch(rec):
     records = _LEDGER.recent(16) + [rec]
     if rec.kind in ("tap", "longpress"):
         recovery = phone_ledger.click_recovery(records, pending=rec)
-    elif rec.kind in ("paste", "adb_input_text"):
+    elif rec.kind in phone_ledger.INPUT_KINDS:
         recovery = phone_ledger.type_recovery(records, pending=rec)
     else:
         recovery = None
@@ -738,7 +738,26 @@ def scroll(direction="up", frac=0.35, dur=600, times=1, verify=True, settle=0.5)
     调用方必须检查 scrolled/evidence/uncertain; uncertain=True 表示观察不可用/结论不确定,
     不是已验证未滚动, 不得据此盲目重试。
     ⚠️scroll 只吃方向/比例, 不是 swipe(x1,y1,x2,y2,dur)——曾被误当 swipe 调 scroll(900,1850,900,650,700)
-    致 times=650 全屏狂滑失控。下方夹取幅度/时长/次数, 任何误用都退化为少量有界滚动(要精细滑用 droid.swipe)。"""
+    致 times=650 全屏狂滑失控。下方夹取幅度/时长/次数, 任何误用都退化为少量有界滚动(要精细滑用 droid.swipe)。
+    循环守卫(SPEC W3): 派发前做等价检测——连续无效滚动(截图逐次一致)第 6 次起拒绝下发;
+    一次调用落一条聚合账: scrolled=新证据(长列表扫描豁免, 断尾), 滑不动才计等价, uncertain=断尾。"""
+    rec = _new_record("scroll", value=direction)
+    guard = _pre_dispatch(rec)
+    if guard is not None:
+        return _apply_guard(rec, guard, "滚动")
+    ret = _scroll_impl(direction, frac=frac, dur=dur, times=times, verify=verify, settle=settle)
+    if "scrolled" not in ret:
+        return ret                      # verify=False: 无证据不落账(铁律)
+    if ret.get("uncertain"):
+        _settle(rec, verdict="uncertain")
+    elif ret.get("scrolled"):
+        _settle(rec, verdict="settled", evidence_new=True, diff_pct=99.0)
+    else:
+        _settle(rec, verdict="settled", screenshot_exactly_same=True, diff_pct=0.0)   # 明确未滚动=可证明无效果
+    return ret
+
+def _scroll_impl(direction="up", frac=0.35, dur=600, times=1, verify=True, settle=0.5):
+    """scroll 的实现体(签名/契约见 scroll docstring); 内部专用——直接调用会绕过守卫与落账。"""
     if direction not in ("up", "down", "left", "right"):   # 非法方向 fail-fast(误当 swipe 传坐标必命中): 不静默回退'up'再滚一堆
         raise ValueError("scroll 的 direction 必须是 'up'/'down'/'left'/'right'(看下方内容用 'up'), 收到 %r; "
                          "要按坐标精细滑请用 droid.swipe(x1,y1,x2,y2,dur)" % (direction,))
@@ -997,7 +1016,44 @@ def paste(text, verify=True, replace=False):
     hit=True=已确认上屏; hit=False, uncertain=True=验证不可用/结论不确定, 禁止重复输入或盲目降级。
     ime_label 仅为元数据; 只有 ime_hint 可点击。
     敏感 App 或前台未解析时只设置剪贴板，不调用节点输入；返回 needs_gui_paste=True 并输出提示。
-    调用方须通过可见GUI粘贴，再用截图验证上屏；不能把剪贴板已设置当成输入成功。"""
+    调用方须通过可见GUI粘贴，再用截图验证上屏；不能把剪贴板已设置当成输入成功。
+    循环守卫(SPEC W3): 连续等价无效输入第 2 次起 REFOCUS(请先重聚焦再重试)→RETRY(最后一次自动放行)→ABORT;
+    落账: hit=新证据(断尾), uncertain=断尾, 明确未上屏=可证明无效果(进阶梯)。"""
+    text = str(text)
+    if not text:
+        raise ValueError("paste text must not be empty")
+    rec = _new_record("paste", value=text)
+    guard = _pre_dispatch(rec)
+    if guard is not None:
+        action = guard.get("recovery")
+        if action == "REFOCUS":
+            _settle(rec, verdict="recovered", recovery="REFOCUS", screenshot_exactly_same=True)
+            return {"ok": 1, "recovered": "REFOCUS", "hit": False,
+                    "hint": "循环守卫: 连续等价的无效输入, 本次未发送。请先 tap 输入框重新聚焦再重试 paste; 若已聚焦, 核对字段是否已有等长文本或掩码。"}
+        if action == "RETRY":
+            # 最后一次自动放行: 先落一条 recovered 标记推进阶梯, 再走正常流程
+            _settle(_new_record("paste", value=text), verdict="recovered", recovery="RETRY", screenshot_exactly_same=True)
+        elif guard.get("abort"):
+            _settle(rec, verdict="aborted", screenshot_exactly_same=True)
+            return {"ok": 0, "aborted": True, "hit": False,
+                    "hint": "循环守卫: 同一输入连续无可观察变化且恢复手段已用尽, 本次未执行。请重新观察当前屏幕, 更换目标或策略, 或 ask_user 说明阻塞。"}
+        else:
+            _settle(rec, verdict="rejected", screenshot_exactly_same=True)
+            return {"ok": 0, "rejected": guard["reject"], "hit": False,
+                    "hint": "循环守卫: 最近多步动作互为等价且前后截图逐次完全一致, 本次未下发。请比较前后截图, 更换目标或策略。"}
+    ret = _paste_impl(text, verify=verify, replace=replace)
+    if "hit" not in ret:
+        return ret                      # 未验证/未产出判定: 无证据不落账(铁律)
+    if ret.get("hit"):
+        _settle(rec, verdict="settled", evidence_new=True, diff_pct=99.0)          # 已确认上屏=新证据(断尾)
+    elif ret.get("uncertain"):
+        _settle(rec, verdict="uncertain")                                           # 验证不可用: 断尾不进阶梯
+    else:
+        _settle(rec, verdict="settled", screenshot_exactly_same=True, diff_pct=0.0)  # 明确未上屏=可证明无效果
+    return ret
+
+def _paste_impl(text, verify=True, replace=False):
+    """paste 的实现体(契约见 paste docstring); 内部专用——直接调用会绕过守卫与落账。"""
     text = str(text)
     if not text:
         raise ValueError("paste text must not be empty")

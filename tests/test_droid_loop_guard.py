@@ -29,7 +29,8 @@ class _BusCase(unittest.TestCase):
     diff = "0.000% changed"
 
     def setUp(self):
-        droid._LEDGER = phone_ledger.Ledger()
+        phone_ledger.ACTIVE.clear()
+        self.addCleanup(phone_ledger.ACTIVE.clear)
         self.acts = []
         patches = [
             patch.object(droid, 'ping', return_value={"w": 1200, "h": 2670, "rot": 0, "pkg": "com.android.settings"}),
@@ -146,3 +147,110 @@ class LedgerResetTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScrollLedgerTest(_BusCase):
+    """scroll 聚合落账: 一次调用一条记录; 有效滚动带 evidence_new(长列表扫描豁免), 滑不动才计等价。"""
+
+    def _patch_scroll(self, pixel_pct, text_ratio=0.5):
+        patches = [
+            patch.object(droid, 'dump', return_value=[]),
+            patch.object(droid, '_scroll_shot', return_value=np.zeros((2670, 1200, 3), dtype=np.uint8)),
+            patch.object(droid, '_pixel_change_pct', return_value=pixel_pct),
+            patch.object(droid, '_text_change_ratio', return_value=text_ratio),
+            patch.object(droid, 'swipe', return_value={}),
+        ]
+        for p in patches:
+            p.start(); self.addCleanup(p.stop)
+
+    def test_productive_scroll_records_evidence_new(self):
+        self._patch_scroll(8.0)
+        ret = droid.scroll("up")
+        self.assertTrue(ret.get("scrolled"))
+        r = phone_ledger.ACTIVE.recent()[-1]
+        self.assertEqual((r.kind, r.value), ("scroll", "up"))
+        self.assertTrue(r.outcome.get("evidence_new"))
+
+    def test_stuck_scroll_records_exact_same(self):
+        self._patch_scroll(0.0, text_ratio=0.0)
+        ret = droid.scroll("up")
+        self.assertFalse(ret.get("scrolled"))
+        r = phone_ledger.ACTIVE.recent()[-1]
+        self.assertTrue(r.outcome.get("screenshot_exactly_same"))
+
+    def test_scroll_times_records_once(self):
+        self._patch_scroll(8.0)
+        droid.scroll("up", times=3)
+        self.assertEqual(len(phone_ledger.ACTIVE.recent()), 1)
+
+    def test_sixth_stuck_scroll_is_rejected(self):
+        self._patch_scroll(0.0, text_ratio=0.0)
+        for _ in range(5):
+            droid.scroll("up")
+        ret = droid.scroll("up")
+        self.assertEqual(ret.get("rejected"), "repeated_no_effect")
+        self.assertNotIn("swipe", [a.get("op") for a in self.acts])
+
+
+class PasteLedgerTest(_BusCase):
+    """paste 落账: hit=新证据(断尾); 明确未上屏=可证明无效果(进阶梯); 敏感/未解析=uncertain。"""
+
+    def _patch_paste(self, verdict):
+        # 按验证阶段名分发: dump 要 list(编辑框节点), ocr_classify 要 dict(判定), shot 走真截屏(已 patch); 其余走默认值
+        def _fake_verify(name, fn, errors, default=None):
+            if name == "dump":
+                return [{"t": "", "edit": 1, "x": 600, "y": 2300, "b": "100,2200,1100,2300"}]
+            if name == "ocr_classify":
+                return dict(verdict)
+            if name == "shot":
+                return fn()
+            return default
+        patches = [
+            patch.object(droid, '_sensitive_fg', return_value=False),
+            patch.object(droid, 'ocr_text', return_value=("", 0.0)),
+            patch.object(droid, '_try_paste_verification', side_effect=_fake_verify),
+        ]
+        for p in patches:
+            p.start(); self.addCleanup(p.stop)
+
+    def test_paste_hit_records_evidence_new(self):
+        self._patch_paste({"hit": True})
+        ret = droid.paste("hello")
+        self.assertTrue(ret.get("hit"))
+        r = phone_ledger.ACTIVE.recent()[-1]
+        self.assertEqual(r.kind, "paste")
+        self.assertEqual(r.value, "hello")
+        self.assertTrue(r.outcome.get("evidence_new"))
+
+    def test_paste_clean_miss_records_exact_same(self):
+        self._patch_paste({"hit": False})
+        ret = droid.paste("hello")
+        self.assertFalse(ret.get("hit"))
+        r = phone_ledger.ACTIVE.recent()[-1]
+        self.assertTrue(r.outcome.get("screenshot_exactly_same"))
+
+    def test_second_failed_paste_gets_refocus(self):
+        phone_ledger.ACTIVE.append(phone_ledger.ActionRecord(
+            kind="paste", value="hello", screen=(1200, 2670),
+            outcome={"verdict": "settled", "screenshot_exactly_same": True, "diff_pct": 0.0}))
+        self._patch_paste({"hit": False})
+        ret = droid.paste("hello")
+        self.assertEqual(ret.get("recovered"), "REFOCUS")
+        self.assertNotIn("paste", [a.get("op") for a in self.acts])
+
+    def test_fourth_failed_paste_aborts_bounded(self):
+        for _ in range(3):
+            phone_ledger.ACTIVE.append(phone_ledger.ActionRecord(
+                kind="paste", value="hello", screen=(1200, 2670),
+                outcome={"verdict": "settled", "screenshot_exactly_same": True, "diff_pct": 0.0}))
+        self._patch_paste({"hit": False})
+        ret = droid.paste("hello")
+        self.assertTrue(ret.get("aborted"))
+        self.assertNotIn("paste", [a.get("op") for a in self.acts])
+
+    def test_sensitive_paste_records_uncertain(self):
+        with patch.object(droid, '_sensitive_fg', return_value=True), \
+                patch.object(droid, '_act', side_effect=lambda **kw: self.acts.append(kw) or {}):
+            ret = droid.paste("hello")
+        self.assertTrue(ret.get("needs_gui_paste"))
+        self.assertEqual(phone_ledger.ACTIVE.recent()[-1].outcome["verdict"], "uncertain")
