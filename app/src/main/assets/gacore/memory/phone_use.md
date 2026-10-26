@@ -19,6 +19,27 @@ Python 适合无手机 UI 依赖的计算或文件处理，不得用底层输入
 
 原子能力层（Android 16+ 且 self-ADB 已连）：`droid.appfn_list()` 枚举本机注册的 AppFunction 能力（各 OS 注册不同，以实测返回为准，不预设清单）；命中注册能力（如商店搜索/安装、天气类服务）→ `droid.appfn_call(包名, '类全名#方法', {参数})` 优先于 GUI——零轮次、无坐标漂移、无 OCR 误差。未注册或调用失败的 App 回正常定位阶梯，不反复尝试；实测可用后才写进记忆，并注明它替代不了什么（如商店 `searchApp` 替代不了 GUI 浏览比较）。
 
+## 配方回放（L1：重复任务零模型调用）
+
+`memory/recipes/` 下存有此前录制的操作配方。**读完 L1 后先查**：`print(droid.recipe_list())`
+返回 `[{recipe_id, app, package, scene, steps, fragile}]`。某配件的 `app` 与用户点名的 App 一致、
+且步骤与任务目标吻合时（同 App 同意图的重复任务，如「打开腾讯新闻看前三条」），先回放：
+
+```python
+res = droid.recipe_run({'app': '腾讯新闻'})
+```
+
+- `res.status == 'completed'`：配方已代跑完全部步骤且每步期望都通过——按任务口径核销后直接 final，**本轮零模型调用**；
+- `res is None`：没有匹配（或已 unstable）的配方，走常规 GUI 路径；
+- `res.status == 'escalated'`：页面与配方录制时不一致，或某步期望未过。**配方可能已改变设备状态**
+  （如已 launch App）——不要重跑配方，从当前 Observation 重新观察，按常规路径继续。
+  同一配方单任务内升级两次会自动 unstable（不再被 `recipe_list`/`recipe_run` 提供），无需你处理。
+
+**录制**：一个 GUI 任务成功后，若它是可重复的同类任务（同 App 同目标的读取/导航类，如看新闻、
+查列表、进某固定页面），调 `droid.recipe_record({'app': '<App 名>'})` 把本次操作录成配方——
+录制零模型调用，locator 从当帧观测推导、不存坐标。**涉账号/支付/敏感 App/一次性任务不要录**：
+配方回放会在下次直接执行同样动作，可能超出用户当次授权的范围。
+
 ## §0.5 观察 → 动作 → 核验
 
 1. `droid.launch(包名)` 后读取 `ping()` 和当前界面。`pkg`、屏幕尺寸和方向来自当前设备，不能凭记忆填坐标。
@@ -42,6 +63,10 @@ Python 适合无手机 UI 依赖的计算或文件处理，不得用底层输入
    `aborted`（恢复手段已用尽）时，该动作没有发生：按返回里的 `hint` 重新观察当前屏幕再决策，
    **不要原样重发同一动作**；`aborted` 时换目标或策略，或 ask_user 说明阻塞。
    画面真正变化、滚动真有新内容的动作从不会触发守卫——看到守卫返回即证明当前路径已被证伪。
+8. **重复任务先查配方**：读完 L1 后 `droid.recipe_list()` 有匹配且步骤与目标吻合，就先
+   `droid.recipe_run({'app': ...})`——`completed` 核销后直接 final（零模型调用）；`escalated`
+   从当前 Observation 重走常规路径，勿重跑配方；可重复任务成功后 `droid.recipe_record()` 录制，
+   涉账号/支付/敏感 App/一次性任务不录。
 
 ## §1 常用接口（含输入）
 

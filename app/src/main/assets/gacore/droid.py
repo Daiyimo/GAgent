@@ -1780,6 +1780,20 @@ def _recipe_store():
     return recipe.RecipeStore(root)
 
 
+def recipe_list():
+    """可用配方清单(agent 开局发现用): [{recipe_id, app, package, scene, steps, fragile}]。unstable 不列出。"""
+    store = _recipe_store()
+    out = []
+    for r in store.list():
+        if store.is_unstable(r.recipe_id):
+            continue
+        ah = r.app_hint or {}
+        out.append({"recipe_id": r.recipe_id, "app": str(ah.get("value") or ""),
+                    "package": str(ah.get("package") or ""), "scene": r.scene,
+                    "steps": len(r.steps), "fragile": bool(r.fragile)})
+    return out
+
+
 def recipe_record(hint=None):
     """把本次任务的 operation trace 机械转成配方并落盘。零模型调用、可离线复现。"""
     import recipe

@@ -146,3 +146,31 @@ class ActionResultNormalizeTest(unittest.TestCase):
 
     def test_unparseable_diff_yields_no_key(self):
         self.assertEqual(droid._norm_action_result({"diff": "weird"}), {})
+
+
+class RecipeListTest(_Bus):
+    def test_list_returns_available_recipes(self):
+        r = recipe.validate_recipe({
+            "recipe_id": "news.read", "scene": "S1",
+            "app_hint": {"package": "com.tencent.news", "match": "title_contains", "value": "腾讯新闻"},
+            "steps": [{"intent": "读", "locator": {"kind": "roi", "value": [0, 100, 1000, 900]},
+                       "action": {"kind": "observe"}, "expected": {"kind": "min_nodes", "value": 3}}],
+            "recorded_at": "2026-10-26T00:00:00Z"})
+        self._store().save(r)
+        with patch.object(droid, '_recipe_store', return_value=self._store()):
+            lst = droid.recipe_list()
+        self.assertEqual([x["recipe_id"] for x in lst], ["news.read"])
+        self.assertEqual(lst[0]["app"], "腾讯新闻")
+        self.assertEqual(lst[0]["steps"], 1)
+
+    def test_unstable_recipes_hidden(self):
+        r = recipe.validate_recipe({
+            "recipe_id": "news.read", "scene": "S1", "app_hint": {"package": "p", "value": "A"},
+            "steps": [{"intent": "读", "locator": {"kind": "any"}, "action": {"kind": "observe"},
+                       "expected": {"kind": "min_nodes", "value": 1}}]})
+        store = self._store()
+        store.save(r)
+        store.record_escalation("news.read")
+        store.record_escalation("news.read")
+        with patch.object(droid, '_recipe_store', return_value=store):
+            self.assertEqual(droid.recipe_list(), [])
