@@ -126,3 +126,18 @@ class ReplayEngineTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReplayObservationTest(unittest.TestCase):
+    def test_completed_result_carries_observation_texts(self):
+        dev = FakeDevice([_obs(NODES_LIST)])
+        r = recipe.replay(_recipe([OBSERVE_LIST]), dev.observe, dev.act)
+        self.assertEqual(r.status, "completed")
+        self.assertIn("新闻0", r.observation["texts"])
+        self.assertEqual(r.observation["pkg"], "com.tencent.news")
+
+    def test_escalated_result_also_carries_observation(self):
+        dev = FakeDevice([_obs(NODES_WITH_SEARCH)], act_outcomes=[{"diff_pct": 0.0}])
+        r = recipe.replay(_recipe([TAP_SEARCH]), dev.observe, dev.act)
+        self.assertEqual(r.status, "escalated")
+        self.assertIn("搜索", r.observation["texts"])

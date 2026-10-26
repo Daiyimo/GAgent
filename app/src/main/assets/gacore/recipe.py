@@ -278,6 +278,7 @@ class ReplayResult:
     reason: object = None       # locator_miss | expected_failed | uncertain
     evidence: dict = field(default_factory=dict)
     model_calls: int = 0        # 结构性地为 0: 引擎没有任何 LLM 路径
+    observation: dict = field(default_factory=dict)   # 末步观测摘要: 读取类任务据此直接回答, 无需再 dump
 
 
 # 需要「动作后状态」才能判定的 expected 种类——只有这些才触发动作后二次观测
@@ -299,11 +300,27 @@ def _state_view(obs):
     return {k: obs.get(k) for k in ("nodes", "detections", "screen", "pkg") if k in obs}
 
 
+def _obs_summary(obs):
+    """观测摘要: 只带文本类内容(读取类任务靠它直接回答), 不带整树。"""
+    items = []
+    for n in (obs.get("nodes") or []):
+        txt = n.get("t") or n.get("d") or ""
+        if txt.strip():
+            items.append(txt.strip())
+    for d in (obs.get("detections") or []):
+        txt = d.get("label") or ""
+        if txt.strip():
+            items.append(txt.strip())
+    return {"texts": items[:60], "pkg": obs.get("pkg"), "screen": obs.get("screen")}
+
+
 def replay(recipe, observe, act):
     """回放配方。observe() -> 观测 dict；act(action, resolved) -> 动作产出 dict。
     不变量 3：第一个失败即结束，配方内无重试。uncertain 与 False 同样升级，不当成功。"""
+    last_obs = {}
     for i, step in enumerate(recipe.steps):
         obs = observe()
+        last_obs = obs
         resolved = resolve_locator(obs, step.locator, unique=step.action.get("kind") != "observe")
         if resolved is None:
             return ReplayResult("escalated", i, escalated_at=i, reason="locator_miss",
@@ -320,8 +337,9 @@ def replay(recipe, observe, act):
         if verdict is not True:
             return ReplayResult("escalated", i, escalated_at=i,
                                 reason="uncertain" if verdict is None else "expected_failed",
-                                evidence={"expected": step.expected, "outcome": _evidence(outcome)})
-    return ReplayResult("completed", len(recipe.steps))
+                                evidence={"expected": step.expected, "outcome": _evidence(outcome)},
+                                observation=_obs_summary(last_obs))
+    return ReplayResult("completed", len(recipe.steps), observation=_obs_summary(last_obs))
 
 
 # ---------------- R4: 录制器（trace → recipe，零模型调用） ----------------
