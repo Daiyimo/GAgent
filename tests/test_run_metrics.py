@@ -129,3 +129,120 @@ class TestJsonlIO:
         (tmp_path / 'session_x.json').write_text('{}', encoding='utf-8')
         assert run_metrics.prune_oldest(str(tmp_path), 'metrics_', keep=5) == 0
         assert run_metrics.prune_oldest(str(tmp_path / 'nope'), 'metrics_') == 0
+
+
+class _FakeClock:
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, secs):
+        self.t += secs
+        return self.t
+
+
+class _Sink:
+    def __init__(self):
+        self.lines = []
+
+    def __call__(self, lines):
+        self.lines.extend(lines)
+
+
+class TestRunRecorder:
+    def _rec(self, sink):
+        clock = _FakeClock()
+        return run_metrics.RunRecorder(run_id='r1', gen=7, clock=clock, sink=sink), clock
+
+    def test_turn_line_carries_the_phase_zero_metric_set(self):
+        sink = _Sink()
+        rec, clock = self._rec(sink)
+        rec.start_turn(1)
+        rec.llm_start(); clock.advance(4.8); rec.note_tokens(1975, 42); rec.llm_end()
+        rec.set_resend_chars(48213)
+        rec.tool_start(); clock.advance(1.35)
+        rec.tool_end('droid.tap', {'verified': True, 'diff': 'diff: 1.234% bbox=[1,2,3,4]'}, 0.98)
+        clock.advance(0.05)
+        rec.end_turn()
+        rec.end_run('CURRENT_TASK_DONE')
+        turn, summary = (json.loads(x) for x in sink.lines)
+        assert turn['type'] == 'turn' and turn['turn'] == 1 and turn['layer'] == 'L4'
+        assert turn['model_wait_s'] == 4.8
+        assert turn['tool_exec_s'] == 1.35
+        assert turn['verify_wait_s'] == 0.98
+        assert (turn['in_tok'], turn['out_tok']) == (1975, 42)
+        assert turn['resend_chars'] == 48213
+        assert turn['n_tools'] == 1 and turn['tools'] == ['droid.tap']
+        assert turn['tool_records'][0]['verifier'] == '_img_diff_str'
+        assert turn['tool_records'][0]['verdict'] == {'verified': True, 'diff_pct': 1.234}
+        assert turn['escalations'] == []
+        assert summary['type'] == 'run_summary'
+        assert summary['turns'] == 1 and summary['model_calls'] == 1
+        assert summary['p50_turn_s'] == 6.15 and summary['p95_turn_s'] == 6.15
+        assert summary['tools_verified'] == 1
+        assert summary['tools_uncertain'] == 0 and summary['tools_without_verdict'] == 0
+
+    def test_tokens_are_attributed_to_the_turn_that_asked(self):
+        sink = _Sink()
+        rec, clock = self._rec(sink)
+        rec.start_turn(1); rec.llm_start(); rec.note_tokens(10, 1); rec.llm_end(); rec.end_turn()
+        rec.start_turn(2); rec.llm_start(); clock.advance(1.0); rec.llm_end(); rec.end_turn()
+        rec.end_run('MAX_TURNS_EXCEEDED')
+        t1, t2 = (json.loads(x) for x in sink.lines[:2])
+        assert (t1['in_tok'], t1['out_tok']) == (10, 1)
+        assert (t2['in_tok'], t2['out_tok']) == (0, 0)
+
+    def test_one_request_reporting_usage_twice_is_not_double_counted(self):
+        """Claude 流式: message_start 的 output_tokens 是占位值, message_delta 才是终值。"""
+        sink = _Sink()
+        rec, clock = self._rec(sink)
+        rec.start_turn(1); rec.llm_start()
+        rec.note_tokens(1975, 1); rec.note_tokens(0, 42)
+        rec.llm_end(); rec.end_turn()
+        assert json.loads(sink.lines[0])['out_tok'] == 42
+
+    def test_unfinished_turn_is_flushed_when_the_run_ends(self):
+        """循环被 break(末轮不走 turn_after)时, 最后一轮仍要落一行, 不丢。"""
+        sink = _Sink()
+        rec, clock = self._rec(sink)
+        rec.start_turn(3); rec.llm_start(); clock.advance(2.0); rec.llm_end()
+        rec.end_run('CURRENT_TASK_DONE')
+        assert [json.loads(x)['turn'] for x in sink.lines[:-1]] == [3]   # 末行是汇总, 没有 turn 键
+        assert json.loads(sink.lines[-1])['turns'] == 1
+
+    def test_a_failing_sink_never_raises(self):
+        """观测失败绝不能影响 agent 主循环。"""
+        def boom(lines):
+            raise OSError('disk full')
+
+        rec = run_metrics.RunRecorder(run_id='r', clock=_FakeClock(), sink=boom)
+        rec.start_turn(1); rec.llm_start(); rec.llm_end(); rec.end_turn()
+        rec.end_run('done')          # 不抛即通过
+
+    def test_summary_counts_uncertain_and_unverified_separately(self):
+        sink = _Sink()
+        rec, clock = self._rec(sink)
+        rec.start_turn(1)
+        rec.tool_start(); clock.advance(1.0)
+        rec.tool_end('droid.tap', {'uncertain': True}, None)
+        rec.tool_start(); clock.advance(1.0)
+        rec.tool_end('droid.scroll_view', {'scrolled': True, 'evidence': 'text'}, 0.4)
+        rec.tool_start(); clock.advance(1.0)
+        rec.tool_end('file_read', {'content': 'x' * 100}, None)
+        rec.end_turn(); rec.end_run('done')
+        s = json.loads(sink.lines[-1])
+        assert s['tools_uncertain'] == 1          # uncertain 记"未验证", 绝不是成功
+        assert s['tools_without_verdict'] == 1    # 无判定证据的工具单列, 不混入成功率
+        assert s['verify_wait_s'] == 0.4
+        assert s['tool_exec_s'] == 3.0
+
+    def test_tool_without_a_dispatched_action_has_no_verify_time(self):
+        sink = _Sink()
+        rec, clock = self._rec(sink)
+        rec.start_turn(1)
+        rec.tool_start(); clock.advance(0.5)
+        rec.tool_end('file_read', {}, None)
+        rec.end_turn()
+        assert json.loads(sink.lines[0])['tool_records'][0]['verify_s'] is None

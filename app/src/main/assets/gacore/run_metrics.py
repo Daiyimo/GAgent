@@ -230,3 +230,101 @@ def take_verify_seconds() -> Optional[float]:
     _tls.verify_t0 = None
     _tls.verify_total = 0.0
     return round(total, 3)
+
+
+class RunRecorder:
+    """一次任务(agent_runner_loop 一轮)的指标收集器。
+
+    时钟与写入口注入 → 单测无需真实时间/文件。循环线程调用; 内部加锁。
+    sink 形如 sink(list[str]) —— 每行一个 JSON 对象, 由插件负责真正落盘。
+    """
+
+    def __init__(self, run_id: str, gen: int = 0, layer: str = LAYER_TODAY,
+                 clock=time.time, sink=None):
+        self.run = RunRecord(run_id=run_id, gen=gen, layer=layer, started_at=round(clock(), 3))
+        self._clock = clock
+        self._sink = sink if sink is not None else (lambda lines: None)
+        self._lock = threading.Lock()
+        self._turn: Optional[TurnRecord] = None
+        self._t_llm = None
+        self._t_tool = None
+        self._tok = [0, 0]
+
+    def _emit(self, lines):
+        try:
+            self._sink(lines)
+        except Exception:
+            pass          # 观测失败不影响主循环
+
+    # ---- 生命周期 ----
+    def start_turn(self, turn: int):
+        with self._lock:
+            self._turn = TurnRecord(turn=turn, layer=self.run.layer,
+                                    t_start=round(self._clock(), 3))
+            self._t_llm = self._t_tool = None
+
+    def end_turn(self):
+        """把本轮指标交给 sink(一行 JSON); 无进行中的轮次则空转。"""
+        with self._lock:
+            turn, self._turn = self._turn, None
+            self._t_llm = self._t_tool = None
+        if turn is not None:
+            self.run.turns.append(turn)
+            self._emit([jsonl_line(turn.to_dict())])
+
+    def end_run(self, end_reason: str = ''):
+        with self._lock:
+            self.run.end_reason = str(end_reason or '')
+            self.run.ended_at = round(self._clock(), 3)
+            turn, self._turn = self._turn, None
+        if turn is not None:      # 循环被 break 时最后一轮可能没走 turn_after
+            self.run.turns.append(turn)
+            self._emit([jsonl_line(turn.to_dict())])
+        self._emit([jsonl_line(summarize(self.run))])
+
+    # ---- 计量 ----
+    def llm_start(self):
+        with self._lock:
+            self._t_llm = self._clock()
+
+    def llm_end(self):
+        with self._lock:
+            t0, self._t_llm = self._t_llm, None
+            if self._turn is not None and t0 is not None:
+                self._turn.model_wait_s += max(0.0, self._clock() - t0)
+                self._turn.in_tok = self._tok[0]
+                self._turn.out_tok = self._tok[1]
+            self._tok = [0, 0]
+
+    def note_tokens(self, in_tok: int, out_tok: int):
+        """llmcore 用量观察者回调。同一轮一次请求分多事件上报 → 取最大值避免重复计。"""
+        with self._lock:
+            self._tok[0] = max(self._tok[0], int(in_tok or 0))
+            self._tok[1] = max(self._tok[1], int(out_tok or 0))
+
+    def set_resend_chars(self, n: int):
+        with self._lock:
+            if self._turn is not None:
+                self._turn.resend_chars = int(n or 0)
+
+    def tool_start(self):
+        with self._lock:
+            self._t_tool = self._clock()
+
+    def tool_end(self, name: str, data, verify_s: Optional[float]):
+        verdict = extract_verdict(data)
+        with self._lock:
+            t0, self._t_tool = self._t_tool, None
+            exec_s = max(0.0, self._clock() - t0) if t0 is not None else 0.0
+            if self._turn is not None:
+                self._turn.tool_exec_s += exec_s
+                if verify_s is not None:
+                    self._turn.verify_wait_s += verify_s
+                self._turn.tool_records.append(
+                    ToolRecord(name=name, exec_s=exec_s, verify_s=verify_s,
+                               verdict=verdict, verifier=attrib_verifier(name, verdict)))
+
+    def add_escalation(self, reason: str):
+        with self._lock:
+            if self._turn is not None:
+                self._turn.escalations.append(str(reason)[:80])
