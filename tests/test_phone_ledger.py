@@ -56,7 +56,7 @@ class EquivalenceTest(unittest.TestCase):
 class RepetitionHintTest(unittest.TestCase):
     def test_five_equivalent_taps_with_exact_evidence_state_no_effect(self):
         hint = pl.repetition_hint(n_taps(5, exact=True))
-        self.assertIn("逐次完全一致", hint)
+        self.assertIn("逐次无可观察变化", hint)
         self.assertIn("没有产生可观察效果", hint)
 
     def test_repetition_without_exact_evidence_asks_to_compare_not_asserts(self):

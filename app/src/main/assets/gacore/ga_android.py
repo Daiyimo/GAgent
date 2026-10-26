@@ -202,6 +202,8 @@ def consume_file(dr, file):
 class GenericAgentHandler(BaseHandler):
     '''Generic Agent 工具库，包含多种工具的实现。工具函数自动加上了 do_ 前缀。实际工具名没有前缀。'''
     def __init__(self, parent, last_history=None, cwd='./temp'):
+        phone_ledger.ACTIVE.clear()   # 任务边界: 动作账本不跨任务存活。上个任务卡死的尾巴(等价+aborted)会让
+                                      # 新任务第一次动作直接被判 aborted 不下发, 并注入陈旧 [LOOP-GUARD](评审 C1 实证)
         self.parent = parent
         self.working = {}
         self.cwd = cwd;  self.current_turn = 0

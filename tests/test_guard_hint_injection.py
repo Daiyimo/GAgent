@@ -61,3 +61,34 @@ class GuardHintInjectionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaskBoundaryLedgerTest(unittest.TestCase):
+    """C1: 账本跨任务不清空会毒化下一任务——handler 构造即任务边界, 必须清账。"""
+
+    def setUp(self):
+        phone_ledger.ACTIVE.clear()
+        self.addCleanup(phone_ledger.ACTIVE.clear)
+
+    def _stuck_tail(self):
+        for _ in range(5):
+            phone_ledger.ACTIVE.append(phone_ledger.ActionRecord(
+                kind="tap", point=(500, 1000), screen=(1200, 2670),
+                outcome={"verdict": "settled", "screenshot_exactly_same": True, "diff_pct": 0.0}))
+        phone_ledger.ACTIVE.append(phone_ledger.ActionRecord(
+            kind="tap", point=(500, 1000), screen=(1200, 2670),
+            outcome={"verdict": "aborted", "screenshot_exactly_same": True}))
+
+    def test_new_handler_clears_previous_task_ledger(self):
+        self._stuck_tail()
+        self.assertTrue(phone_ledger.ACTIVE.recent())
+        ga_android.GenericAgentHandler(types.SimpleNamespace(task_dir=None, verbose=False))
+        self.assertEqual(phone_ledger.ACTIVE.recent(), [])
+
+    def test_stale_hint_not_injected_into_new_task(self):
+        self._stuck_tail()
+        h = ga_android.GenericAgentHandler(types.SimpleNamespace(task_dir=None, verbose=False))
+        self.assertIsNone(phone_ledger.ACTIVE.hint())
+        out = h.turn_end_callback(types.SimpleNamespace(content="<summary>新任务</summary>"),
+                                  [{"tool_name": "no_tool", "args": {}}], [], 1, "BASE", {})
+        self.assertNotIn("[LOOP-GUARD]", out)

@@ -20,6 +20,20 @@ publicly released. Exact artifacts and acceptance belong to their release record
   重发历史大小与每轮判定来源，附 P50/P95 与四个互斥的判定计数器。只观察，不增加模型调用与
   设备操作，写盘失败不影响任务。两处空白如实记录而非粉饰：手机动作今天都在模型的 code_run
   里，工具级判定暂不可归因（计入 `tools_no_verdict`）；`layer` 只有现存的 L4，背后还没有路由器。
+- Device observation: `droid.dump_state()` returns `{nodes, degraded, pkg}` so an empty
+  tree can be told apart from a policy blank (sensitive app) and an unresolved foreground;
+  `dump()` delegates to it and keeps its list contract, and the `droid_dump_blank` metric
+  event is unchanged. SPEC W5.
+  树观测带降级原因码：`dump_state()` 区分策略置空/前台未解析/真空树；`dump()` 契约不变。
+- Loop guard (SPEC W3): a process-wide action ledger (`phone_ledger`) records verified
+  tap/swipe/paste/scroll outcomes; the execution boundary substitutes bounded recoveries
+  (tap: WAIT→BACK→HOME→ABORT; input: REFOCUS→RETRY→ABORT), refuses repeated no-effect
+  actions from the fifth equivalent attempt, and each turn injects a `[LOOP-GUARD]` hint
+  when equivalence or a stuck screen is detected. Only verified facts are recorded;
+  productive scrolls and screen changes reset the counters. The ledger is cleared at every
+  task boundary, recovery is skipped under a policy-sensitive foreground, and "no
+  observable change" uses the same ≤0.05% band as the existing miss hint.
+  循环守卫：动作账本 + 三档干预（提示/改写/拒绝），全部有界；只落已验证事实；任务边界清账。
 
 ## 2.33.8 / 141 — 2026-10-25 (open-source prerelease / 开源预发布)
 

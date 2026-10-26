@@ -48,6 +48,24 @@ class _BusCase(unittest.TestCase):
         for r in records:
             droid._LEDGER.append(r)
 
+    def _patch_paste(self, verdict):
+        # 按验证阶段名分发: dump 要 list(编辑框节点), ocr_classify 要 dict(判定), shot 走真截屏(已 patch); 其余走默认值
+        def _fake_verify(name, fn, errors, default=None):
+            if name == "dump":
+                return [{"t": "", "edit": 1, "x": 600, "y": 2300, "b": "100,2200,1100,2300"}]
+            if name == "ocr_classify":
+                return dict(verdict)
+            if name == "shot":
+                return fn()
+            return default
+        patches = [
+            patch.object(droid, '_sensitive_fg', return_value=False),
+            patch.object(droid, 'ocr_text', return_value=("", 0.0)),
+            patch.object(droid, '_try_paste_verification', side_effect=_fake_verify),
+        ]
+        for p in patches:
+            p.start(); self.addCleanup(p.stop)
+
 
 class TapLedgerTest(_BusCase):
     def test_tap_records_settled_with_exact_evidence(self):
@@ -195,24 +213,6 @@ class ScrollLedgerTest(_BusCase):
 class PasteLedgerTest(_BusCase):
     """paste 落账: hit=新证据(断尾); 明确未上屏=可证明无效果(进阶梯); 敏感/未解析=uncertain。"""
 
-    def _patch_paste(self, verdict):
-        # 按验证阶段名分发: dump 要 list(编辑框节点), ocr_classify 要 dict(判定), shot 走真截屏(已 patch); 其余走默认值
-        def _fake_verify(name, fn, errors, default=None):
-            if name == "dump":
-                return [{"t": "", "edit": 1, "x": 600, "y": 2300, "b": "100,2200,1100,2300"}]
-            if name == "ocr_classify":
-                return dict(verdict)
-            if name == "shot":
-                return fn()
-            return default
-        patches = [
-            patch.object(droid, '_sensitive_fg', return_value=False),
-            patch.object(droid, 'ocr_text', return_value=("", 0.0)),
-            patch.object(droid, '_try_paste_verification', side_effect=_fake_verify),
-        ]
-        for p in patches:
-            p.start(); self.addCleanup(p.stop)
-
     def test_paste_hit_records_evidence_new(self):
         self._patch_paste({"hit": True})
         ret = droid.paste("hello")
@@ -254,3 +254,84 @@ class PasteLedgerTest(_BusCase):
             ret = droid.paste("hello")
         self.assertTrue(ret.get("needs_gui_paste"))
         self.assertEqual(phone_ledger.ACTIVE.recent()[-1].outcome["verdict"], "uncertain")
+
+
+class NoEffectBandTest(_BusCase):
+    """I1: 强证据档用「无可观察变化」带(≤0.05%, 与文件内既有 miss 阈值一致), 不用像素全等——
+    状态栏时钟跳字≈0.009%, 全等判据会让改写/拒绝两档在有时钟的页面上永不触发。"""
+
+    def test_clock_tick_page_still_gets_ladder(self):
+        # 状态栏时钟跳字≈0.009%: 每条记录都算"无可观察变化", 第3次等价点击仍被改写
+        self.diff = "0.009% changed"
+        droid.tap(500, 1000)
+        droid.tap(500, 1000)
+        ret = droid.tap(500, 1000)
+        self.assertEqual(ret.get("recovered"), "WAIT")
+
+    def test_record_band_classification(self):
+        self.diff = "0.009% changed"
+        droid.tap(500, 1000)
+        self.assertTrue(phone_ledger.ACTIVE.recent()[-1].outcome["screenshot_exactly_same"])
+        self.diff = "0.060% changed"
+        droid.tap(600, 1300)
+        self.assertFalse(phone_ledger.ACTIVE.recent()[-1].outcome["screenshot_exactly_same"])
+
+    def test_clock_tick_page_still_gets_reject(self):
+        self.diff = "0.009% changed"
+        for _ in range(4):
+            droid.swipe(600, 2000, 600, 800)
+        ret = droid.swipe(600, 2000, 600, 800)
+        self.assertEqual(ret.get("rejected"), "repeated_no_effect")
+
+
+class SensitiveGuardTest(_BusCase):
+    """I2: 策略敏感 App(act=gui)下恢复档不得自主注入 BACK/HOME——只到拒绝/ABORT, 不自主导航。"""
+
+    def _sensitive(self):
+        return patch.object(droid, '_sensitive_fg', return_value=True)
+
+    def test_sensitive_fg_skips_recovery_rung(self):
+        self.seed([_settled(), _settled()])
+        with self._sensitive():
+            ret = droid.tap(500, 1000)
+        self.assertNotIn("recovered", ret)
+        self.assertIn("tap", [a.get("op") for a in self.acts])     # 未到拒绝窗口, 正常派发
+        self.assertNotIn("back", [a.get("op") for a in self.acts])
+        self.assertNotIn("home", [a.get("op") for a in self.acts])
+
+    def test_sensitive_fg_still_rejects_at_window(self):
+        self.seed([_settled() for _ in range(4)])
+        with self._sensitive():
+            ret = droid.tap(500, 1000)
+        self.assertEqual(ret.get("rejected"), "repeated_no_effect")
+        self.assertEqual(self.acts, [])
+
+    def test_sensitive_fg_never_dispatches_back_or_home(self):
+        self.seed([_settled() for _ in range(6)])
+        with self._sensitive():
+            for _ in range(3):
+                droid.tap(500, 1000)
+        ops = [a.get("op") for a in self.acts]
+        self.assertNotIn("back", ops)
+        self.assertNotIn("home", ops)
+
+
+class PasteRetryRungTest(_BusCase):
+    """M1 的测试半边: RETRY 档放行后再失败必须推进到 ABORT(droid 层锁定最 subtle 的路径)。"""
+
+    def _failed_pastes(self, n):
+        for _ in range(n):
+            phone_ledger.ACTIVE.append(phone_ledger.ActionRecord(
+                kind="paste", value="hello", screen=(1200, 2670),
+                outcome={"verdict": "settled", "screenshot_exactly_same": True, "diff_pct": 0.0}))
+
+    def test_retry_rung_dispatches_then_aborts(self):
+        self._failed_pastes(2)                      # 第 3 次attempt → RETRY(放行)
+        self._patch_paste({"hit": False})
+        ret = droid.paste("hello")
+        self.assertIn("paste", [a.get("op") for a in self.acts])
+        r = phone_ledger.ACTIVE.recent()[-1]
+        self.assertTrue(r.outcome.get("screenshot_exactly_same"))   # 放行后又失败=可证明无效果
+        ret2 = droid.paste("hello")                 # 第 4 次attempt → ABORT
+        self.assertTrue(ret2.get("aborted"))
+        self.assertEqual([a.get("op") for a in self.acts].count("paste"), 1)

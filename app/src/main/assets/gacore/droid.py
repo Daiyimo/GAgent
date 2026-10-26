@@ -408,6 +408,10 @@ def capture(q=None):
 def _new_record(kind, point=(), point2=(), value="", screen=()):
     return phone_ledger.ActionRecord(kind=kind, point=point, point2=point2, value=value, screen=screen)
 
+def _no_effect(pct):
+    """「无可观察变化」唯一判据(与既有 tap/swipe miss 提示同口径): 时钟跳字/JPEG 噪声都在带内。"""
+    return pct <= phone_ledger.EXACT_PCT
+
 def _settle(rec, **outcome):
     """动作结算落账。铁律: 只落已验证事实(verdict/diff_pct/exact_same), 缺省字段的记录不计入判定。"""
     if rec is not None:
@@ -417,7 +421,9 @@ def _settle(rec, **outcome):
 
 def _pre_dispatch(rec):
     """下发前守卫: 恢复级(系统改写动作)优先, 其次拒绝级; None=放行。只消费已结算记录, 不猜未落地结果。
-    rec 是待发动作(无证据): 阶梯/拒绝把它算作第 N 次等价, 已结算部分仍需逐次一致的强证据。"""
+    rec 是待发动作(无证据): 阶梯/拒绝把它算作第 N 次等价, 已结算部分仍需逐次一致的强证据。
+    策略敏感前台(微信 visual-only/未解析 fail-closed)跳过恢复档: BACK/HOME/REFOCUS 是模型从未请求的
+    自主导航/注入, 与该策略"少做+先问"的姿态相悖——只保留拒绝/ABORT(拒绝不注入任何事件)。"""
     records = _LEDGER.recent(16) + [rec]
     if rec.kind in ("tap", "longpress"):
         recovery = phone_ledger.click_recovery(records, pending=rec)
@@ -425,6 +431,8 @@ def _pre_dispatch(rec):
         recovery = phone_ledger.type_recovery(records, pending=rec)
     else:
         recovery = None
+    if recovery and _sensitive_fg():
+        recovery = None                   # 惰性判定: 只在恢复档真要吃触发时才付一次 ping
     if recovery == "ABORT":
         return {"abort": True}
     if recovery:
@@ -450,7 +458,7 @@ def _apply_guard(rec, guard, label):
             pct = float(_img_diff_str(before, shot()).split("%", 1)[0].split()[-1])
         except Exception:
             pct = 100.0
-        _settle(rec, verdict="recovered", recovery=action, diff_pct=pct, screenshot_exactly_same=pct == 0.0)
+        _settle(rec, verdict="recovered", recovery=action, diff_pct=pct, screenshot_exactly_same=_no_effect(pct))
         return {"ok": 1, "recovered": action, "diff": "%.3f%%" % pct,
                 "hint": "循环守卫: 检测到连续等价的无效%s, 已代为执行 %s。请重新观察当前屏幕再决定下一步, 不要原样重发同一动作。" % (label, action)}
     _settle(rec, verdict="rejected", screenshot_exactly_same=True)
@@ -482,7 +490,7 @@ def tap(x, y, verify=True, wait=1.0, human=False, *, screen=None):
         ret["hint"] = "tap后屏幕变化很小；可能点到非热区，或前台有弹窗/浮层导致后层页面不响应。请看截图/diff后再重试。"
         _track("droid_tap_miss", {"diff_pct": round(pct, 3)})   # 只在验证失败时上报(自限量): 手机操控版"中止率", 与 a11y_act_stats 的 tap 总数配对算命中率
     ret["fg"] = _fg()
-    _settle(rec, verdict="settled", diff_pct=pct, screenshot_exactly_same=pct == 0.0, fg=ret["fg"])
+    _settle(rec, verdict="settled", diff_pct=pct, screenshot_exactly_same=_no_effect(pct), fg=ret["fg"])
     return ret
 def ui_snapshot(package):
     """单窗口的受保护快照；不支持此接口的旧 APK 必须回退，不能用 dump 冒充。"""
@@ -540,7 +548,7 @@ def swipe(x1, y1, x2, y2, dur=300, verify=True, wait=0.6, *, screen=None):
         ret["hint"] = "swipe后屏幕变化很小；可能没滚成/没拖动，或列表已在端点。请重新观察当前内容再决定下一步，勿原样重发同一手势。"
         _track("droid_swipe_miss", {"diff_pct": round(pct, 3)})   # 与 droid_tap_miss 同款自限量上报, 配对算手势命中率
     ret["fg"] = _fg()
-    _settle(rec, verdict="settled", diff_pct=pct, screenshot_exactly_same=pct == 0.0, fg=ret["fg"])
+    _settle(rec, verdict="settled", diff_pct=pct, screenshot_exactly_same=_no_effect(pct), fg=ret["fg"])
     return ret
 
 

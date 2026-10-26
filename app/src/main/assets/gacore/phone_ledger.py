@@ -15,6 +15,9 @@ from collections import deque
 from dataclasses import dataclass, field
 
 EQUIV_TOLERANCE = 40          # 0-1000 归一化域欧氏距离容差(≈1080p 43px; 本机 1200 宽≈48px)
+EXACT_PCT = 0.05              # "无可观察变化"带: 与 droid 既有 miss 阈值(pct<0.05)同口径。
+                              # 状态栏时钟跳字≈0.009%、JPEG 量化噪声都落在带内→算无效果;
+                              # 像素全等会让改写/拒绝两档在有时钟/动画的页面上永不触发(评审 I1)。
 REPETITION_WINDOW = 5         # 等价动作计数窗口
 REPETITION_THRESHOLD = 5      # 窗口内等价动作 ≥5 → 提示
 TYPE_WINDOW = 5
@@ -136,7 +139,7 @@ def repetition_hint(records):
     if n >= REPETITION_THRESHOLD:
         strong = tail[-REPETITION_THRESHOLD:] and all(r.exact_same for r in tail[-REPETITION_THRESHOLD:])
         if strong:
-            return (f"最近 {n} 次动作互为等价且前后截图逐次完全一致，说明该动作没有产生可观察效果。"
+            return (f"最近 {n} 次动作互为等价且前后截图逐次无可观察变化，说明该动作没有产生可观察效果。"
                     "请先比较动作前后截图，换一个目标或策略，不要原样重发。")
         return ("检测到最近多次动作互为等价。请先比较动作前后截图核对上一步是否生效，"
                 "不能仅根据动作意图判断它是否生效；若无变化请切换策略。")
