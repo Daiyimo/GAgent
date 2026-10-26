@@ -3,7 +3,7 @@
   "type": "function",
   "function": {
    "name": "code_run",
-   "description": "Code executor. Prefer python (in-process exec). Multi-call OK, use script param. Reply code block is executed if no script arg; prefer for single call to avoid escaping. No hardcoding bulk data",
+   "description": "Code executor. Prefer python (in-process exec). ALWAYS pass code in the 'script' arg. The reply code block is only a fallback when script is absent (must be a ```python-tagged block), and this tool call must still be made — replying with code without calling this tool executes nothing (the turn is wasted). No hardcoding bulk data",
    "parameters": {
     "type": "object",
     "properties": {

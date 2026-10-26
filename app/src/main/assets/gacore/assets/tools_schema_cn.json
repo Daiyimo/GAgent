@@ -3,7 +3,7 @@
   "type": "function",
   "function": {
    "name": "code_run",
-   "description": "代码执行器。优先使用python。支持Multi-call，并行时用script参数。无script参数时正文代码块会被执行，单次调用优先使用以免转义。禁硬编码大量数据",
+   "description": "代码执行器。优先 python(进程内 exec)。**代码一律放进 script 参数**。仅当没有 script 参数时才会取回复正文里带 python 标签的 ```python 代码块作为兜底, 且这次工具调用仍然必须发——只在回复里写代码而不调用本工具, 代码不会执行(该轮作废)。禁止在代码里硬编码大量数据。",
    "parameters": {
     "type": "object",
     "properties": {

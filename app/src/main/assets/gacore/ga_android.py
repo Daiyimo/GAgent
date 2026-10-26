@@ -219,7 +219,10 @@ class GenericAgentHandler(BaseHandler):
     def _extract_code_block(self, response, code_type):
         code_type = {'python':'python|py', 'powershell':'powershell|ps1|pwsh', 'bash':'bash|sh|shell'}.get(code_type, re.escape(code_type))
         matches = re.findall(rf"```(?:{code_type})\n(.*?)\n```", response.content, re.DOTALL)
-        return matches[-1].strip() if matches else None
+        if matches: return matches[-1].strip()
+        # 兜底: 无语言标签的裸围栏(模型高频发; 旧正则只认带标签的→提取失败→整轮作废, 实证连废2轮≈19s)
+        bare = re.findall(r"```\n(.*?)\n```", response.content, re.DOTALL)
+        return bare[-1].strip() if bare else None
 
     def do_code_run(self, args, response):
         '''执行代码片段，有长度限制，不允许代码中放大量数据，如有需要应当通过文件读取进行。'''
@@ -227,7 +230,13 @@ class GenericAgentHandler(BaseHandler):
         code = args.get("code") or args.get("script")
         if not code:
             code = self._extract_code_block(response, code_type)
-            if not code: return StepOutcome("[Error] Code missing. Must use reply code block or 'script' arg.", next_prompt="\n")
+            if not code:
+                return StepOutcome(
+                    "[Error] code_run 被调用但既没有 'script' 参数, 回复里也没有 ```python 代码块。"
+                    "代码必须二选一: ①(推荐)放进本次工具调用的 script 参数; "
+                    "②或在本条回复正文附一个带 python 标签的 ```python 代码块。"
+                    "注意: 只在回复里写代码而不发这次工具调用, 代码不会被执行(该轮直接作废)。",
+                    next_prompt="\n")
         try: timeout = int(args.get("timeout", 60))
         except: timeout = 60
         raw_path = os.path.join(self.cwd, args.get("cwd", './'))
