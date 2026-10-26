@@ -82,7 +82,13 @@ def _remote_model_path(model_path):
     """PC 调试时把本机模型路径映射到当前 APK 默认私有目录；手机端保持原样。"""
     if not _is_pc():
         return str(model_path)
-    name = os.path.basename(str(model_path).replace("\\", "/"))
+def _remote_model_path(model_path):
+    p = str(model_path).replace("\\", "/")
+    if p.startswith("/data/user/"):
+        return p                      # 设备侧绝对路径(App 内 ppocr_engine/detector_models 传的正是它):
+                                     # 包名与子目录(user_models/ 等)都在路径里, 原样透传, 禁用 GA_PACKAGE 重建
+                                     # (旧实现丢弃目录+默认包名重建 → debug 包全部 model not found, 本地视觉整链死掉)
+    name = os.path.basename(p)
     if not name:
         raise ValueError("empty model path")
     return "/data/user/0/" + os.environ.get("GA_PACKAGE", "io.github.shenhaostu.gagent") + "/files/ga/models/ui_detect_v1/models/" + name
@@ -134,7 +140,13 @@ def _fg():
     try: return ping().get("pkg", "")
     except Exception: return ""
 
-_SELF_PKG = os.environ.get("GA_PACKAGE", "io.github.shenhaostu.gagent")   # getWindows 已排除 GA 自身: 观察到它=抖动, 不是真前台(phone_use.md §1 "直接重查")
+def _self_package():
+    """GA 自身包名: 优先从模块路径(/data/user/0/<pkg>/files/ga)推导——debug/release 通吃。
+    不再依赖无人设置的 GA_PACKAGE(旧默认值是正式包名, debug 包会把自身当前台, 引发 launch 后 ping 异常)。"""
+    m = re.match(r"^/data/user/\d+/([^/]+)/files", _DIR.replace("\\", "/"))
+    return m.group(1) if m else os.environ.get("GA_PACKAGE", "io.github.shenhaostu.gagent")
+
+_SELF_PKG = _self_package()   # getWindows 已排除 GA 自身: 观察到它=抖动, 不是真前台(phone_use.md §1 "直接重查")
 
 def _resolve_fg(pkg=""):
     """把一次前台观察解析成可信包名; 空串/GA 自身视为未解析 → 有界重查; 仍未解析返回 ""。
