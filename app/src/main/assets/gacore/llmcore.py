@@ -178,7 +178,10 @@ def _parse_claude_sse(resp_lines):
             stop_reason = delta.get("stop_reason", stop_reason)
             out_usage = evt.get("usage", {})
             out_tokens = out_usage.get("output_tokens", 0)
-            if out_tokens: print(f"[Output] tokens={out_tokens} stop_reason={stop_reason}")
+            if out_tokens:
+                print(f"[Output] tokens={out_tokens} stop_reason={stop_reason}")
+                # Claude 流式 output_tokens 不经 _record_usage; 只补输出, 输入仍由 message_start 上报
+                _emit_usage(0, out_tokens, 0)
         elif evt_type == "message_stop": got_message_stop = True
         elif evt_type == "error":
             err = evt.get("error", {})
@@ -306,6 +309,25 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
                 blocks.append({"type": "tool_use", "id": bid, "name": tc["name"], "input": inp})
         return blocks
 
+_USAGE_OBSERVERS = []   # 只观察消费者(如 run_metrics): 每次收到服务商用量即回调; 异常吞掉, 不影响解析
+
+
+def add_usage_observer(fn):
+    """注册用量观察者 fn(in_tok, out_tok, cached_tok)。同一 fn 只注册一次。
+    存在原因: _record_usage 原先只 print, token 无法按 turn 归集(SPEC Part 4.6)。"""
+    if fn not in _USAGE_OBSERVERS:
+        _USAGE_OBSERVERS.append(fn)
+
+
+def _emit_usage(inp, out, cached=0):
+    """把已归一的用量发给观察者; 观察者出错绝不影响协议解析。"""
+    for fn in list(_USAGE_OBSERVERS):
+        try:
+            fn(int(inp or 0), int(out or 0), int(cached or 0))
+        except Exception:
+            pass
+
+
 def _record_usage(usage, api_mode):
     if not usage: return
     if api_mode == 'responses':
@@ -313,14 +335,18 @@ def _record_usage(usage, api_mode):
         inp = usage.get("input_tokens", 0); out = usage.get("output_tokens", 0)
         print(f"[Cache] input={inp} cached={cached}")
         if out: print(f"[Output] tokens={out}")
+        _emit_usage(inp, out, cached)
     elif api_mode == 'chat_completions':
         cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
         inp = usage.get("prompt_tokens", 0); out = usage.get("completion_tokens", 0)
         print(f"[Cache] input={inp} cached={cached}")
         if out: print(f"[Output] tokens={out}")
+        _emit_usage(inp, out, cached)
     elif api_mode == 'messages':
         ci, cr, inp = usage.get("cache_creation_input_tokens", 0), usage.get("cache_read_input_tokens", 0), usage.get("input_tokens", 0)
         print(f"[Cache] input={inp} creation={ci} read={cr}")
+        # 计费口径与 kernel_adapter.patch_usage 一致: 缓存创建/读取都计入输入; cached 单列供缓存命中分析
+        _emit_usage(inp + ci + cr, out=usage.get("output_tokens", 0), cached=cr)
     
 def _parse_openai_json(data, api_mode="chat_completions"):
     blocks = []
