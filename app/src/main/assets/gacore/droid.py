@@ -55,12 +55,34 @@ import re
 import struct
 import sys
 import time
+from collections import deque
 import requests
 import bus_auth
 import run_guard   # 僵尸线程护栏: code_run 超时/被停后, 后台线程每次操作手机在 _act/adb_shell 被拒, 不再驱动整机
 import run_metrics   # 只观测: 动作后验计时打点(SPEC Phase 0); 不参与任何门禁/几何判定
 import phone_ledger   # 动作账本与三档防循环(SPEC W3): 纯函数模块; droid 落账+执行边界守卫, agent 侧(ga_android)读 hint
 _LEDGER = phone_ledger.ACTIVE   # 进程级共享账本: 与 ga_android 每轮提示注入同一实例
+
+# ---- operation trace(SPEC L1 录制源): 每次设备操作带紧凑观测快照, recipe_record 据此机械派生配方 ----
+_TRACE = deque(maxlen=64)
+_LAST_OBS = None                # 最近一次观测(dump/look 更新); 动作落账时附带, 供定位器推导
+
+
+def _compact_obs(obs, cap=120):
+    """观测紧凑快照: 只留定位器推导所需字段(t/d/cls/b、label/bbox、screen、pkg)。"""
+    if not obs:
+        return None
+    nodes = [{"t": n.get("t") or "", "d": n.get("d") or "", "cls": n.get("cls") or "",
+              "b": n.get("b") or ""} for n in (obs.get("nodes") or [])[:cap]]
+    dets = [{"label": d.get("label") or "", "cls": d.get("cls") or "", "bbox": d.get("bbox")}
+            for d in (obs.get("detections") or [])[:cap]]
+    return {"nodes": nodes, "detections": dets,
+            "screen": obs.get("screen"), "pkg": obs.get("pkg")}
+
+
+def _trace(kind, args=None, result=None, obs="auto"):
+    _TRACE.append({"kind": kind, "args": args or {}, "result": result or {},
+                   "obs": _LAST_OBS if obs == "auto" else obs, "ts": time.time()})
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 BUNDLE = os.path.join(_DIR, "models", "ui_detect_v1")  # 管线py+onnx 捆绑目录
@@ -338,7 +360,12 @@ def dump_state(full=False):
 
 def dump(full=False):
     """树观测(纯 list 契约, 历史语义不变): 敏感/未解析置空=[] 信号, 上层转视觉。需要原因码用 dump_state()。"""
-    return dump_state(full=full)["nodes"]
+    st = dump_state(full=full)
+    global _LAST_OBS
+    nodes = st["nodes"]
+    _LAST_OBS = {"nodes": nodes, "detections": [], "screen": None, "pkg": st.get("pkg")}
+    _trace("dump", result={"count": len(nodes)})
+    return nodes
 
 
 def _record_path(kind):
@@ -429,6 +456,11 @@ def _settle(rec, **outcome):
     if rec is not None:
         rec.outcome = outcome
         _LEDGER.append(rec)
+        _trace(rec.kind, args={"x": rec.point[0], "y": rec.point[1]} if rec.kind in ("tap", "longpress") else
+                             ({"x1": rec.point[0], "y1": rec.point[1], "x2": rec.point2[0], "y2": rec.point2[1]}
+                              if rec.kind == "swipe" else
+                              ({"value": rec.value} if rec.kind in phone_ledger.INPUT_KINDS else {})),
+               result={k: v for k, v in outcome.items() if k in ("diff_pct", "verdict", "fg")})
     return rec
 
 def _pre_dispatch(rec):
@@ -660,7 +692,11 @@ def look(conf=0.25, path=None, roi=None, cache=True, *, label=None):
     c.update(thumb=thumb, roi=(x1, y1, x2, y2), dets=[dict(d) for d in dets])
     if path:
         cv2.imwrite(path, img)
-    return _matching_labels(dets, label)
+    out = _matching_labels(dets, label)
+    global _LAST_OBS
+    _LAST_OBS = {"nodes": [], "detections": out, "screen": (W, H), "pkg": _fg()}
+    _trace("look", result={"count": len(out)})
+    return out
 
 
 def ask_vision(image_input, prompt="描述当前界面", **options):
@@ -1225,17 +1261,27 @@ def _paste_impl(text, verify=True, replace=False):
         return _paste_unavailable(ret, errors, hint)
     ret["hint"] = hint
     return ret
-def key(name="ENTER"): return _act(op="key", name=name)  # IME动作键, 仅ENTER(=搜索/发送/换行, 视输入框而定)
+def key(name="ENTER"):
+    r = _act(op="key", name=name)  # IME动作键, 仅ENTER(=搜索/发送/换行, 视输入框而定)
+    _trace("key", args={"name": name})
+    return r
 def launch(pkg, wait=1.0):
     # 免adb启动app。敏感 App(nofloat 策略)不起 GA 悬浮窗并收起已有悬浮窗: overlay 是 App 可观测的"自动化工具在场"信号(见 SENSITIVE_APPS 注释)
     nofloat = bool(SENSITIVE_APPS.get(pkg, {}).get("nofloat"))
     ret = _act(op="launch", pkg=pkg, nofloat=nofloat); ret["fg"] = _wait_fg(pkg, wait)
     if nofloat:
         ret["policy"] = "sensitive: visual-only; overlay follows user preference" + (", act=locked(零注入, 见 droid.sensitive_status())" if SENSITIVE_APPS[pkg].get("act") == "locked" else "")
+    _trace("launch", args={"pkg": pkg}, result={"pkg": ret.get("fg") or pkg})
     return ret
 def pkgs(filter=""): return _act(op="pkgs", filter=filter)["apps"]  # 列可启动app[{pkg,label}], filter模糊匹配包名/应用名如'美团'
-def back(): return _act(op="back")
-def home(): return _act(op="home")
+def back():
+    r = _act(op="back")
+    _trace("back")
+    return r
+def home():
+    r = _act(op="home")
+    _trace("home")
+    return r
 def install_apk(path): return _act(op="install_apk", path=str(path))   # 装任意APK(APK工厂产物): 拉起系统安装器, 用户确认装机
 def notifications(): return _act(op="notifications")    # 下拉通知栏(AOSP 语义全局动作)
 def dismiss_shade(): return _act(op="dismiss_shade")    # 确定性收起通知栏/快捷设置(API31+ 全局动作; 低版本退化为 back)。用快捷设置(调亮度/开关)后必调:
@@ -1724,3 +1770,65 @@ def alarm_list():
     if isinstance(resp, dict):
         return resp.get("alarms", [])
     return resp or []
+
+
+# ---------------- L1 recipe: 录制与回放入口（SPEC Phase 1） ----------------
+
+def _recipe_store():
+    import recipe
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory", "recipes")
+    return recipe.RecipeStore(root)
+
+
+def recipe_record(hint=None):
+    """把本次任务的 operation trace 机械转成配方并落盘。零模型调用、可离线复现。"""
+    import recipe
+    r = recipe.trace_to_recipe(list(_TRACE), hint or {})
+    _recipe_store().save(r)
+    return r
+
+
+def recipe_run(hint=None):
+    """按提示回放配方(零模型调用)。无匹配/已 unstable 返回 None; 升级返回 ReplayResult 交上层走 L4。"""
+    import recipe
+    store = _recipe_store()
+    r = store.match(hint or {})
+    if r is None:
+        return None
+
+    def observe():
+        p = ping() or {}
+        nodes = dump() or []
+        dets = []
+        if not nodes:                      # 树不可用才走视觉(慢): 常见 S1 路径只 dump
+            try:
+                dets = look(cache=True) or []
+            except Exception:
+                dets = []
+        return {"nodes": nodes, "detections": dets,
+                "screen": (p.get("w"), p.get("h")), "pkg": p.get("pkg")}
+
+    def act(action, resolved):
+        k = action.get("kind")
+        if k == "tap" and resolved.get("point"):
+            return tap(*resolved["point"])
+        if k == "swipe":
+            d = action.get("direction") or "up"
+            ret = scroll(d) if d in ("up", "down", "left", "right") else scroll("up")
+            return {"diff_pct": 8.0 if ret.get("scrolled") else 0.0, "pkg": ret.get("pkg")}
+        if k == "paste":
+            return paste(action.get("value") or "")
+        if k == "launch":
+            ret = launch(action.get("pkg") or "")
+            return {"pkg": ret.get("fg") or action.get("pkg")}   # launch 的 fg 即前台证据
+        if k in ("back", "home"):
+            before = shot()                       # back/home 无自带后验: 用既有 diff 验证器补(不新造判定)
+            back() if k == "back" else home()
+            time.sleep(0.3)
+            return {"diff_pct": float(_img_diff_str(before, shot()).split("%", 1)[0].split()[-1])}
+        return {}
+
+    res = recipe.replay(r, observe, act)
+    if res.status == "escalated":
+        store.record_escalation(r.recipe_id)   # 不变量 4: 单任务两次升级 → unstable
+    return res
