@@ -49,7 +49,7 @@ Python 适合无手机 UI 依赖的计算或文件处理，不得用底层输入
 | --- | --- |
 | `ping()` / `screen()` | 前台包、无障碍、`w/h/rot` 等状态 / 当前 `(w,h)` |
 | `pkgs(关键词)` / `launch(包名)` | 候选为 `[{"pkg":"包名","label":"应用名"}]`，向 `launch` 传其中的 `pkg` 字符串；启动并返回观测到的前台，不自动安装 App |
-| `dump()` / `dump(full=True)` | 节点列表，文字为 `t`/`d`，中心为 `x/y`；完整边界 `b` 是逗号分隔字符串，类名为 `cls` |
+| `dump()` / `dump_state()` | `dump()` 返回节点列表（文字为 `t`/`d`，中心为 `x/y`，完整边界 `b` 是逗号分隔字符串，类名为 `cls`）；**`dump()` 为空时改调 `dump_state()`**，其 `degraded.reason` 区分三种成因：`sensitive_blank`=敏感置空（转视觉）、`tree_empty`=空壳/广告遮挡（`look()` 定位）、`unresolved_fg`=前台未解析（重查 ping）。**勿再把 `[]` 一律当敏感 App——非敏感 App 空 dump 只是空壳** |
 | `find(text, exact=False)` | 返回全部匹配节点；优先使用已有 `x/y`，不必手工解析边界 |
 | `tap_text(text, exact=False, idx=None)` | 唯一匹配才点；多个候选须依据当前界面消歧，不能随意取第一项 |
 | `shot()` | BGR 像素数组，供视觉函数使用；**`print(shot())` 只会输出数字，模型看不到图片** |
