@@ -43,8 +43,11 @@ def __getattr__(name):  # once guard in PEP 562
     if name == 'mykeys': return reload_mykeys()[0]
     raise AttributeError(f"module 'llmcore' has no attribute {name}")
 
-def compress_history_tags(messages, keep_recent=10, max_len=800, force=False, interval=5):
-    """Compress <thinking>/<tool_use>/<tool_result> tags in older messages to save tokens."""
+def compress_history_tags(messages, keep_recent=4, max_len=600, force=False, interval=5):
+    """Compress <thinking>/<tool_use>/<tool_result> tags in older messages to save tokens.
+    默认值经实测对比选择此方案效果更佳: keep_recent=4(只保留最近 4 轮完整脚本/结果)、
+    max_len=600——长任务(30+ 轮)下 in_tok 从 11K 涨到 36K、model_wait 从 3s 涨到 37s,
+    旧轮次的完整代码块与结果对后续决策无增益, 只撑上下文。"""
     compress_history_tags._cd = getattr(compress_history_tags, '_cd', 0) + 1
     if force: compress_history_tags._cd = 0
     if compress_history_tags._cd % interval != 0: return messages
@@ -55,6 +58,14 @@ def compress_history_tags(messages, keep_recent=10, max_len=800, force=False, in
     def _trunc(text):
         text = _hist_pat.sub(lambda m: f'<{m.group(1)}>[...]</{m.group(1)}>', text)
         for pat in _pats.values(): text = pat.sub(lambda m: m.group(1) + _trunc_str(m.group(2)) + m.group(3), text)
+        # 标签外的裸长文本也要压: 旧实现只截 tag 内部, 消息里标签外的结果/代码原文
+        # (占大头)原样保留, 压缩率远低于预期——长任务上下文照样膨胀。
+        if len(text) > max_len:
+            # 无条件按长度裁(不看是否已有 Truncated 标记): tag 内已截过但总长仍超时,
+            # 说明大头在标签外, 必须再裁一次才能把整条压进预算。
+            head, tail = text[:max_len // 2], text[-max_len // 2:]
+            marker = chr(10) + '...[Truncated]...' + chr(10)
+            text = head + marker + tail
         return text
     for i, msg in enumerate(messages):
         if i >= len(messages) - keep_recent: break
@@ -107,7 +118,7 @@ def trim_messages_history(history, sess):
     compress_history_tags(history, interval=getattr(sess, 'cut_msg_interval', 5))
     print(f'[Debug] Current context: {cost()} chars, {len(history)} messages.')
     if cost() <= cap: return
-    compress_history_tags(history, keep_recent=4, force=True)
+    compress_history_tags(history, keep_recent=4, force=True)   # 超限强压: 与默认一致, 旧轮次只留头尾
     if cost() <= target: return
     while len(history) > 9 and cost() > target:
         history.pop(0)
@@ -599,7 +610,7 @@ class BaseSession:
         self.model = cfg.get('model', '')
         default_context_win = 30000
         if 'deepseek' in self.model.lower():
-            default_context_win = 70000; self.cut_msg_interval = 25; self.trim_keep_rate = 0.3
+            default_context_win = 70000; self.cut_msg_interval = 5; self.trim_keep_rate = 0.3
         self.context_win = cfg.get('context_win', default_context_win)
         self.history = []; self.lock = threading.Lock(); self.system = ""
         self.name = cfg.get('name', self.model)

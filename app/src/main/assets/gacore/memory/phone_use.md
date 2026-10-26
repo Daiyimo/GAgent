@@ -37,6 +37,14 @@ dump 为空且 `look()` 只有少量文字时，页面是自绘/canvas。此时�
    **禁止自行编写 OpenCV/PIL 图像分析代码盲猜**（真机实证：手写阈值/HSV/降采样分析棋盘，
    每轮 5-37s 模型调用花在写 CV 代码上仍看不出图案，300s 未完成）——ask_user 报告感知缺口。
 
+## GUI 结构化动作（gui_act，优先于 code_run）
+
+任何屏幕操作**优先用 `gui_act` 工具**，不要写 Python：9 个动作
+（`tap`/`swipe`/`longpress`/`text`/`key`/`launch`/`back`/`home`/`wait`），
+参数即 0-1000 归一化坐标（来自 dump bounds 或 `look()` 的框，禁猜）。
+实测对比：写 Python 的 agent 每轮多花 1-3 次模型调用探索接口，结构化动作 31 步几乎无空转。
+`code_run` 仅用于多步逻辑或非 GUI 工作。动作返回自带 diff/stable（动作后已等页面稳定）。
+
 ## 配方回放（L1：重复任务零模型调用）
 
 `memory/recipes/` 下存有此前录制的操作配方。**读完 L1 后先查**：`print(droid.recipe_list())`

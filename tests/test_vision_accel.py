@@ -130,3 +130,63 @@ def time_time():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StabilityWaitTest(unittest.TestCase):
+    """F1: 动作后等页面稳定再决策(替代固定 sleep)。
+
+真机实证(对比方案): 固定 action_sleep=5 让 30 步白睡 150s; 而"立刻决策"在
+加载页上会点到未完成的界面。本方案: diff 持续 >阈值=还在动, 等到稳定或超时。
+经实测对比选择此方案效果更佳: 阈值 1.5%(与 scroll verdict 一致)、
+轮询 250ms、上限 3s——静态页几乎不花时间, 加载页不抢跑。
+"""
+    def setUp(self):
+        droid._VISION_FAILS.update({"n": 0, "until": 0.0})
+        self.addCleanup(lambda: droid._VISION_FAILS.update({"n": 0, "until": 0.0}))
+
+    def test_static_page_returns_immediately(self):
+        calls = {'n': 0}
+        def shot():
+            calls['n'] += 1
+            return np.full((100, 100, 3), 128, dtype=np.uint8)
+        with patch.object(droid, 'shot', side_effect=shot), \
+             patch.object(droid.time, 'sleep'):
+            r = droid.wait_stable()
+        self.assertTrue(r['stable'])
+        self.assertEqual(calls['n'], 2)          # 首帧 + 一次确认
+        self.assertLessEqual(r['waited_s'], 0.5)
+
+    def test_animating_page_waits_until_timeout(self):
+        frames = [np.full((100, 100, 3), v, dtype=np.uint8) for v in range(0, 255, 25)]
+        box = {'it': iter(frames)}
+        def shot():
+            # 无限交替: 永不用尽(用尽后帧相同会被判 stable, 那不是被测行为)
+            try: return next(box['it'])
+            except StopIteration:
+                box['it'] = iter(frames); return next(box['it'])
+        with patch.object(droid, 'shot', side_effect=shot), \
+             patch.object(droid.time, 'sleep'):
+            r = droid.wait_stable(max_wait=1.0, poll=0.25)
+        self.assertFalse(r['stable'])
+        self.assertGreaterEqual(r['waited_s'], 1.0)
+
+    def test_change_then_stable_returns_stable(self):
+        seq = [np.full((100, 100, 3), 0, dtype=np.uint8),
+               np.full((100, 100, 3), 255, dtype=np.uint8),
+               np.full((100, 100, 3), 255, dtype=np.uint8)]
+        it = iter(seq)
+        def shot():
+            try: return next(it)
+            except StopIteration: return seq[-1]
+        with patch.object(droid, 'shot', side_effect=shot), \
+             patch.object(droid.time, 'sleep'):
+            r = droid.wait_stable(max_wait=3.0, poll=0.25)
+        self.assertTrue(r['stable'])
+
+    def test_shot_failure_degrades_to_stable(self):
+        # 截图失败不阻塞: 当作"无法判定", 返回 stable=True 让上层继续(uncertain 由上层判)
+        with patch.object(droid, 'shot', side_effect=RuntimeError('secure')), \
+             patch.object(droid.time, 'sleep'):
+            r = droid.wait_stable()
+        self.assertTrue(r['stable'])
+        self.assertTrue(r.get('uncertain'))

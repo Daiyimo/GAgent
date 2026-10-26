@@ -2,6 +2,65 @@
  {
   "type": "function",
   "function": {
+   "name": "gui_act",
+   "description": "Phone GUI structured action. PREFERRED for any screen operation — no Python needed. Actions: tap/longpress {point:[x,y] 0-1000}; swipe {point1,point2,ms}; text {value, point?}; key {name:ENTER}; launch {pkg}; back; home; wait {seconds}. Coordinates are 0-1000 normalized (top-left origin). Point must come from the current observation (dump bounds or look() box), never guessed. One action per call. Use code_run only for multi-step logic or non-GUI work.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "tap",
+       "swipe",
+       "longpress",
+       "text",
+       "key",
+       "launch",
+       "back",
+       "home",
+       "wait"
+      ]
+     },
+     "point": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "description": "[x,y] 0-1000 normalized"
+     },
+     "point1": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      }
+     },
+     "point2": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      }
+     },
+     "ms": {
+      "type": "integer",
+      "description": "swipe/longpress duration"
+     },
+     "value": {
+      "type": "string",
+      "description": "text content / pkg / key name"
+     },
+     "seconds": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "action"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
    "name": "code_run",
    "description": "Code executor. Prefer python (in-process exec). ALWAYS pass code in the 'script' arg. The reply code block is only a fallback when script is absent (must be a ```python-tagged block), and this tool call must still be made — replying with code without calling this tool executes nothing (the turn is wasted). No hardcoding bulk data",
    "parameters": {

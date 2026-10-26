@@ -762,6 +762,37 @@ def ask_vision(image_input, prompt="描述当前界面", roi=None, max_pixels=No
     return result
 
 
+def wait_stable(max_wait=3.0, poll=0.25, diff_pct=1.5):
+    """动作后等页面稳定再进下一轮决策(替代固定 sleep)。
+
+    真机实证: 固定 action_sleep=5 让 30 步白睡 150s; 而"立刻决策"在加载页上
+    会点到未完成的界面。本方案: 相邻两帧 diff 持续 >diff_pct = 页面还在动,
+    轮询到稳定或超时。静态页两次截图即返回(~0.3s), 加载页最多等 max_wait。
+    返回 {stable, waited_s, uncertain}: 截图失败不阻塞, 记 uncertain 交上层判。
+    """
+    t0 = time.time()
+    try:
+        prev = shot()
+    except Exception:
+        return {'stable': True, 'waited_s': 0.0, 'uncertain': True}
+    waited = 0.0
+    while waited < max_wait:
+        time.sleep(poll)
+        waited = time.time() - t0
+        try:
+            cur = shot()
+        except Exception:
+            return {'stable': True, 'waited_s': waited, 'uncertain': True}
+        try:
+            pct = float(_img_diff_str(prev, cur).split('%', 1)[0].split()[-1])
+        except Exception:
+            return {'stable': True, 'waited_s': waited, 'uncertain': True}
+        if pct <= diff_pct:
+            return {'stable': True, 'waited_s': waited, 'uncertain': False}
+        prev = cur
+    return {'stable': False, 'waited_s': waited, 'uncertain': False}
+
+
 def screen():
     """(w, h): 当前朝向的屏幕像素尺寸(来自 ping). 相对布局判断用: y < 0.12h 顶栏区, y > 0.9h 底栏区; 禁止把任何绝对坐标写进记忆.
     GA 自己的悬浮胶囊/回答面板在 shot() 里已按邻近像素抹平, 不会出现在 OCR/检测结果中; 点击该区域会穿透到下方 App."""

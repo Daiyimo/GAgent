@@ -2,6 +2,65 @@
  {
   "type": "function",
   "function": {
+   "name": "gui_act",
+   "description": "Phone GUI structured action. PREFERRED for any screen operation — no Python needed. Actions: tap/longpress {point:[x,y] 0-1000}; swipe {point1,point2,ms}; text {value, point?}; key {name:ENTER}; launch {pkg}; back; home; wait {seconds}. Coordinates are 0-1000 normalized (top-left origin). Point must come from the current observation (dump bounds or look() box), never guessed. One action per call. Use code_run only for multi-step logic or non-GUI work.",
+   "parameters": {
+    "type": "object",
+    "properties": {
+     "action": {
+      "type": "string",
+      "enum": [
+       "tap",
+       "swipe",
+       "longpress",
+       "text",
+       "key",
+       "launch",
+       "back",
+       "home",
+       "wait"
+      ]
+     },
+     "point": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "description": "[x,y] 0-1000 normalized"
+     },
+     "point1": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      }
+     },
+     "point2": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      }
+     },
+     "ms": {
+      "type": "integer",
+      "description": "swipe/longpress duration"
+     },
+     "value": {
+      "type": "string",
+      "description": "text content / pkg / key name"
+     },
+     "seconds": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "action"
+    ]
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
    "name": "code_run",
    "description": "代码执行器。优先 python(进程内 exec)。**代码一律放进 script 参数**。仅当没有 script 参数时才会取回复正文里带 python 标签的 ```python 代码块作为兜底, 且这次工具调用仍然必须发——只在回复里写代码而不调用本工具, 代码不会执行(该轮作废)。禁止在代码里硬编码大量数据。",
    "parameters": {
