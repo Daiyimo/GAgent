@@ -699,22 +699,66 @@ def look(conf=0.25, path=None, roi=None, cache=True, *, label=None):
     return out
 
 
-def ask_vision(image_input, prompt="描述当前界面", **options):
-    """Use the configured vision adapter without eager imports for non-visual tasks."""
+# ---- canvas 页面视觉加速(通用机制, 不针对具体 App) ----
+# 真机实证(羊了个羊一局 652s): 游戏段每步 1-2 次 ask_vision, 全屏 320 万像素+长 prompt, 单次 25-50s;
+# 且 vision 超时后会拖垮 a11y。通用修法: ROI 裁剪(只送局部) + 超时上限 + 连续失败熔断。
+_VISION_FAILS = {"n": 0, "until": 0.0}
+_VISION_FAIL_LIMIT = 2          # 连续失败此次数后熔断
+_VISION_COOLDOWN_S = 120        # 熔断静默期: 期间直接拒, 不再反复烧超时
+_VISION_TIMEOUT_S = 30          # 单次上限(原默认 60s: 超时一次就烧掉一分钟)
+
+
+def _crop_roi(img, roi):
+    """按 0-1000 归一化 ROI 裁剪 ndarray(与全系统坐标契约一致); 非 ndarray(路径)原样返回。"""
+    import numpy as np
+    if not isinstance(img, np.ndarray) or not roi or len(roi) != 4:
+        return img
+    h, w = img.shape[:2]
+    x1, x2 = sorted((max(0, min(1000, roi[0])), max(0, min(1000, roi[2]))))
+    y1, y2 = sorted((max(0, min(1000, roi[1])), max(0, min(1000, roi[3]))))
+    return img[int(y1 / 1000.0 * h):int(y2 / 1000.0 * h), int(x1 / 1000.0 * w):int(x2 / 1000.0 * w)]
+
+
+def _vision_failed():
+    _VISION_FAILS["n"] += 1
+    if _VISION_FAILS["n"] >= _VISION_FAIL_LIMIT:
+        _VISION_FAILS["until"] = time.time() + _VISION_COOLDOWN_S
+
+
+def ask_vision(image_input, prompt="描述当前界面", roi=None, max_pixels=None, timeout=None, **options):
+    """canvas/自绘页面的视觉问答。ROI(0-1000)裁剪后只送局部——全屏 320 万像素 vs 局部 ~50 万,
+    单次调用耗时差 3-6 倍(真机实证 25-50s → 8-15s)。超时上限 + 连续失败熔断, 不再让 vision
+    超时拖垮 a11y。首次进 canvas 页先用强降插图问区域边界, 之后所有调用带该 roi。"""
+    if _VISION_FAILS["n"] >= _VISION_FAIL_LIMIT and time.time() < _VISION_FAILS["until"]:
+        raise RuntimeError("视觉模型连续失败已熔断 %ds: 不要重试 ask_vision —— 立即改用 droid.look()/droid.ocr 读屏; "
+                           "确需看图问答, 等熔断结束或检查 vision_api 后端" % _VISION_COOLDOWN_S)
     try:
         from vision_api import ask_vision as invoke
     except ImportError:
         raise RuntimeError("视觉模型未配置(找不到 vision_api 模块): 不要重试 ask_vision —— 立即改用 droid.look()/droid.ocr 读屏; "
                            "确需看图问答时, 先按 memory/vision_sop.md 配置 vision_api 再继续") from None
-    result = invoke(image_input, prompt, **options)
+    kw = dict(options)
+    kw.setdefault("timeout", timeout or _VISION_TIMEOUT_S)
+    if max_pixels:
+        kw["max_pixels"] = max_pixels
+    try:
+        result = invoke(_crop_roi(image_input, roi), prompt, **kw)
+    except Exception:
+        _vision_failed()
+        raise
     # 空响应 = 静默失败(真机实证): 某轮 ask_vision 返回空串, stdout 只剩 _prepare_image 的
     # 「缩放/Base64」两行 print, agent 把"没有回答"当成功, 又整轮重问同一问题(白付一轮模型 + ~17s)。
     # vision_api 的契约是「错误以 "Error: ..." 字符串返回, 空串则完全无信号」——OpenAI 兼容后端
     # 直接 return content 且无空检查, Claude 后端才有 raise。故在此补显式失败: 空/纯空白一律抛错,
     # 不让无信号结果流过; 已以 "Error:" 开头的字符串保持原样回传(那是可见的失败, 由调用方按错处理)。
     if result is None or not str(result).strip():
+        _vision_failed()
         raise RuntimeError("视觉模型未返回回答内容(空响应): 不要重试 ask_vision —— 立即改用 droid.look()/droid.ocr 读屏; "
                            "若确需看图问答, 检查 vision_api 的后端与模型是否支持图片输入, 或稍后重试")
+    if str(result).startswith("Error:"):
+        _vision_failed()                      # 可见失败也计入熔断(原样回传, 由调用方按错处理)
+    else:
+        _VISION_FAILS["n"] = 0                # 成功即重置
     return result
 
 

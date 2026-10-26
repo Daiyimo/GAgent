@@ -16,8 +16,17 @@ if str(_CORE) not in sys.path:
 
 
 @pytest.fixture(autouse=True)
-def _reset_phone_ledger():
+def _reset_module_state():
+    """重置 gacore 的模块级可变状态, 防止跨用例泄漏:
+    phone_ledger.ACTIVE(守卫账本) / droid._TRACE+_LAST_OBS(录制痕跡) / droid._VISION_FAILS(视觉熔断)。"""
     import phone_ledger
+    import droid
     phone_ledger.ACTIVE.clear()
+    droid._TRACE.clear()
+    droid._LAST_OBS = None
+    droid._VISION_FAILS.update({"n": 0, "until": 0.0})
     yield
     phone_ledger.ACTIVE.clear()
+    droid._TRACE.clear()
+    droid._LAST_OBS = None
+    droid._VISION_FAILS.update({"n": 0, "until": 0.0})

@@ -182,6 +182,7 @@ class VisionEntryTest(unittest.TestCase):
         # vision_api 契约: 错误以 "Error: ..." 字符串返回(可见), 空串则完全无信号 —— 必须显式失败。
         from types import SimpleNamespace
         for empty in ('', '   ', '\n\t', None):
+            droid._VISION_FAILS.update({"n": 0, "until": 0.0})   # 熔断是正交机制(见 test_vision_accel): 本测试只验空响应契约
             adapter = SimpleNamespace(ask_vision=lambda image, prompt, _v=empty, **kw: _v)
             with patch.dict(sys.modules, {'vision_api': adapter}):
                 with self.assertRaisesRegex(RuntimeError, '空响应'):

@@ -19,6 +19,21 @@ Python 适合无手机 UI 依赖的计算或文件处理，不得用底层输入
 
 原子能力层（Android 16+ 且 self-ADB 已连）：`droid.appfn_list()` 枚举本机注册的 AppFunction 能力（各 OS 注册不同，以实测返回为准，不预设清单）；命中注册能力（如商店搜索/安装、天气类服务）→ `droid.appfn_call(包名, '类全名#方法', {参数})` 优先于 GUI——零轮次、无坐标漂移、无 OCR 误差。未注册或调用失败的 App 回正常定位阶梯，不反复尝试；实测可用后才写进记忆，并注明它替代不了什么（如商店 `searchApp` 替代不了 GUI 浏览比较）。
 
+## 自绘/canvas 页面（游戏盘面、小程序画布、无树 App）的视觉纪律
+
+dump 为空且 `look()` 只有少量文字时，页面是自绘/canvas。此时视觉调用按以下纪律，
+**每一轮最多一次 `ask_vision`**：
+
+1. **先问边界，再问细节**：首次 `res = droid.ask_vision(droid.shot(), "可交互区域有哪些？各用屏幕宽高百分比给出边界", max_pixels=300000)`
+   （强降插图，几秒返回）；把边界换算成 0-1000 的 `roi` 记进 `update_working_checkpoint`。
+2. **之后一律带 roi**：`droid.ask_vision(droid.shot(), "<具体问题>", roi=[x1,y1,x2,y2])`——
+   只送局部，像素量降 3-6 倍，单次从 25-50s 降到 8-15s。禁止反复全屏提问。
+3. **能本地判断的不问 VLM**：点没点中（落点周边区域像素变化）、卡槽变没变（区域 diff）、
+   哪些格子图案相同（指纹比对）——用 `droid.tap()` 返回的 `diff` 和截图区域对比判断，
+   只有语义确认（"这是通关还是失败"）才问 VLM。
+4. **超时/熔断后禁止重试**：`ask_vision` 抛错（含"已熔断"）时立即改 `droid.look()`/`droid.ocr()`
+   读屏或 `ask_user`；vision 连续失败会熔断 120s，期间反复调用只会浪费时间。
+
 ## 配方回放（L1：重复任务零模型调用）
 
 `memory/recipes/` 下存有此前录制的操作配方。**读完 L1 后先查**：`print(droid.recipe_list())`
