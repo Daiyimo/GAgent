@@ -292,28 +292,41 @@ class GuiActSkipsRedundantWaitTest(unittest.TestCase):
         self.assertNotIn('[Error]', str(out.data))
 
     def test_point_actions_observe_before_acting(self):
-        # 预观测是 recipe locator 的唯一来源: 不喂它, gui_act 录出的配方 locator 全是 any
-        dumps = []
+        # 预观测是 recipe locator 的唯一来源: 不喂它, gui_act 录出的配方 locator 全是 any。
+        # 走 ensure_fresh_obs 而不是裸 dump: 模型刚 dump()/look() 过时观测仍有效, 不再重复取。
+        obs = []
         fake = types.SimpleNamespace(
             screen=lambda: (1200, 2670),
-            dump=lambda: dumps.append(1) or [],
+            ensure_fresh_obs=lambda: obs.append(1) or {'nodes': []},
             tap=lambda x, y: {'diff': 'diff: 0.01%'},
             swipe=lambda *a, **k: {'diff': 'diff: 0.01%'},
             wait_stable=lambda **kw: {'stable': True})
         with patch.dict(sys.modules, {'droid': fake}):
             self._run({'action': 'tap', 'point': [500, 250]})
             self._run({'action': 'swipe', 'point1': [500, 800], 'point2': [500, 200]})
-        self.assertEqual(len(dumps), 2)
+        self.assertEqual(len(obs), 2)
 
-    def test_non_point_actions_do_not_pay_for_an_observation(self):
+    def test_point_actions_fall_back_to_dump_when_helper_missing(self):
+        # 兼容: 打桩只提供 dump(旧行为)时也不能炸, 更不能不观测
         dumps = []
         fake = types.SimpleNamespace(
             screen=lambda: (1200, 2670),
             dump=lambda: dumps.append(1) or [],
+            tap=lambda x, y: {'diff': 'diff: 0.01%'},
+            wait_stable=lambda **kw: {'stable': True})
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = self._run({'action': 'tap', 'point': [500, 250]})
+        self.assertNotIn('[Error]', str(out.data))
+
+    def test_non_point_actions_do_not_pay_for_an_observation(self):
+        obs = []
+        fake = types.SimpleNamespace(
+            screen=lambda: (1200, 2670),
+            ensure_fresh_obs=lambda: obs.append(1) or {'nodes': []},
             back=lambda: None, home=lambda: None,
             key=lambda name: None, wait_stable=lambda **kw: {'stable': True})
         with patch.dict(sys.modules, {'droid': fake}):
             self._run({'action': 'back'})
             self._run({'action': 'home'})
             self._run({'action': 'key', 'value': 'ENTER'})
-        self.assertEqual(dumps, [])      # back/home/key 没有可定位的目标
+        self.assertEqual(obs, [])      # back/home/key 没有可定位的目标

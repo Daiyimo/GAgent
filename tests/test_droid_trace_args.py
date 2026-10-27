@@ -207,5 +207,94 @@ class ResetTraceTest(unittest.TestCase):
         self.assertIsNone(droid._LAST_OBS)
 
 
+class EnsureFreshObsTest(unittest.TestCase):
+    """gui_act 的预观测必须按需: 观测还有效时不该再 dump 一次。
+
+    真机实证: 39 轮任务里模型在 code_run 中用 look() 观测, 而 look() 同样更新
+    _LAST_OBS —— 原先 gui_act 每次 tap/swipe/longpress 都无条件先 dump 一次,
+    约 20 次各多付一次 a11y 往返。但"动作后必须重新观测"这条安全属性不能丢:
+    否则会用动作前的旧观测推导 recipe locator。"""
+
+    def setUp(self):
+        droid._TRACE.clear()
+        droid._LAST_OBS = None
+        droid._OBS_STALE = True
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        droid._TRACE.clear()
+        droid._LAST_OBS = None
+        droid._OBS_STALE = True
+
+    def _stub_dump(self, calls):
+        def _dump(full=False):
+            calls.append(1)
+            droid._LAST_OBS = {"nodes": [{"t": "x"}], "detections": [],
+                               "screen": None, "pkg": "p"}
+            droid._OBS_STALE = False
+            return [{"t": "x"}]
+        return _dump
+
+    def test_fresh_observation_is_not_refetched(self):
+        calls = []
+        with patch.object(droid, 'dump', self._stub_dump(calls)):
+            droid.ensure_fresh_obs()                 # 首次: 必须取
+            self.assertEqual(len(calls), 1)
+            droid.ensure_fresh_obs()                 # 观测仍有效: 不该再取
+            self.assertEqual(len(calls), 1)
+
+    def test_stale_observation_is_refetched(self):
+        calls = []
+        with patch.object(droid, 'dump', self._stub_dump(calls)):
+            droid.ensure_fresh_obs()
+            droid._OBS_STALE = True                  # 模拟动作已派发
+            droid.ensure_fresh_obs()
+            self.assertEqual(len(calls), 2)
+
+    def test_dispatch_marks_the_observation_stale(self):
+        """安全属性: 动作经 _act 派发后, 观测必须作废——否则会用旧观测推 locator。"""
+        calls = []
+        with patch.object(droid, 'dump', self._stub_dump(calls)), \
+             patch.object(droid, '_base', lambda: 'http://stub'), \
+             patch.object(droid, '_SESSION') as sess, \
+             patch.object(droid, '_check', lambda r: {}):
+            sess.post.return_value = _FakeResp({})
+            droid.ensure_fresh_obs()
+            self.assertEqual(len(calls), 1)
+            droid._act(op='tap', x=1, y=2)
+            with patch.object(droid, 'dump', self._stub_dump(calls)):
+                droid.ensure_fresh_obs()
+            self.assertEqual(len(calls), 2)          # 动作后重新取了
+
+    def test_look_also_refreshes_the_observation(self):
+        """模型常用 look() 而非 dump(); look 拿到的东西也该算有效观测。"""
+        droid._LAST_OBS = {"nodes": [], "detections": [{"label": "x"}],
+                           "screen": (1200, 2670), "pkg": "p"}
+        droid._OBS_STALE = False                     # 模拟 look() 刚跑过
+        calls = []
+        with patch.object(droid, 'dump', self._stub_dump(calls)):
+            droid.ensure_fresh_obs()
+        self.assertEqual(calls, [])
+
+    def test_no_observation_at_all_forces_a_fetch(self):
+        droid._LAST_OBS = None
+        droid._OBS_STALE = False                     # 标志说有效但没有观测 → 仍要取
+        calls = []
+        with patch.object(droid, 'dump', self._stub_dump(calls)):
+            droid.ensure_fresh_obs()
+        self.assertEqual(len(calls), 1)
+
+    def test_reset_trace_marks_observation_stale(self):
+        droid._LAST_OBS = {"nodes": [], "detections": [], "screen": None, "pkg": "p"}
+        droid._OBS_STALE = False
+        droid.reset_trace()
+        self.assertTrue(droid._OBS_STALE)            # 新任务第一次动作前必须补观测
+
+
+class _FakeResp:
+    def __init__(self, payload): self._p = payload
+    def json(self): return self._p
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -300,7 +300,9 @@ class GenericAgentHandler(BaseHandler):
             # 预观测: 动作落账要带「动作前」的观测, 才能从点所在节点推导 recipe locator。
             # 不喂它, gui_act 通道录出的配方 locator 全是 any, 回放第一步就升级(评审实证)。
             # 只对需要坐标的动作做: back/home/key/wait 没有可定位的目标。
-            try: droid.dump()
+            # 按需而非每次: 模型在 code_run 里刚 dump()/look() 过时观测仍然有效,
+            # 再 dump 一次是纯浪费(真机 39 轮任务约 20 次 gui_act 各多付一次 a11y 往返)。
+            try: droid.ensure_fresh_obs()
             except Exception: pass
         try:
             if act in ('tap', 'longpress'):

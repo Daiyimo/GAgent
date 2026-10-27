@@ -66,6 +66,7 @@ _LEDGER = phone_ledger.ACTIVE   # 进程级共享账本: 与 ga_android 每轮�
 # ---- operation trace(SPEC L1 录制源): 每次设备操作带紧凑观测快照, recipe_record 据此机械派生配方 ----
 _TRACE = deque(maxlen=64)
 _LAST_OBS = None                # 最近一次观测(dump/look 更新); 动作落账时附带, 供定位器推导
+_OBS_STALE = True               # 上次观测之后有没有派发过动作: 动作会改屏幕, 让观测失效
 
 
 def _compact_obs(obs, cap=120):
@@ -89,9 +90,10 @@ def reset_trace():
     """任务边界: 清空操作痕迹与末次观测。两者都是任务级状态——不清的话,
     上个任务(或上一次 recipe_run 自己)产生的 dump/tap 痕迹会混进本次 recipe_record,
     录出的配方步骤属于别的任务。"""
-    global _LAST_OBS
+    global _LAST_OBS, _OBS_STALE
     _TRACE.clear()
     _LAST_OBS = None
+    _OBS_STALE = True               # 新任务还没观测过, 第一次动作前必须补
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 BUNDLE = os.path.join(_DIR, "models", "ui_detect_v1")  # 管线py+onnx 捆绑目录
@@ -370,11 +372,29 @@ def dump_state(full=False):
 def dump(full=False):
     """树观测(纯 list 契约, 历史语义不变): 敏感/未解析置空=[] 信号, 上层转视觉。需要原因码用 dump_state()。"""
     st = dump_state(full=full)
-    global _LAST_OBS
+    global _LAST_OBS, _OBS_STALE
     nodes = st["nodes"]
     _LAST_OBS = {"nodes": nodes, "detections": [], "screen": None, "pkg": st.get("pkg")}
+    _OBS_STALE = False
     _trace("dump", result={"count": len(nodes)})
     return nodes
+
+
+def ensure_fresh_obs():
+    """观测已因动作失效时才重新 dump; 否则原样返回现有观测。
+
+    gui_act 需要"动作前"的观测来推导 recipe locator。原先每次 tap/swipe/longpress
+    都无条件先 dump 一次, 但模型在 code_run 里刚 dump()/look() 过时那是纯浪费——
+    真机 39 轮任务里约 20 次 gui_act 各多付一次 a11y 往返。动作经 _act() 派发后才
+    标记失效, 所以"模型刚看过屏幕"不再重复 dump; 若那次 dump 拿到空树(敏感 App),
+    下一轮照样会重新试, 不会把空观测当成有效缓存。"""
+    global _OBS_STALE
+    if not _OBS_STALE and _LAST_OBS is not None:
+        return _LAST_OBS
+    try:
+        return dump()
+    except Exception:
+        return _LAST_OBS
 
 
 def _record_path(kind):
@@ -396,6 +416,8 @@ def _act(**body):
     _record_path("launch" if op == "launch" else "a11y")   # 任务路径归属: 拉起 app vs 无障碍操作外部 app
     run_guard.check()   # 门禁可能等待；取消后不得再派发。
     ret = _check(_SESSION.post(_base() + "/a11y/act", json=body, timeout=30))
+    global _OBS_STALE
+    _OBS_STALE = True               # 动作已下发: 屏幕大概率变了, 之前的观测作废
     try: run_metrics.mark_action_dispatched()   # 只观测(SPEC Phase 0): 记"动作已下发"时刻, 供 run_metrics 把随后的稳态等待/截图/对比分摊为 verify_wait。手势已发出, 观测失败绝不能把它变成失败
     except Exception: pass
     return ret
@@ -764,8 +786,9 @@ def look(conf=0.25, path=None, roi=None, cache=True, *, label=None):
     if path:
         cv2.imwrite(path, img)
     out = _matching_labels(dets, label)
-    global _LAST_OBS
+    global _LAST_OBS, _OBS_STALE
     _LAST_OBS = {"nodes": [], "detections": out, "screen": (W, H), "pkg": _fg()}
+    _OBS_STALE = False
     _trace("look", result={"count": len(out)})
     return out
 
