@@ -596,7 +596,9 @@ class GenericAgentHandler(BaseHandler):
 - **环境事实**（路径/凭证/配置）→ `file_patch` 更新 L2，同步 L1
 - **复杂任务经验**（关键坑点/前置条件/重要步骤）→ L3 精简 SOP（只记你被坑得多次重试的核心要点）
 **禁止**：临时变量、具体推理过程、未验证信息、通用常识、你可以轻松复现的细节、只是做了但没有验证的信息
-**操作**：严格遵循提供的L0的记忆更新SOP。先 `file_read` 看现有 → 判断类型 → 最小化更新 → 无新内容跳过，保证对记忆库最小局部修改。\n
+**操作**：严格遵循提供的L0的记忆更新SOP。本工具结果已附记忆库结构与 L1 现状——
+**除非确知要改哪个文件，否则不要额外 `file_read` 去"看现有"**；直接判断类型 → 最小化
+`file_patch` 更新 → 无新内容跳过，保证对记忆库最小局部修改。\n
 ''' + get_global_memory()
         yield "[Info] Start distilling good memory for long-term storage.\n"
         path = './memory/memory_management_sop.md'
