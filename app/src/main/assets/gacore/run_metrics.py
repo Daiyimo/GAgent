@@ -43,9 +43,10 @@ _VERIFIER_TABLE = (
     (('paste', 'gui_act'), ('hit',), '_classify_paste_rows'),
 )
 
-# 判定汇总的三个互斥桶(与 tools_no_verdict 一起穷尽 tool_records):
-#   uncertain 优先于 negative —— 观察不可用不等于"没成功", 更不是成功。
-_SUCCESS_KEYS = ('hit', 'scrolled')
+# 判定汇总的五个互斥桶(穷尽 tool_records)。优先级 uncertain > verified > negative >
+# pixel > none: uncertain 必须压过一切——观察不可用不等于"没成功", 更不是成功,
+# 也不能被同时出现的 hit=True 盖回去(旧实现只给 negative 排了 uncertain, verified 会双记,
+# 四桶相加越过 tools_total, 把 tools_no_verdict 算成负数)。
 
 
 def _is_success(verdict: dict) -> bool:
@@ -55,6 +56,32 @@ def _is_success(verdict: dict) -> bool:
 def _is_negative(verdict: dict) -> bool:
     return (verdict.get('hit') is False or verdict.get('verified') is False
             or verdict.get('scrolled') is False or verdict.get('evidence') == 'none')
+
+
+def _has_pixel_evidence(verdict: dict) -> bool:
+    """只有像素变化率、没有布尔判定的记录。
+    diff_pct 是 extract_verdict 从 'diff: 12.5% ...' 解析出的判定键(归因 _img_diff_str),
+    但它两头都证不了: 屏幕变了≠任务推进(故不算 verified), 列表已在端点也几乎不变
+    (故不算 negative)。单列一桶, 既不虚高成功率, 也不该算"无判定"。
+    真机实证: 46 轮微信任务里 16 次 gui_act 只带 diff_pct, 旧实现把它们算进
+    tools_no_verdict, 令 tools_no_verdict=42/45、verified-action rate 显示 0%。"""
+    v = verdict.get('diff_pct')
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def classify_verdict(verdict: dict) -> str:
+    """tool_record 判定分桶(五选一, 互斥且穷尽)。"""
+    if not isinstance(verdict, dict):
+        return 'none'
+    if verdict.get('uncertain') is True:
+        return 'uncertain'
+    if _is_success(verdict):
+        return 'verified'
+    if _is_negative(verdict):
+        return 'negative'
+    if _has_pixel_evidence(verdict):
+        return 'pixel'
+    return 'none'
 
 
 def diff_pct(value) -> Optional[float]:
@@ -169,10 +196,9 @@ def summarize(run: RunRecord) -> dict:
     model = [t.model_wait_s for t in turns]
     end_to_end = [t.model_wait_s + t.tool_exec_s for t in turns]
     recs = [r for t in turns for r in t.tool_records]
-    verified = sum(1 for r in recs if _is_success(r.verdict))
-    uncertain = sum(1 for r in recs if r.verdict.get('uncertain') is True)
-    negative = sum(1 for r in recs if not _is_success(r.verdict)
-                   and r.verdict.get('uncertain') is not True and _is_negative(r.verdict))
+    buckets = {'verified': 0, 'uncertain': 0, 'negative': 0, 'pixel': 0, 'none': 0}
+    for r in recs:
+        buckets[classify_verdict(r.verdict)] += 1
     return {
         'type': 'run_summary', 'v': SCHEMA_VERSION, 'run_id': run.run_id, 'gen': run.gen,
         'layer': run.layer, 'started_at': run.started_at, 'ended_at': run.ended_at,
@@ -187,13 +213,17 @@ def summarize(run: RunRecord) -> dict:
         'p50_turn_s': percentile(end_to_end, 50), 'p95_turn_s': percentile(end_to_end, 95),
         'p50_model_wait_s': percentile(model, 50), 'p95_model_wait_s': percentile(model, 95),
         'escalations': sum(len(t.escalations) for t in turns),
-        # Part 7.2 verified-action rate 的分子。四桶互斥且穷尽 tool_records:
-        # uncertain 记"未验证", 绝不是成功; 无判定键的单列, 不混入任何成功率。
+        # Part 7.2 verified-action rate 的分子。五桶互斥且穷尽 tool_records:
+        #   uncertain 记"未验证", 绝不是成功, 且压过同时出现的 hit=True;
+        #   pixel = 只有 diff_pct(屏幕变了, 但证不出成功也证不出失败), 单列不虚高成功率;
+        #   no_verdict = 真无判定键, 只该是 code_run/file_read 这类非动作工具——
+        #   它才是 SPEC silent-failure rate 的候选, 别把像素证据混进来。
         'tools_total': len(recs),
-        'tools_verified': verified,
-        'tools_uncertain': uncertain,
-        'tools_negative': negative,
-        'tools_no_verdict': len(recs) - verified - uncertain - negative,
+        'tools_verified': buckets['verified'],
+        'tools_uncertain': buckets['uncertain'],
+        'tools_negative': buckets['negative'],
+        'tools_pixel_evidence': buckets['pixel'],
+        'tools_no_verdict': buckets['none'],
     }
 
 

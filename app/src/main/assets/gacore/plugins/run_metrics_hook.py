@@ -9,10 +9,12 @@
   **每个会话一份**: 同一会话的多个任务追加到同一文件(agentmain 只在历史截断时轮换 log_path),
   所以 prune_oldest 的"保留最近 N 个"实际是"保留最近 N 个会话的文件"。
 已知限制(如实记录):
-  - 今天所有手机动作都埋在 code_run 的 stdout 里(droid.tap 的返回值不经过工具结果),
-    所以工具级判定今天取不到 → 落在 tools_no_verdict 桶里。这是现状而不是缺陷:
-    该计数把这处空白显式记下来, 等结构化动作空间(Phase 1+)落地, 同一段
-    extract_verdict/attrib_verifier 直接开始产出 verified/uncertain 与判定来源。
+  - 结构化动作空间(gui_act)落地后工具级判定已经能取到: extract_verdict 解析它的
+    json.dumps 结果, attrib_verifier 归因到 droid 侧既有判定函数(_img_diff_str/
+    _scroll_verdict/_classify_paste_rows)。走 code_run 的观察与多步逻辑仍无判定键
+    → 落 tools_no_verdict, 这是预期: 它正是 SPEC silent-failure rate 的候选。
+    只有 diff_pct、没有布尔判定的动作进 tools_pixel_evidence——屏幕变了证不出成功
+    也证不出失败, 单列一桶, 不虚高 verified-action rate, 也不算"无判定"。
   - layer 恒为 'L4'、escalations 恒为空: 今天没有路由器, 没有"层"可选。
     字段先立住, Phase 3 路由落地后由路由决策填真值。
   - 后验计时累加器是模块级的(打点在 code_run 子线程, 结算在循环线程, 跨线程)。

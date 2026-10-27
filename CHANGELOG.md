@@ -10,16 +10,34 @@ publicly released. Exact artifacts and acceptance belong to their release record
 - Diagnostics: each session now appends a per-turn run record to
   `temp/model_responses/sessions/metrics_<id>.jsonl` — model wait, tool execution and
   post-action verification time, input/output tokens, re-sent history size, and the
-  verifier that produced each verdict, plus a run summary with P50/P95 and four mutually
+  verifier that produced each verdict, plus a run summary with P50/P95 and five mutually
   exclusive verdict counters. Recording is observation only: it adds no model calls and no
-  device operations, and a failed write never affects the task. Two gaps are recorded
-  rather than papered over: today every phone action runs inside the model's `code_run`,
-  so tool-level verdicts are not attributable yet (counted as `tools_no_verdict`), and
-  `layer` is the single existing `L4` with no router behind it.
+  device operations, and a failed write never affects the task. The structured action
+  channel (`gui_act`) made tool-level verdicts attributable: `extract_verdict` now parses
+  its JSON-string result and `attrib_verifier` maps it back to the existing droid verifier
+  (`_img_diff_str` / `_scroll_verdict` / `_classify_paste_rows`). `layer` is still the
+  single existing `L4` with no router behind it.
   每个会话追加一份按 turn 的记录：模型等待、工具执行与动作后验耗时、输入输出 token、
-  重发历史大小与每轮判定来源，附 P50/P95 与四个互斥的判定计数器。只观察，不增加模型调用与
-  设备操作，写盘失败不影响任务。两处空白如实记录而非粉饰：手机动作今天都在模型的 code_run
-  里，工具级判定暂不可归因（计入 `tools_no_verdict`）；`layer` 只有现存的 L4，背后还没有路由器。
+  重发历史大小与每轮判定来源，附 P50/P95 与五个互斥的判定计数器。只观察，不增加模型调用与
+  设备操作，写盘失败不影响任务。结构化动作通道（gui_act）落地后工具级判定已可归因：
+  `extract_verdict` 解析它的 JSON 字符串结果，`attrib_verifier` 归回 droid 侧既有判定函数。
+  `layer` 仍只有现存的 L4，背后还没有路由器。
+- Run metrics: the verdict counters are now five mutually exclusive buckets —
+  `tools_verified`, `tools_uncertain`, `tools_negative`, `tools_pixel_evidence`,
+  `tools_no_verdict` — with precedence `uncertain > verified > negative > pixel > none`.
+  A record carrying only `diff_pct` used to fall through every boolean test and land in
+  `tools_no_verdict`, which reported 42/45 "no verdict" and a 0% verified-action rate for a
+  real 46-turn run in which 16 `gui_act` actions had pixel evidence. Those records now go to
+  `tools_pixel_evidence`: a changed screen proves neither success nor failure, so it is
+  neither counted as success nor as a silent failure. Precedence also fixes a latent
+  double count — `{'hit': True, 'uncertain': True}` was tallied as both verified and
+  uncertain, pushing the sum past `tools_total` and driving `tools_no_verdict` negative.
+  判定计数器改为五个互斥桶，优先级 uncertain > verified > negative > pixel > none。
+  只带 `diff_pct` 的记录原先穿透所有布尔判定落进 `tools_no_verdict`，导致真机 46 轮运行
+  报出 42/45"无判定"、verified-action rate 显示 0%（其中 16 次 gui_act 其实有像素证据）。
+  这类记录现在进 `tools_pixel_evidence`：屏幕变了证不出成功也证不出失败，既不算成功也不算
+  静默失败。优先级同时修掉一处潜在双记——`{'hit': True, 'uncertain': True}` 曾同时计入
+  verified 与 uncertain，使五桶相加越过 `tools_total`、把 `tools_no_verdict` 算成负数。
 - Device observation: `droid.dump_state()` returns `{nodes, degraded, pkg}` so an empty
   tree can be told apart from a policy blank (sensitive app) and an unresolved foreground;
   `dump()` delegates to it and keeps its list contract, and the `droid_dump_blank` metric

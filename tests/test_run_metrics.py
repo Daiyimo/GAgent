@@ -260,7 +260,7 @@ class TestRunRecorder:
         rec.end_run('done')          # 不抛即通过
 
     def test_summary_counters_partition_every_tool_record(self):
-        """四个计数器必须互斥且穷尽, 否则 verified-action rate 会悄悄漏算最常见动作。"""
+        """五个计数器必须互斥且穷尽, 否则 verified-action rate 会悄悄漏算最常见动作。"""
         sink = _Sink()
         rec, clock = self._rec(sink)
         rec.start_turn(1)
@@ -271,15 +271,64 @@ class TestRunRecorder:
         rec.tool_start(); clock.advance(1.0)
         rec.tool_end('droid.paste', {'hit': False}, None)                          # negative
         rec.tool_start(); clock.advance(1.0)
+        rec.tool_end('gui_act', {'diff': 'diff: 9.125% bbox=[1,2,3,4]'}, None)      # pixel
+        rec.tool_start(); clock.advance(1.0)
         rec.tool_end('file_read', {'content': 'x' * 100}, None)                    # 无判定键
         rec.end_turn(); rec.end_run('done')
         s = json.loads(sink.lines[-1])
         assert (s['tools_verified'], s['tools_uncertain'], s['tools_negative'],
-                s['tools_no_verdict']) == (1, 1, 1, 1)
-        assert s['tools_verified'] + s['tools_uncertain'] + s['tools_negative'] \
-            + s['tools_no_verdict'] == s['tools_total'] == 4
+                s['tools_pixel_evidence'], s['tools_no_verdict']) == (1, 1, 1, 1, 1)
+        assert (s['tools_verified'] + s['tools_uncertain'] + s['tools_negative']
+                + s['tools_pixel_evidence'] + s['tools_no_verdict']
+                == s['tools_total'] == 5)
         assert s['verify_wait_s'] == 0.4
-        assert s['tool_exec_s'] == 4.0
+        assert s['tool_exec_s'] == 5.0
+
+    def test_pixel_evidence_is_not_counted_as_no_verdict(self):
+        """回归(真机实证): 46 轮微信任务里 16 次 gui_act 只带 diff_pct, 旧实现把它们
+        算进 tools_no_verdict → tools_no_verdict=42/45、verified-action rate 显示 0%。
+        diff_pct 是 extract_verdict 解析出的判定键, 不是"无判定"。"""
+        sink = _Sink()
+        rec, clock = self._rec(sink)
+        rec.start_turn(1)
+        for _ in range(16):
+            rec.tool_start(); clock.advance(1.0)
+            # 真机形态: gui_act 返回 {'action':'tap','diff':'diff: 22.658% ...'},
+            # diff_pct 由 extract_verdict 从 diff 字符串解析出来
+            rec.tool_end('gui_act', {'diff': 'diff: 22.658% bbox=[1,2,3,4]'}, None)
+        for _ in range(3):
+            rec.tool_start(); clock.advance(1.0)
+            rec.tool_end('code_run', {}, None)
+        rec.end_turn(); rec.end_run('done')
+        s = json.loads(sink.lines[-1])
+        assert (s['tools_pixel_evidence'], s['tools_no_verdict']) == (16, 3)
+        assert s['tools_verified'] == 0          # 像素证据不虚高成功率
+
+    def test_uncertain_outranks_a_simultaneous_hit_true(self):
+        """回归: {'hit': True, 'uncertain': True} 曾同时计入 verified 和 uncertain,
+        五桶相加越过 tools_total, 把 tools_no_verdict 算成负数。"""
+        sink = _Sink()
+        rec, clock = self._rec(sink)
+        rec.start_turn(1)
+        rec.tool_start(); clock.advance(1.0)
+        rec.tool_end('gui_act', {'hit': True, 'uncertain': True}, None)
+        rec.end_turn(); rec.end_run('done')
+        s = json.loads(sink.lines[-1])
+        assert (s['tools_verified'], s['tools_uncertain']) == (0, 1)
+        assert (s['tools_verified'] + s['tools_uncertain'] + s['tools_negative']
+                + s['tools_pixel_evidence'] + s['tools_no_verdict']) == s['tools_total'] == 1
+
+    def test_boolean_verdict_with_diff_still_lands_in_its_boolean_bucket(self):
+        # 同时带布尔判定和 diff_pct 时, 布尔优先(diff 只是附带证据)
+        assert run_metrics.classify_verdict({'hit': True, 'diff_pct': 8.0}) == 'verified'
+        assert run_metrics.classify_verdict({'hit': False, 'diff_pct': 0.01}) == 'negative'
+        assert run_metrics.classify_verdict({'uncertain': True, 'diff_pct': 100.0}) == 'uncertain'
+
+    def test_classify_verdict_edge_cases(self):
+        assert run_metrics.classify_verdict({}) == 'none'
+        assert run_metrics.classify_verdict(None) == 'none'
+        assert run_metrics.classify_verdict({'diff_pct': 0.0}) == 'pixel'   # 0.0 也是证据(明确无变化)
+        assert run_metrics.classify_verdict({'evidence': 'none'}) == 'negative'
 
     def test_unknown_resend_chars_stays_null_not_zero(self):
         """取不到重发体量时必须落 null; 0 会被读成"历史是空的"。"""
