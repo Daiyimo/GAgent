@@ -64,11 +64,32 @@ class CompressionParamsTest(unittest.TestCase):
     def test_older_messages_truncated_recent_kept(self):
         msgs = _msgs(10)
         compress_history_tags(msgs, keep_recent=4, max_len=600, force=True)
-        # [0] 是协议载体不动, 其余前段被截断, 后 4 条原样
+        # [0] 是协议载体不动, 更早的轮次压到 max_len, 近期轮次压到 recent_max_len
         self.assertIn('[Truncated]', msgs[1]['content'])
         self.assertNotIn('[Truncated]', msgs[0]['content'])
-        self.assertNotIn('[Truncated]', msgs[-1]['content'])
-        self.assertLess(len(msgs[1]['content']), 800)
+        self.assertLess(len(msgs[1]['content']), 800)          # 旧轮次: 600 封顶
+        self.assertLessEqual(len(msgs[-1]['content']), 3000)   # 近期轮次: 3000 封顶
+
+    def test_recent_messages_get_a_generous_but_finite_cap(self):
+        """回归(真机实证): 近期轮次原来完全不做限制, 平均 4922 字符、占 resend 的
+        67%(19687/29287)——压缩把旧的压到 600, 体量全留给最新的几条, 每轮输入照样膨胀。
+        in_tok 与 model_wait 相关系数 r=0.574(11.2K→6.0s, 14.5K→13.9s)。
+        近期轮次必须也有上限, 但要比旧轮次宽松(它们对决策最有用)。"""
+        msgs = _msgs(10)
+        compress_history_tags(msgs, keep_recent=4, max_len=600, force=True)
+        old = len(msgs[1]['content'])
+        recent = len(msgs[-1]['content'])
+        self.assertGreater(recent, old)                 # 近期确实更宽松
+        self.assertLessEqual(recent, 3000)              # 但不是无限
+        # 短于上限的近期消息不该被动
+        short = [{'role': 'user', 'content': 'tiny'}]
+        compress_history_tags(short, keep_recent=4, force=True)
+        self.assertEqual(short[0]['content'], 'tiny')
+
+    def test_recent_cap_is_overridable(self):
+        msgs = _msgs(6)
+        compress_history_tags(msgs, keep_recent=4, max_len=600, force=True, recent_max_len=1200)
+        self.assertLessEqual(len(msgs[-1]['content']), 1200)
 
     def test_protocol_carrier_not_truncated(self):
         # 真实形态: [0]=协议载体 + 9 轮对话。第 5 轮起触发压缩, 协议必须完整存活。

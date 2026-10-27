@@ -43,53 +43,61 @@ def __getattr__(name):  # once guard in PEP 562
     if name == 'mykeys': return reload_mykeys()[0]
     raise AttributeError(f"module 'llmcore' has no attribute {name}")
 
-def compress_history_tags(messages, keep_recent=4, max_len=600, force=False, interval=5):
+def compress_history_tags(messages, keep_recent=4, max_len=600, force=False, interval=5,
+                          recent_max_len=3000):
     """Compress <thinking>/<tool_use>/<tool_result> tags in older messages to save tokens.
     默认值经实测对比选择此方案效果更佳: keep_recent=4(只保留最近 4 轮完整脚本/结果)、
     max_len=600——长任务(30+ 轮)下 in_tok 从 11K 涨到 36K、model_wait 从 3s 涨到 37s,
-    旧轮次的完整代码块与结果对后续决策无增益, 只撑上下文。"""
+    旧轮次的完整代码块与结果对后续决策无增益, 只撑上下文。
+
+    recent_max_len: 最近 keep_recent 条的上限。**原来这几条完全不做限制**, 而真机实测
+    它们平均 4922 字符、占 resend 的 67%(19687/29287)——压缩把旧的压到 600, 却把体量
+    全留给最新的几条, 每轮输入照样膨胀。in_tok 与 model_wait 的相关系数 r=0.574:
+    in_tok 11.2K→6.0s、13.6K→8.7s、14.5K→13.9s。给近期轮次一个宽松但有限的上限,
+    输入体量才真的封得住。"""
     compress_history_tags._cd = getattr(compress_history_tags, '_cd', 0) + 1
     if force: compress_history_tags._cd = 0
     if compress_history_tags._cd % interval != 0: return messages
     _before = sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)
     _pats = {tag: re.compile(rf'(<{tag}>)([\s\S]*?)(</{tag}>)') for tag in ('thinking', 'think', 'tool_use', 'tool_result')}
     _hist_pat = re.compile(r'<(history|key_info|earlier_context)>[\s\S]*?</\1>')
-    def _trunc_str(s): return s[:max_len//2] + '\n...[Truncated]...\n' + s[-max_len//2:] if isinstance(s, str) and len(s) > max_len else s
-    def _trunc(text):
+    _n = len(messages)
+    _MARK = '\n...[Truncated]...\n'
+    def _limit(i): return max_len if i < _n - keep_recent else max(max_len, recent_max_len)
+    def _cut(s, lim):
+        """截到 lim 以内(marker 也算进预算, 否则实际是 lim+19, 上限名不副实)。"""
+        if not isinstance(s, str) or len(s) <= lim: return s
+        budget = max(lim - len(_MARK), 2)
+        return s[:budget // 2] + _MARK + s[-budget // 2:]
+    def _trunc(text, lim):
         text = _hist_pat.sub(lambda m: f'<{m.group(1)}>[...]</{m.group(1)}>', text)
-        for pat in _pats.values(): text = pat.sub(lambda m: m.group(1) + _trunc_str(m.group(2)) + m.group(3), text)
+        for pat in _pats.values(): text = pat.sub(lambda m: m.group(1) + _cut(m.group(2), lim) + m.group(3), text)
         # 标签外的裸长文本也要压: 旧实现只截 tag 内部, 消息里标签外的结果/代码原文
         # (占大头)原样保留, 压缩率远低于预期——长任务上下文照样膨胀。
-        if len(text) > max_len:
-            # 无条件按长度裁(不看是否已有 Truncated 标记): tag 内已截过但总长仍超时,
-            # 说明大头在标签外, 必须再裁一次才能把整条压进预算。
-            head, tail = text[:max_len // 2], text[-max_len // 2:]
-            marker = chr(10) + '...[Truncated]...' + chr(10)
-            text = head + marker + tail
-        return text
+        return _cut(text, lim) if len(text) > lim else text
     for i, msg in enumerate(messages):
-        if i >= len(messages) - keep_recent: break
         # [0] 是协议载体: _build_protocol_prompt 把 system + 交互协议 + 工具清单 + L1 记忆索引
         # 一次性拼成首条 prompt, 后续每条只是它的重复。裁它 = 把交互协议从上下文里删掉,
         # 第 N 轮起模型既看不到 <tool_use> 协议也看不到记忆路由(实测 7827→619 字符, 全丢)。
         # system 消息同理: 常驻约束, 不属于"旧轮次"。
         if i == 0 or msg.get('role') == 'system':
             continue
+        lim = _limit(i)
         c = msg['content']
-        if isinstance(c, str): msg['content'] = _trunc(c)
+        if isinstance(c, str): msg['content'] = _trunc(c, lim)
         elif isinstance(c, list):
             for b in c:
                 if not isinstance(b, dict): continue
                 t = b.get('type')
-                if t == 'text' and isinstance(b.get('text'), str): b['text'] = _trunc(b['text'])
+                if t == 'text' and isinstance(b.get('text'), str): b['text'] = _trunc(b['text'], lim)
                 elif t == 'tool_result':
                     tc = b.get('content')
-                    if isinstance(tc, str): b['content'] = _trunc_str(tc)
+                    if isinstance(tc, str): b['content'] = _cut(tc, lim)
                     elif isinstance(tc, list):
                         for sub in tc:
-                            if isinstance(sub, dict) and sub.get('type') == 'text': sub['text'] = _trunc_str(sub.get('text'))
+                            if isinstance(sub, dict) and sub.get('type') == 'text': sub['text'] = _cut(sub.get('text'), lim)
                 elif t == 'tool_use' and isinstance(b.get('input'), dict):
-                    for k, v in b['input'].items(): b['input'][k] = _trunc_str(v)
+                    for k, v in b['input'].items(): b['input'][k] = _cut(v)
     print(f"[Cut] {_before} -> {sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)}")
     return messages
 
