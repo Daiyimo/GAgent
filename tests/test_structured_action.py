@@ -136,6 +136,54 @@ class GuiActHandlerTest(unittest.TestCase):
         self.assertIn('"stable": true', str(out.data))
 
 
+class NormPtTest(unittest.TestCase):
+    """gui_act 坐标换算: 必须同时吃得下归一化值和 dump/look 的像素值。
+
+    真机实证: 145 个 tool_result 里 7 次整个轮次废在
+    'point must be 0-1000 normalized, got [752, 2512]' 上——占全部错误的一半,
+    是最大的单一失败源。schema 让模型"point 取自 dump bounds 或 look() box",
+    而那两处给的是像素, 于是照做就必错。"""
+
+    def _norm(self, v):
+        import ga_android
+        h = object.__new__(ga_android.GenericAgentHandler)
+        fake = types.SimpleNamespace(screen=lambda: (1200, 2670))
+        with patch.dict(sys.modules, {'droid': fake}):
+            return h._norm_pt(v)
+
+    def test_normalized_coords_scale_to_pixels(self):
+        self.assertEqual(self._norm([500, 250]), (600, 667))
+        self.assertEqual(self._norm([0, 0]), (0, 0))
+        self.assertEqual(self._norm([1000, 1000]), (1200, 2670))
+
+    def test_pixel_coords_over_1000_pass_through(self):
+        # >1000 不可能是归一化值(上限就是 1000), 所以只可能是像素, 无歧义
+        self.assertEqual(self._norm([752, 2512]), (752, 2512))
+        self.assertEqual(self._norm([1085, 210]), (1085, 210))
+        self.assertEqual(self._norm([417, 1700]), (417, 1700))
+
+    def test_mixed_pair_takes_the_pixel_reading(self):
+        # 一个超限一个没超: 按像素解释整对(真机出现的 [1085, 210] 形态)
+        self.assertEqual(self._norm([1085, 210]), (1085, 210))
+
+    def test_real_device_failures_now_resolve(self):
+        """回归: 这 6 个值是真机上让整个轮次作废的实参。"""
+        for bad in ([752, 2512], [1085, 210], [500, 1500], [417, 1700],
+                    [191, 1049], [500, 1800]):
+            x, y = self._norm(bad)
+            self.assertGreater(x, 0)
+            self.assertGreater(y, 0)
+
+    def test_negative_and_garbage_still_rejected_with_screen_size(self):
+        for bad in ([-5, 100], [100, -5]):
+            with self.assertRaises(ValueError) as cm:
+                self._norm(bad)
+            self.assertIn('1200x2670', str(cm.exception))    # 报错要能自解释
+        for bad in (['a', 'b'], [None, 5], 'nope', [1, 2, 3]):
+            with self.assertRaises(ValueError):
+                self._norm(bad)
+
+
 class ActProvedChangeTest(unittest.TestCase):
     """_act_proved_change: 决定 gui_act 要不要再付一次 wait_stable。
 

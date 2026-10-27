@@ -227,6 +227,16 @@ def summarize(run: RunRecord) -> dict:
     }
 
 
+def unfinished_summary(run_id: str) -> dict:
+    """运行被中止/异常弃掉时的补写汇总(调用方按文件复查发现没有汇总行才写)。
+
+    只有 run_id 与 end_reason 是确定的; 轮数/耗时/token 一律不猜——填 0 会被读成
+    "没有耗时", 填 null 又和"取不到"混不开。所以只写能证明的两件事, 并用 recovered
+    标明这是补写而非运行自己落下的,  Reader 不至于把 stub 当成真实汇总。"""
+    return {'type': 'run_summary', 'v': SCHEMA_VERSION, 'run_id': str(run_id),
+            'end_reason': 'unfinished', 'recovered': True}
+
+
 def jsonl_line(obj) -> str:
     """单行 JSON(ensure_ascii=False); default=str 兜底——坏类型只毁自己这一行, 不毒死整条通道。"""
     return json.dumps(obj, ensure_ascii=False, default=str)

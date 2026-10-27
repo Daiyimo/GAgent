@@ -117,19 +117,35 @@ def safeprint(*argv):
     except OSError: pass
 print = safeprint
 
+def _drop_oldest_turn(history):
+    """丢一条最旧的对话轮次(保留 [0]); 丢完把新的首条 user 消息净化,
+    避免孤立 tool_result 引用。原地修改, 调用方依赖这一点。"""
+    history.pop(1)
+    while len(history) > 1 and history[1].get('role') != 'user': history.pop(1)
+    if len(history) > 1 and history[1].get('role') == 'user':
+        history[1] = _sanitize_leading_user_msg(history[1])
+
+
 def trim_messages_history(history, sess):
     cap = sess.context_win * 3
     target = int(cap * getattr(sess, 'trim_keep_rate', 0.6))
     def cost(): return sum(len(json.dumps(m, ensure_ascii=False)) for m in history)
     compress_history_tags(history, interval=getattr(sess, 'cut_msg_interval', 5))
     print(f'[Debug] Current context: {cost()} chars, {len(history)} messages.')
+    # 条数上限必须排在体积上限前面: 每轮重发全部历史, 条数不封顶时单轮成本随轮数
+    # 线性上涨、总时间平方上涨。真机实证: 19 轮 resend 829→50017 字符(60x),
+    # model_wait 3.1s→32.5s, 用户因太慢把任务取消; 而体积上限 context_win*3 高达
+    # 9 万字符, 那条路根本等不到——压缩只把单条压到 600, 压不掉条数本身。
+    # 20 条 ≈ 10 轮原始上下文; 更早的轮次由 anchor prompt 的 <history>/<key_info>
+    # 工作记忆兜着(设计上旧轮次"对后续决策无增益")。
+    max_msgs = int(getattr(sess, 'max_history_msgs', 20))
+    while len(history) > max_msgs:
+        _drop_oldest_turn(history)
     if cost() <= cap: return
     compress_history_tags(history, keep_recent=4, force=True)   # 超限强压: 与默认一致, 旧轮次只留头尾
     if cost() <= target: return
     while len(history) > 9 and cost() > target:
-        history.pop(1)   # 只丢旧对话轮次; [0]=协议载体必须留, 它是唯一常驻上下文
-        while len(history) > 1 and history[1].get('role') != 'user': history.pop(1)
-        if len(history) > 1 and history[1].get('role') == 'user': history[1] = _sanitize_leading_user_msg(history[1])
+        _drop_oldest_turn(history)
     print(f'[Debug] Trimmed context, current: {cost()} chars, {len(history)} messages.')
 
 def auto_make_url(base, path):

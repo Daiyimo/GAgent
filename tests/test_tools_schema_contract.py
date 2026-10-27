@@ -60,6 +60,18 @@ class GuiActSchemaContractTest(unittest.TestCase):
             self.assertNotIn('point?', desc, name)
             self.assertIn('key {value:ENTER}', desc, name)
 
+    def test_description_states_the_pixel_to_normalized_conversion(self):
+        """回归(真机实证): 145 个 tool_result 里 7 次整个轮次废在
+        'point must be 0-1000 normalized, got [752, 2512]' 上, 占全部错误一半。
+        根因是原描述说 point 取自 "dump bounds or look() box"——那两处给的是**像素**,
+        与同段的 0-1000 要求自相矛盾, 模型照做就必错。描述必须把换算讲明白。"""
+        for name in ('tools_schema.json', 'tools_schema_cn.json'):
+            desc = self._schema(name)['description']
+            self.assertIn('PIXELS', desc, name)
+            self.assertIn('convert first', desc, name)
+            # 换算公式要在, 否则模型仍不知道拿 screen() 除
+            self.assertIn('1000/screen_w', desc.replace(' ', ''), name)
+
     def test_description_does_not_forbid_observing_the_screen(self):
         # 观察(dump/look)只有 code_run 一条路; 曾把"非 GUI 工作"当成唯一许可, 自相矛盾
         for name in ('tools_schema.json', 'tools_schema_cn.json'):

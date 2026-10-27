@@ -263,14 +263,27 @@ class GenericAgentHandler(BaseHandler):
     _GUI_ACTIONS = ('tap', 'swipe', 'longpress', 'text', 'key', 'launch', 'back', 'home', 'wait')
 
     def _norm_pt(self, v):
-        """0-1000 归一化坐标 → 当前屏幕物理像素。"""
+        """坐标 → 当前屏幕物理像素。接受 0-1000 归一化值, 也接受像素值。
+
+        为什么两种都收: dump()/look() 返回的是**像素**坐标, 而本工具要 0-1000,
+        而 schema 又写着 "Point must come from the current observation (dump bounds
+        or look() box)"——照做就必然传像素。真机实证 7 次 gui_act 整个轮次废在
+        这个 ValueError 上(占 145 个 tool_result 里全部错误的一半), 是最大的单一失败源。
+        任一坐标 >1000 即判定为像素: 归一化值不可能超过 1000, 故无歧义;
+        屏宽小于 1000 的老设备上像素值会落进 ≤1000 区间, 那种情况仍按归一化解释。"""
         if not isinstance(v, (list, tuple)) or len(v) != 2:
-            raise ValueError('point must be [x,y]')
-        x, y = float(v[0]), float(v[1])
-        if not (0 <= x <= 1000 and 0 <= y <= 1000):
-            raise ValueError('point must be 0-1000 normalized, got %r' % (v,))
+            raise ValueError('point must be [x, y], got %r' % (v,))
+        try:
+            x, y = float(v[0]), float(v[1])
+        except (TypeError, ValueError):
+            raise ValueError('point must be two numbers, got %r' % (v,))
         import droid
         w, h = droid.screen()
+        if x > 1000 or y > 1000:            # 只可能是像素(归一化上限就是 1000)
+            return int(x), int(y)
+        if x < 0 or y < 0:
+            raise ValueError('point %r out of range: 0-1000 normalized, or pixels '
+                             '(screen is %sx%s)' % (v, w, h))
         return int(x / 1000.0 * w), int(y / 1000.0 * h)
 
     def do_gui_act(self, args, response):

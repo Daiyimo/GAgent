@@ -36,6 +36,7 @@ _PREFIX = 'metrics_'
 _SUFFIX = '.jsonl'
 _lock = threading.Lock()
 _tls = threading.local()          # 当前线程(agent 循环线程)的 RunRecorder: 每会话一条线程, 必须按线程隔离
+_last_run = {'id': None}          # 上一次运行的 run_id: 模块级, 补写汇总必须跨线程才生效
 
 
 def _safe(fn, *a):
@@ -126,12 +127,41 @@ def _on_usage(in_tok, out_tok, cached_tok):
         _safe(rec.note_tokens, in_tok, out_tok)
 
 
+def _has_summary(path):
+    """该 run 的指标文件里有没有汇总行。读不了就返回 True(当作有), 不猜也不补写。"""
+    try:
+        with open(path, encoding='utf-8') as f:
+            return any('"run_summary"' in l for l in f)
+    except OSError:
+        return True
+
+
+def _backfill_unfinished(run_id):
+    """给没有汇总行的运行补一条 end_reason='unfinished', 不丢也不假完成。
+
+    为什么按文件复查, 而不是像原实现那样读内存里的 recorder: agent_after 不在
+    agent_loop 的 finally 里, 任务被中止或抛异常时它不触发 → 那次运行只剩 turn 行。
+    原实现指望"下次开局时上个 recorder 还在内存里", 但 recorder 存在**线程局部**,
+    而上个任务的 agent 循环线程已经死了, 新任务换线程后 _current_rec() 永远读到
+    None —— 文档承诺的补写因此在构造上不可能发生。真机实证: 连续 5 次被中止的 run
+    全都没有汇总行, 设备上 grep 不到任何 unfinished。单线程测试发现不了这个 bug,
+    因为两次 _on_agent_before 落在同一线程, TLS 正好读得到(回归测试因此必须换线程)。"""
+    if not run_id:
+        return
+    path = os.path.join(_metrics_dir(), _PREFIX + run_id + _SUFFIX)
+    try:
+        if not os.path.exists(path) or _has_summary(path):
+            return
+        run_metrics.append_jsonl(path, [run_metrics.jsonl_line(
+            run_metrics.unfinished_summary(run_id))])
+    except Exception:
+        pass
+
+
 def _on_agent_before(ctx):
-    prev = _current_rec()
-    _set_rec(None)
-    if prev is not None:                     # 上一轮被中止/异常弃掉: 补一条汇总, 不丢也不假完成
-        _safe(prev.end_run, 'unfinished')
+    _backfill_unfinished(_last_run.get('id'))   # 先收尾上一次: 它可能被中止得没留下汇总
     run_id = _logid(ctx)
+    _last_run['id'] = run_id
     _set_rec(run_metrics.RunRecorder(run_id=run_id, gen=_gen(), sink=_make_sink(run_id)))
     _install_usage_observer()
     run_metrics.reset_verify_accumulator()   # 上一轮被中止时可能有僵尸线程还在打点

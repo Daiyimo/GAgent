@@ -206,9 +206,55 @@ def test_unfinished_run_is_closed_by_the_next_task(run_dir, tmp_path):
     hook._on_turn_before({'turn': 1})
     hook._on_llm_before({})
     hook._on_llm_after({'client': _Client([])})
-    # 没有 turn_after / agent_after —— 模拟循环生成器被弃
+    hook._on_turn_after({})          # 这一轮落盘了 —— 真机中止的 run 都有已落盘的 turn 行
+    # 没有 agent_after —— 模拟循环生成器被弃
     _drive(tmp_path, logid='2')
     assert _lines(run_dir / 'metrics_1.jsonl')[-1]['end_reason'] == 'unfinished'
+
+
+def test_unfinished_backfill_survives_a_new_thread(run_dir, tmp_path):
+    """回归: 补写必须跨线程生效。
+
+    生产里每个任务是独立线程, 上个任务的循环线程一死, 它存在线程局部里的 recorder
+    谁也读不到。原实现读 _current_rec() 补写, 因此真机连续 5 次中止全都没留下汇总行。
+    上面那条同线程用例发现不了这个 bug —— 所以这里必须换线程复现。"""
+    hook._on_agent_before({'handler': _Handler(SimpleNamespace(
+        log_path=str(tmp_path / 'model_responses_1.txt'), task_dir=None))})
+    hook._on_turn_before({'turn': 1})
+    hook._on_llm_before({})
+    hook._on_llm_after({'client': _Client([])})
+    hook._on_turn_after({})
+    # 循环生成器被弃, 且不碰 agent_after —— 与上面一样, 但整个"下一个任务"换到新线程
+    box = {}
+
+    def _next_task():
+        hook._on_agent_before({'handler': _Handler(SimpleNamespace(
+            log_path=str(tmp_path / 'model_responses_2.txt'), task_dir=None))})
+        box['ok'] = True
+
+    t = threading.Thread(target=_next_task)
+    t.start(); t.join()
+    assert box.get('ok')
+    lines = _lines(run_dir / 'metrics_1.jsonl')
+    assert lines[-1]['end_reason'] == 'unfinished'
+    assert lines[-1]['recovered'] is True        # 标明是补写, 别被当成真实汇总
+
+
+def test_backfill_does_not_touch_a_run_that_already_has_a_summary(run_dir, tmp_path):
+    """正常收尾的运行不能再被补一条 unfinished(否则一次运行两条汇总, 口径就乱了)。"""
+    _drive(tmp_path, logid='1')                  # 正常跑完 → 已有汇总
+    before = len(_lines(run_dir / 'metrics_1.jsonl'))
+    hook._on_agent_before({'handler': _Handler(SimpleNamespace(
+        log_path=str(tmp_path / 'model_responses_2.txt'), task_dir=None))})
+    assert len(_lines(run_dir / 'metrics_1.jsonl')) == before
+
+
+def test_backfill_ignores_a_missing_file(run_dir, tmp_path):
+    """上次运行的指标文件不在(被 prune 掉/从未落盘)时安静跳过, 不抛异常。"""
+    hook._last_run['id'] = 'does-not-exist'
+    hook._on_agent_before({'handler': _Handler(SimpleNamespace(
+        log_path=str(tmp_path / 'model_responses_9.txt'), task_dir=None))})
+    assert not list(run_dir.glob('metrics_does-not-exist.jsonl'))
 
 
 def test_a_failing_write_never_breaks_the_task(run_dir, tmp_path, monkeypatch):

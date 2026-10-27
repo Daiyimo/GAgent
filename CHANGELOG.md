@@ -7,6 +7,52 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- Structured actions: `gui_act` now accepts pixel coordinates as well as 0-1000
+  normalized ones — any value over 1000 can only be a pixel, since the normalized
+  ceiling is exactly 1000, so the reading is unambiguous. A real 46-turn session
+  wasted 7 whole turns on `ValueError: point must be 0-1000 normalized, got
+  [752, 2512]` — half of every error in 145 tool results, and the single largest
+  failure source. The cause was a contract contradiction: the schema told the
+  model the point "must come from the current observation (dump bounds or
+  look() box)", but both report pixels while the tool demanded 0-1000, so
+  following the instruction guaranteed the error. The schema and `phone_use.md`
+  §0.2 now state the conversion (`rx = round(x * 1000 / screen_w)`) and say that
+  raw dump/look coordinates are accepted too.
+  结构化动作现在同时收像素与 0-1000 归一化坐标（>1000 只可能是像素，无歧义）。
+  真机 46 轮会话有 7 个轮次整个废在坐标单位报错上，占 145 个 tool_result 里全部
+  错误的一半，是最大的单一失败源。根因是契约矛盾：schema 让模型"point 取自 dump
+  bounds 或 look() box"，而那两处给的是像素，与 0-1000 的要求自相矛盾。schema 与
+  phone_use.md §0.2 现在写明换算公式，并说明原始 dump/look 坐标也可直接传入。
+- Structured actions: `phone_use.md` §1 now documents `ocr(img)` — it needs the
+  image argument, and a bare `droid.ocr()` raises `TypeError: missing 1 required
+  positional argument: 'img'` (observed on a real device). §0.1 already told the
+  model to use `droid.ocr()`, but only `ocr_text` was documented.
+  §1 补齐 `ocr(img)` 文档：它必须传图片参数，裸调会 TypeError（真机中过）。
+- Latency: `BaseSession.history` is now capped by message count
+  (`max_history_msgs`, default 20) before the size-based trim runs. Every turn
+  re-sends the whole history, so an uncapped count makes per-turn cost grow
+  linearly and total time quadratically: a real 19-turn run went from 829 to
+  50017 re-sent characters (60x) and `model_wait` from 3.1s to 32.5s, and the
+  user cancelled it for being too slow. The size cap (`context_win * 3`, up to
+  90k characters) was never reached, because compression only shrinks each
+  message, not the number of them. The head (task description) and the most
+  recent turns are kept; older turns are covered by the working memory the anchor
+  prompt injects each turn.
+  每轮重发全部历史，条数不封顶则单轮成本线性涨、总时间平方涨。真机 19 轮 resend
+  829→50017 字符（60x）、model_wait 3.1s→32.5s，用户因太慢取消。体积上限高达 9 万
+  字符根本等不到——压缩只压单条长度，压不掉条数。保留首条与最近轮次。
+- Diagnostics: an aborted or failed run now gets a backfilled
+  `end_reason='unfinished'` summary. `agent_after` is not in a `finally`, so it
+  never fires when the loop raises, and the previous backfill read the recorder
+  from thread-local storage — but each task runs on its own thread, so the dead
+  task's recorder was unreachable and the backfill could never run. Five
+  consecutive aborted runs left no summary at all on a real device. The backfill
+  now re-checks the previous run's file, which works across threads and
+  processes, and the regression test drives the next task on a real second
+  thread — the original single-threaded test could not catch this.
+  中止/异常时 agent_after 不触发；原补写读线程局部的 recorder，而每个任务独立线程，
+  上个任务的 recorder 谁也读不到，真机连续 5 次中止全无汇总行。改为按文件复查，
+  跨线程/跨进程都生效；回归测试改用真实第二线程复现。
 - Diagnostics: each session now appends a per-turn run record to
   `temp/model_responses/sessions/metrics_<id>.jsonl` — model wait, tool execution and
   post-action verification time, input/output tokens, re-sent history size, and the

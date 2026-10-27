@@ -51,8 +51,12 @@ dump 为空且 `look()` 只有少量文字时，页面是自绘/canvas。此时�
 ## §0.2 GUI 结构化动作（gui_act，优先于 code_run）
 
 任何屏幕操作**优先用 `gui_act` 工具**，不要写 Python：9 个动作
-（`tap`/`swipe`/`longpress`/`text`/`key`/`launch`/`back`/`home`/`wait`），
-参数即 0-1000 归一化坐标（来自 dump bounds 或 `look()` 的框，禁猜）。
+（`tap`/`swipe`/`longpress`/`text`/`key`/`launch`/`back`/`home`/`wait`）。
+**坐标单位（真机实证：搞错这一条 7 次整个轮次作废，是最大单一失败源）**：
+`gui_act` 收 0-1000 归一化坐标，而 `dump()`/`look()` 返回的是**像素**——必须先换算
+`rx = round(x * 1000 / 屏幕宽)`、`ry = round(y * 1000 / 屏幕高)`（宽高用 `droid.screen()` 取）。
+换算后的值超过 1000 也没关系：任何 >1000 的坐标会被直接当像素收下并自动转换，
+所以直接把 dump/look 的原始坐标传进去同样能工作。禁在不看当前屏幕的情况下猜坐标。
 实测对比：写 Python 的 agent 每轮多花 1-3 次模型调用探索接口，结构化动作 31 步几乎无空转。
 **但"看屏幕"不算动作**：`dump()`/`look()`/`ask_vision()`/`recipe_list()` 只有 code_run 一条路，
 该用就用——观察走 code_run、动作走 gui_act，二者不冲突。上一轮没看过屏幕时，先 dump/look 再点。
@@ -132,7 +136,10 @@ res = droid.recipe_run({'app': '腾讯新闻'})
 需要完整候选时打印紧凑字段，不截断到前几项：
 `print([(n['label'], n.get('cls'), n['x'], n['y']) for n in droid.look()])`。
 `look` 不是图片问答，不能传问题字符串。底层 `ui_detect` 只有 `bbox`，需要中心坐标时直接用 `look`。
-`ocr_text` 只识别文字裁剪，不能用它扫描整屏；没有 `droid.input`、`droid.sh` 或 `shot(save=True)`。
+`ocr(img)` 整屏文字检测，`img` 必传（BGR ndarray，通常取 `droid.shot()`）——**裸调 `droid.ocr()` 会
+TypeError: missing 1 required positional argument: 'img'**（真机实证中过）。`ocr_text(img)` 只识别
+已裁好的文字区域，两者都不能传路径字符串。`ocr` 不能扫描整屏找按钮，只取文字与其框。
+没有 `droid.input`、`droid.sh` 或 `shot(save=True)`。
 
 ### §3 输入结果
 

@@ -50,6 +50,12 @@ class _Sess:
     trim_keep_rate = 0.6
 
 
+class _BigSess:
+    """体积上限拉到极大, 单独验证条数上限——否则两条路径互相干扰, 测不到想测的那条。"""
+    context_win = 10 ** 9
+    trim_keep_rate = 0.6
+
+
 class CompressionParamsTest(unittest.TestCase):
     def setUp(self):
         compress_history_tags._cd = 0
@@ -123,6 +129,45 @@ class TrimKeepsProtocolCarrierTest(unittest.TestCase):
         self.assertEqual(msgs[0]['content'], protocol)      # 协议载体不因超限被 pop 掉
         self.assertIn('交互协议', msgs[0]['content'])
         self.assertLess(len(msgs), 21)                       # 旧轮次确实被裁掉了
+
+
+class HistoryMessageCapTest(unittest.TestCase):
+    """条数上限: 每轮重发全部历史, 条数不封顶则单轮成本随轮数线性涨、总时间平方涨。
+
+    真机实证: 19 轮 resend 829→50017 字符(60x)、model_wait 3.1s→32.5s, 用户因太慢
+    把任务取消。体积上限 context_win*3 高达 9 万字符, 那条路根本等不到——压缩只把
+    单条压到 600, 压不掉条数本身。"""
+
+    def _convo(self, turns):
+        """turns 轮 user/assistant 交替的短消息(内容极小, 确保测的是条数不是体积)。"""
+        out = [{'role': 'user', 'content': 'm0'}]
+        out += [{'role': 'assistant', 'content': 'a%d' % i} for i in range(turns)]
+        out += [{'role': 'user', 'content': 'm%d' % i} for i in range(1, turns)]
+        return out
+
+    def test_history_is_capped_regardless_of_total_size(self):
+        msgs = self._convo(60)                    # 60 条也远低于体积上限
+        trim_messages_history(msgs, _BigSess())
+        self.assertLessEqual(len(msgs), 20)       # 默认 max_history_msgs=20
+
+    def test_cap_keeps_the_head_and_the_recent_tail(self):
+        msgs = self._convo(60)
+        trim_messages_history(msgs, _BigSess())
+        self.assertEqual(msgs[0]['content'], 'm0')           # 首条(任务描述)必须在
+        self.assertEqual(msgs[-1]['content'], 'm59')         # 最新一轮必须在
+
+    def test_short_history_is_untouched(self):
+        msgs = self._convo(6)
+        before = [m['content'] for m in msgs]
+        trim_messages_history(msgs, _BigSess())
+        self.assertEqual([m['content'] for m in msgs], before)
+
+    def test_cap_is_overridable_per_session(self):
+        msgs = self._convo(40)
+        sess = type('S', (_BigSess,), {'max_history_msgs': 8})()
+        trim_messages_history(msgs, sess)
+        self.assertLessEqual(len(msgs), 8)
+        self.assertEqual(msgs[0]['content'], 'm0')
 
 
 if __name__ == '__main__':
