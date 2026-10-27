@@ -330,3 +330,104 @@ class GuiActSkipsRedundantWaitTest(unittest.TestCase):
             self._run({'action': 'home'})
             self._run({'action': 'key', 'value': 'ENTER'})
         self.assertEqual(obs, [])      # back/home/key 没有可定位的目标
+
+
+NODES = [
+    {'t': '搜索', 'cls': 'EditText', 'x': 645, 'y': 598, 'b': '182,527,1109,670'},
+    {'t': '取消', 'cls': 'TextButton', 'x': 100, 'y': 200},
+    {'t': '', 'cls': 'Image', 'x': 300, 'y': 300},          # 无文字 → 应被丢掉
+    {'label': '发送', 'cls': 'TextButton', 'bbox': [900, 2400, 1100, 2500]},  # look() 形态
+    {'t': 'x' * 80, 'cls': 'Text', 'x': 10, 'y': 20},        # 超长标签 → 应截断
+]
+
+
+class PostActionObsTest(unittest.TestCase):
+    """gui_act 结果必须带动作后的紧凑观测, 否则每个动作都要多花一整轮去观察。
+
+    真机实证: 39 轮任务里约 20 轮是纯观察(code_run + dump/look); 供应商 p50 延迟
+    5~10s 的现状下, 省一轮就是省 5~10s。"""
+
+    def setUp(self):
+        import ga_android
+        self.h = object.__new__(ga_android.GenericAgentHandler)
+        self.h.cwd = '.'
+        self.h.working = {}
+        self.h.history_info = []
+        self.h.code_stop_signal = []
+        self.h.current_turn = 1
+        self.h.parent = types.SimpleNamespace(task_dir=None, verbose=False, _turn_end_hooks={})
+        self.h.print = lambda *a, **k: None
+
+    def _run(self, args, nodes=NODES, dets=None):
+        import ga_android
+        fake = types.SimpleNamespace(
+            screen=lambda: (1200, 2670),
+            ensure_fresh_obs=lambda: {'nodes': []},
+            dump=lambda: list(nodes),
+            look=lambda *a, **k: list(dets or []),
+            tap=lambda x, y: {'diff': 'diff: 8.0%'},
+            wait_stable=lambda **kw: {'stable': True})
+        with patch.dict(sys.modules, {'droid': fake}):
+            ret = self.h.do_gui_act(args, types.SimpleNamespace(content=''))
+            if isinstance(ret, StepOutcome):
+                return ret
+            try:
+                next(ret)
+            except StopIteration as e:
+                return e.value
+
+    def test_tap_result_carries_obs(self):
+        out = json.loads(self._run({'action': 'tap', 'point': [500, 250]}).data)
+        self.assertIn('obs', out)
+        self.assertTrue(out['obs'])
+        first = out['obs'][0]
+        self.assertEqual((first['t'], first['cls'], first['x'], first['y']),
+                         ('搜索', 'EditText', 645, 598))
+
+    def test_obs_drops_textless_items_and_truncates_labels(self):
+        out = json.loads(self._run({'action': 'tap', 'point': [500, 250]}).data)
+        labels = [i['t'] for i in out['obs']]
+        self.assertNotIn('', labels)                    # 无文字项丢掉
+        self.assertTrue(all(len(l) <= 24 for l in labels))
+        self.assertIn('发送', labels)                    # look() 形态(bbox)也收
+
+    def test_obs_is_capped(self):
+        many = [{'t': 'item%d' % i, 'x': i, 'y': i} for i in range(40)]
+        out = json.loads(self._run({'action': 'tap', 'point': [500, 250]}, nodes=many).data)
+        self.assertEqual(len(out['obs']), 12)
+
+    def test_empty_tree_falls_back_to_look(self):
+        out = json.loads(self._run({'action': 'tap', 'point': [500, 250]},
+                                   nodes=[], dets=[{'label': '确定', 'x': 600, 'y': 1200}]).data)
+        self.assertEqual([i['t'] for i in out['obs']], ['确定'])
+
+    def test_both_channels_empty_yields_empty_obs(self):
+        out = json.loads(self._run({'action': 'tap', 'point': [500, 250]},
+                                   nodes=[], dets=[]).data)
+        self.assertEqual(out['obs'], [])          # 不炸, 模型照旧走 code_run 观察
+
+    def test_obs_does_not_pollute_the_verdict(self):
+        """指标口径不能被观测字段污染: extract_verdict 只认白名单键。"""
+        import run_metrics
+        out = json.loads(self._run({'action': 'tap', 'point': [500, 250]}).data)
+        v = run_metrics.extract_verdict(json.dumps(out, ensure_ascii=False))
+        self.assertNotIn('obs', v)
+        self.assertEqual(set(v), {'diff_pct'})
+        self.assertEqual(v['diff_pct'], 8.0)
+
+    def test_obs_survives_a_failing_observation(self):
+        """观测取不到不能把动作结果一起毁掉; 键仍在但为空, 模型知道要另行观察。"""
+        import ga_android
+        fake = types.SimpleNamespace(
+            screen=lambda: (1200, 2670),
+            ensure_fresh_obs=lambda: {'nodes': []},
+            dump=lambda: (_ for _ in ()).throw(RuntimeError('bus down')),
+            look=lambda *a, **k: (_ for _ in ()).throw(RuntimeError('bus down')),
+            tap=lambda x, y: {'diff': 'diff: 8.0%'},
+            wait_stable=lambda **kw: {'stable': True})
+        with patch.dict(sys.modules, {'droid': fake}):
+            ret = self.h.do_gui_act({'action': 'tap', 'point': [500, 250]},
+                                    types.SimpleNamespace(content=''))
+            out = json.loads(ret.data)
+        self.assertEqual(out['diff'], 'diff: 8.0%')     # 动作结果完好
+        self.assertEqual(out['obs'], [])                # 观测缺失给空列表, 不给假数据

@@ -72,6 +72,18 @@ class GuiActSchemaContractTest(unittest.TestCase):
             # 换算公式要在, 否则模型仍不知道拿 screen() 除
             self.assertIn('1000/screen_w', desc.replace(' ', ''), name)
 
+    def test_description_promises_the_post_action_observation(self):
+        """回归(真机实证): 39 轮任务里约 20 轮是纯观察(code_run + dump/look),
+        在供应商 p50 延迟 5~10s 的现状下每轮都是 5~10s。gui_act 结果带紧凑 obs 后
+        模型通常能直接选下一个目标。描述必须把这件事讲明白, 否则模型不知道有 obs,
+        照样每动作花一轮去观察——功能就白加了。"""
+        for name in ('tools_schema.json', 'tools_schema_cn.json'):
+            desc = self._schema(name)['description']
+            self.assertIn('obs', desc, name)
+            self.assertIn('pick the next target straight from it', desc, name)
+            # 也要说清 obs 为空时怎么办, 否则模型可能拿着空观测硬猜
+            self.assertIn('when `obs` is empty', desc, name)
+
     def test_description_does_not_forbid_observing_the_screen(self):
         # 观察(dump/look)只有 code_run 一条路; 曾把"非 GUI 工作"当成唯一许可, 自相矛盾
         for name in ('tools_schema.json', 'tools_schema_cn.json'):

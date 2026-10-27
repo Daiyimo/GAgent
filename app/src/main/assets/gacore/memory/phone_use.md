@@ -60,6 +60,10 @@ dump 为空且 `look()` 只有少量文字时，页面是自绘/canvas。此时�
 实测对比：写 Python 的 agent 每轮多花 1-3 次模型调用探索接口，结构化动作 31 步几乎无空转。
 **但"看屏幕"不算动作**：`dump()`/`look()`/`ask_vision()`/`recipe_list()` 只有 code_run 一条路，
 该用就用——观察走 code_run、动作走 gui_act，二者不冲突。上一轮没看过屏幕时，先 dump/look 再点。
+**动作结果自带 `obs`**：gui_act 每次动作后带回一份紧凑观测 `[{t, cls, x, y}]`（最多 12 项，
+像素坐标），通常足够直接选下一个目标——**别为看一眼屏幕再花一整轮 code_run**。
+只有 `obs` 为空（敏感 App/空壳页）或需要它不带的信息（完整节点树、ROI 裁剪、OCR）时，
+才额外用 code_run 观察。
 动作返回自带 `diff`（像素变化率）；页面已明显变化时不再额外等稳定，故 `stable` 可能缺席，
 看到 `verified:false`/`uncertain`/`hint` 一律重新观察，勿原样重发同一坐标。
 

@@ -362,8 +362,60 @@ class GenericAgentHandler(BaseHandler):
                     out['stable_uncertain'] = True
             except Exception:
                 pass
+        # 动作后带回一份紧凑观测: 否则模型必须再花一整轮 code_run 去 dump()/look()
+        # 才知道屏幕上现在有什么, "观察一轮→动作一轮"把每个动作的成本翻倍。
+        # 真机实证: 39 轮任务里约 20 次是纯观察轮; 在供应商 p50 延迟 5~10s 的现状下,
+        # 省一轮就是省 5~10s。观测封顶 12 项、标签截断, 比模型自己 print 全量节点小一个量级。
+        if act in ('tap', 'swipe', 'longpress', 'back', 'home', 'key', 'launch'):
+            try:
+                out['obs'] = self._compact_obs()
+            except Exception:
+                pass
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         return StepOutcome(json.dumps(out, ensure_ascii=False), next_prompt=next_prompt)
+
+    # 动作后观测的条目上限: 够模型选下一个目标, 又不把工具结果撑大(模型自己 print
+    # 全量 look() 常常 2~5K 字符, 这里封顶后约 800)
+    _OBS_ITEMS = 12
+    _OBS_LABEL = 24
+
+    def _compact_obs(self):
+        """动作后的紧凑观测: [{t, cls, x, y}], 只留选目标必需的字段。
+
+        树不可用(敏感 App/空壳)时退视觉 look(); 两者都空则返回 [],
+        模型照旧走 code_run 观察, 不会因为拿到空观测而误判。"""
+        import droid
+        nodes = []
+        try:
+            nodes = droid.dump() or []
+        except Exception:
+            nodes = []
+        if not nodes:
+            try:
+                nodes = droid.look() or []
+            except Exception:
+                nodes = []
+        items = []
+        for n in nodes[:self._OBS_ITEMS]:
+            if not isinstance(n, dict):
+                continue
+            label = str(n.get('t') or n.get('d') or n.get('label') or '').strip()
+            if not label:
+                continue
+            x, y = n.get('x'), n.get('y')
+            if x is None or y is None:
+                bx = n.get('b') or n.get('bbox')
+                if isinstance(bx, (list, tuple)) and len(bx) >= 4:
+                    try:
+                        x = int((bx[0] + bx[2]) / 2); y = int((bx[1] + bx[3]) / 2)
+                    except (TypeError, ValueError):
+                        continue
+                else:
+                    continue
+            items.append({'t': label[:self._OBS_LABEL],
+                          'cls': str(n.get('cls') or '')[:16],
+                          'x': int(x), 'y': int(y)})
+        return items
 
     @staticmethod
     def _act_proved_change(act, out):
