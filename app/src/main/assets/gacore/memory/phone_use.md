@@ -19,7 +19,7 @@ Python 适合无手机 UI 依赖的计算或文件处理，不得用底层输入
 
 原子能力层（Android 16+ 且 self-ADB 已连）：`droid.appfn_list()` 枚举本机注册的 AppFunction 能力（各 OS 注册不同，以实测返回为准，不预设清单）；命中注册能力（如商店搜索/安装、天气类服务）→ `droid.appfn_call(包名, '类全名#方法', {参数})` 优先于 GUI——零轮次、无坐标漂移、无 OCR 误差。未注册或调用失败的 App 回正常定位阶梯，不反复尝试；实测可用后才写进记忆，并注明它替代不了什么（如商店 `searchApp` 替代不了 GUI 浏览比较）。
 
-## 自绘/canvas 页面（游戏盘面、小程序画布、无树 App）的视觉纪律
+## §0.1 自绘/canvas 页面（游戏盘面、小程序画布、无树 App）的视觉纪律
 
 dump 为空且 `look()` 只有少量文字时，页面是自绘/canvas。此时视觉调用按以下纪律，
 **每一轮最多一次 `ask_vision`**：
@@ -48,15 +48,18 @@ dump 为空且 `look()` 只有少量文字时，页面是自绘/canvas。此时�
    每轮 5-37s 模型调用花在写 CV 代码上仍看不出图案，300s 未完成；实证二：同一路径玩羊了个羊
    41 步/7 分钟 0 消除且产出虚假成功判定）——ask_user 报告感知缺口，或换不需要看画面的路径。
 
-## GUI 结构化动作（gui_act，优先于 code_run）
+## §0.2 GUI 结构化动作（gui_act，优先于 code_run）
 
 任何屏幕操作**优先用 `gui_act` 工具**，不要写 Python：9 个动作
 （`tap`/`swipe`/`longpress`/`text`/`key`/`launch`/`back`/`home`/`wait`），
 参数即 0-1000 归一化坐标（来自 dump bounds 或 `look()` 的框，禁猜）。
 实测对比：写 Python 的 agent 每轮多花 1-3 次模型调用探索接口，结构化动作 31 步几乎无空转。
-`code_run` 仅用于多步逻辑或非 GUI 工作。动作返回自带 diff/stable（动作后已等页面稳定）。
+**但"看屏幕"不算动作**：`dump()`/`look()`/`ask_vision()`/`recipe_list()` 只有 code_run 一条路，
+该用就用——观察走 code_run、动作走 gui_act，二者不冲突。上一轮没看过屏幕时，先 dump/look 再点。
+动作返回自带 `diff`（像素变化率）；页面已明显变化时不再额外等稳定，故 `stable` 可能缺席，
+看到 `verified:false`/`uncertain`/`hint` 一律重新观察，勿原样重发同一坐标。
 
-## 配方回放（L1：重复任务零模型调用）
+## §0.3 配方回放（L1：重复任务零模型调用）
 
 `memory/recipes/` 下存有此前录制的操作配方。**读完 L1 后先查**：`print(droid.recipe_list())`
 返回 `[{recipe_id, app, package, scene, steps, fragile}]`。某配件的 `app` 与用户点名的 App 一致、

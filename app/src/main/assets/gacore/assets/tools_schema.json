@@ -3,7 +3,7 @@
   "type": "function",
   "function": {
    "name": "gui_act",
-   "description": "Phone GUI structured action. PREFERRED for any screen operation — no Python needed. Actions: tap/longpress {point:[x,y] 0-1000}; swipe {point1,point2,ms}; text {value, point?}; key {name:ENTER}; launch {pkg}; back; home; wait {seconds}. Coordinates are 0-1000 normalized (top-left origin). Point must come from the current observation (dump bounds or look() box), never guessed. One action per call. Use code_run only for multi-step logic or non-GUI work.",
+   "description": "Phone GUI structured action. PREFERRED for any screen operation — no Python needed. Actions: tap/longpress {point:[x,y] 0-1000}; swipe {point1,point2,ms}; text {value}; key {value:ENTER}; launch {value:pkg}; back; home; wait {seconds}. Coordinates are 0-1000 normalized (top-left origin). Point must come from the current observation (dump bounds or look() box), never guessed. One action per call. Use code_run to OBSERVE the screen (dump()/look()), for multi-step logic, or for non-GUI work — observation is not an action.",
    "parameters": {
     "type": "object",
     "properties": {
@@ -46,7 +46,7 @@
      },
      "value": {
       "type": "string",
-      "description": "text content / pkg / key name"
+      "description": "content to type (text), package name (launch), or IME key name (key); never a coordinate"
      },
      "seconds": {
       "type": "number"
