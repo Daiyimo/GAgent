@@ -84,10 +84,68 @@ class TraceToRecipeTest(unittest.TestCase):
         self.assertEqual([s.action["kind"] for s in r.steps], ["launch", "back"])
 
     def test_paste_step_keeps_value(self):
-        trace = [_op("paste", args={"text": "蓝牙"}, result={"hit": True},
+        # droid._settle 落 trace 用的键是 value(INPUT_KINDS 分支), 不是 text
+        trace = [_op("paste", args={"value": "蓝牙"}, result={"hit": True},
                      obs=_obs([{"t": "", "edit": 1, "x": 600, "y": 2300, "b": "100,2200,1100,2300"}]))]
         r = recipe.trace_to_recipe(trace, {"app": "X"})
         self.assertEqual(r.steps[0].action, {"kind": "paste", "value": "蓝牙"})
+        # expected 由 hit 推导成 text_appears(回放时靠动作后观测核验, 见 _STATE_EXPECTED)
+        self.assertEqual(r.steps[0].expected, {"kind": "text_appears", "value": "蓝牙"})
+
+    def test_paste_value_also_read_from_result_text(self):
+        # 老 trace 只有 result.text 没有 args.value 时也要能取到原文
+        trace = [_op("paste", args={}, result={"hit": True, "text": "蓝牙"})]
+        r = recipe.trace_to_recipe(trace, {"app": "X"})
+        self.assertEqual(r.steps[0].action["value"], "蓝牙")
+
+    def test_unverified_paste_not_recorded(self):
+        # 未上屏/被守卫拦下/验证不可用的输入不进配方: 录进去回放必然升级, 还把配方弄脏
+        for res in ({"hit": False}, {"hit": False, "text": "x"}, {}, {"verdict": "uncertain"}):
+            trace = [_op("paste", args={"value": "蓝牙"}, result=res)]
+            with self.assertRaises(recipe.RecipeError):
+                recipe.trace_to_recipe(trace, {"app": "X"})
+
+    def test_paste_without_text_not_recorded(self):
+        # 无原文可回放(paste('') 必抛 ValueError)
+        trace = [_op("paste", args={}, result={"hit": True})]
+        with self.assertRaises(recipe.RecipeError):
+            recipe.trace_to_recipe(trace, {"app": "X"})
+
+    def test_swipe_direction_comes_from_trace_not_default(self):
+        # 手指方向必须来自 trace; 缺键时按坐标推, 不猜默认值
+        trace = [_op("swipe", args={"x1": 900, "y1": 1800, "x2": 900, "y2": 600, "direction": "up"},
+                     result={"diff_pct": 20.0})]
+        r = recipe.trace_to_recipe(trace, {"app": "X"})
+        self.assertEqual(r.steps[0].action["direction"], "up")
+
+    def test_swipe_direction_derived_from_coordinates(self):
+        # 向下拖(y 增大)=手指方向 down; 老 trace 没有 direction 键时的兜底
+        trace = [_op("swipe", args={"x1": 600, "y1": 600, "x2": 600, "y2": 1800},
+                     result={"diff_pct": 20.0})]
+        r = recipe.trace_to_recipe(trace, {"app": "X"})
+        self.assertEqual(r.steps[0].action["direction"], "down")
+
+    def test_scroll_direction_comes_from_trace(self):
+        # scroll 的 value 就是手指方向, 不该塌成默认 'up'
+        trace = [_op("scroll", args={"direction": "down"}, result={"scrolled": True})]
+        r = recipe.trace_to_recipe(trace, {"app": "X"})
+        self.assertEqual(r.steps[0].action["kind"], "swipe")
+        self.assertEqual(r.steps[0].action["direction"], "down")
+
+    def test_chinese_app_names_get_distinct_recipe_ids(self):
+        # 中文名经字符过滤会塌缩成同一个 '_' → 不同 App 的配方互相覆盖
+        trace = [_op("launch", args={"pkg": "p"}, result={"pkg": "p"})]
+        ids = {app: recipe.trace_to_recipe(trace, {"app": app}).recipe_id
+               for app in ("腾讯新闻", "美团", "高德地图", "微博")}
+        self.assertEqual(len(set(ids.values())), len(ids))
+        self.assertNotIn("recipe._", ids.values())
+        # 同一 App 必须可复现(幂等), 否则每次录制都是新配方
+        self.assertEqual(recipe.trace_to_recipe(trace, {"app": "腾讯新闻"}).recipe_id,
+                         ids["腾讯新闻"])
+
+    def test_ascii_app_name_id_unchanged(self):
+        trace = [_op("launch", args={"pkg": "p"}, result={"pkg": "p"})]
+        self.assertEqual(recipe.trace_to_recipe(trace, {"app": "X"}).recipe_id, "recipe.X")
 
     def test_empty_trace_rejected(self):
         with self.assertRaises(recipe.RecipeError):

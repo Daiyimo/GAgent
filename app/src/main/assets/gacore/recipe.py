@@ -11,6 +11,7 @@
 回放零模型调用：observe/act 由调用方注入（droid 侧接 dump/look/tap/swipe），
 纯函数核心可在无设备、无网络、无模型下单测。
 """
+import hashlib
 import json
 import re
 from collections import deque
@@ -382,16 +383,42 @@ def _locator_for_point(obs, point):
     return {"kind": "any"}
 
 
-def _expected_from_result(kind, result):
+def _expected_from_result(kind, result, args=None):
     """expected 全部来自该动作已有的验证产出，不新造判定。"""
     if kind == "paste" and result.get("hit"):
-        return {"kind": "text_appears", "value": str(result.get("text") or "")}
+        # paste 的原文只在 trace 的 args.value 里(outcome 不含), 单独取
+        return {"kind": "text_appears",
+                "value": str((args or {}).get("value") or result.get("text") or "")}
     pct = result.get("diff_pct")
     if pct is None:
         return {"kind": "diff_at_least", "value": 1.5}
     if pct <= 0.05:
         return {"kind": "diff_at_most", "value": 0.05}
     return {"kind": "diff_at_least", "value": max(round(pct / 2.0, 2), 0.1)}
+
+
+def _dir_from_points(p1, p2):
+    """(起点, 终点) → 手指移动方向; 与 scroll() 的 direction 同口径。推不出返回 None。
+    与 droid._finger_direction 同源: 本模块必须在无设备/无 droid 的环境下单测,
+    所以各留一份, 不跨模块 import。"""
+    if not p1 or not p2 or None in p1[:2] or None in p2[:2]:
+        return None
+    dx, dy = float(p2[0]) - float(p1[0]), float(p2[1]) - float(p1[1])
+    if abs(dx) < 1 and abs(dy) < 1:
+        return None
+    if abs(dx) >= abs(dy):
+        return "right" if dx > 0 else "left"
+    return "down" if dy > 0 else "up"
+
+
+def _app_slug(app):
+    """App 名 → 配方 id 片段。中文名经 [^0-9A-Za-z_.-] 替换会塌缩成同一个 '_',
+    不同 App 的配方落同路径互相覆盖(评审实证: 腾讯新闻/美团/高德全落 recipe._.json)。
+    替换后只剩分隔符时退回稳定哈希: 可区分、可复现、不引入新依赖。"""
+    s = re.sub(r"[^0-9A-Za-z_.-]+", "_", str(app)).strip("._-")
+    if not s:
+        s = "app_" + hashlib.md5(str(app).encode("utf-8")).hexdigest()[:8]
+    return s
 
 
 def trace_to_recipe(trace, task_hint):
@@ -432,6 +459,14 @@ def trace_to_recipe(trace, task_hint):
                               {"kind": "diff_at_least", "value": 1.5}))
             continue
         if kind in ("tap", "swipe", "paste"):
+            if kind == "paste":
+                # 只录"已验证上屏"的输入。hit 缺失/False(未上屏、被循环守卫拦下、验证不可用)
+                # 录进去, 回放要么 paste('') 直接抛 ValueError, 要么 text_appears 永不成立——必然升级。
+                if result.get("hit") is not True:
+                    continue
+                text = str(args.get("value") or result.get("text") or "")
+                if not text:
+                    continue                      # 无原文可回放
             if kind == "tap":
                 point = (args.get("x"), args.get("y"))
             elif kind == "swipe":
@@ -443,10 +478,13 @@ def trace_to_recipe(trace, task_hint):
                 fragile = True
             action = {"kind": kind}
             if kind == "paste":
-                action["value"] = str(args.get("text") or "")
+                action["value"] = text
             if kind == "swipe":
-                action["direction"] = args.get("direction", "down")
-            steps.append(Step("执行 %s" % kind, locator, action, _expected_from_result(kind, result)))
+                # direction 是手指方向(与 scroll() 同口径); 老 trace 没有该键时按坐标推, 不猜默认值
+                action["direction"] = args.get("direction") or _dir_from_points(
+                    (args.get("x1"), args.get("y1")), (args.get("x2"), args.get("y2"))) or "up"
+            steps.append(Step("执行 %s" % kind, locator, action,
+                              _expected_from_result(kind, result, args)))
             continue
         if kind in ("back", "home"):
             steps.append(Step("返回" if kind == "back" else "回桌面", {"kind": "any"},
@@ -458,7 +496,7 @@ def trace_to_recipe(trace, task_hint):
     if len(steps) > _MAX_STEPS:
         steps, fragile = steps[:_MAX_STEPS], True
     app = str((task_hint or {}).get("app") or app_pkg or "app")
-    rid = str((task_hint or {}).get("id") or ("recipe." + re.sub(r"[^0-9A-Za-z_.-]+", "_", app)))
+    rid = str((task_hint or {}).get("id") or ("recipe." + _app_slug(app)))
     return Recipe(recipe_id=rid, scene=str((task_hint or {}).get("scene") or "S1"),
                   app_hint={"package": app_pkg or "", "match": "title_contains", "value": app},
                   steps=steps, recorded_at=str((task_hint or {}).get("recorded_at") or ""),
