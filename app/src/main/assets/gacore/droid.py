@@ -1504,7 +1504,43 @@ def shot(path=None, q=None):
     if path:
         open(path, "wb").write(data)
         return path
-    return img
+    return img.view(_shot_img_cls())
+
+
+_ShotImg = None                  # 惰性创建(见 _shot_img_cls): droid 不设模块级 import,
+                                 # 这样 PC 侧没装 numpy/cv2 也能 import 本模块
+
+
+def _shot_img_cls():
+    """BGR 截屏的 ndarray 子类(首次调用时创建并缓存)。
+
+    为什么用子类而不碰数据: 只要把 print()/repr() 从一串数字换成能指导下一步的提示,
+    模型就不会再花一整轮去 print(shot()) 试探返回类型——真机实证它正是这么浪费的
+    (回合小结原句: "droid.shot() 返回 numpy 数组。改用 numpy …")。phone_use.md §1
+    也早就写明"print(shot()) 只会输出数字", 但模型照犯: 默认 repr 吐出一堆数字,
+    看起来"像是有内容"。把回显变成提示, 这个浪费从源头消失, 不依赖模型记住规矩。
+
+    只改显示, 不改数据: isinstance(x, np.ndarray) 仍为 True, cv2/numpy 运算、
+    切片、dtype/shape 全部原样, 下游无需适配。"""
+    global _ShotImg
+    if _ShotImg is None:
+        import numpy as np
+
+        class _Shot(np.ndarray):
+            def __repr__(self):
+                if self.ndim >= 2:
+                    h, w = int(self.shape[0]), int(self.shape[1])
+                    ch = int(self.shape[2]) if self.ndim > 2 else 1
+                else:
+                    h = w = ch = 0
+                return ('<screenshot %dx%dx%s BGR ndarray — print() cannot show an image; '
+                        'pass it to ask_vision(img, question), droid.ocr(img) or droid.look()>'
+                        % (w, h, ch))
+
+            __str__ = __repr__
+
+        _ShotImg = _Shot
+    return _ShotImg
 
 
 # ---------------- onnxruntime shim: 把 ort 调用转发给 APK 总线 ----------------
@@ -1594,13 +1630,38 @@ def _ocr_engine():
     return _ppocr
 
 
+def _check_bgr(img, who):
+    """入口类型自解释: 收窄到"看得出来的错", 不猜。
+
+    真机实证: 模型写 `img = droid.shot(); crop = img.crop((0,150,1200,800));
+    droid.ocr(crop)` —— crop 是 **PIL Image**(shot() 返回的是 ndarray, 没有 .crop),
+    于是整轮抛异常; 下一轮才改成 numpy 切片。这类错误原本只会透出底层一句难懂的
+    TypeError/AttributeError, 模型要自己试一轮才知道。这里把"该传什么、手上有的是
+    什么、怎么改"一次说清。"""
+    import numpy as np
+    if isinstance(img, np.ndarray):
+        return img
+    kind = type(img).__name__
+    hint = ''
+    if kind == 'Image' or hasattr(img, 'crop') and not isinstance(img, np.ndarray):
+        hint = ('; got a PIL Image — droid.shot() returns a numpy BGR ndarray, '
+                'not a PIL Image: slice with img[y1:y2, x1:x2] instead of img.crop(...)')
+    elif isinstance(img, str):
+        hint = ('; got a path string — pass the image itself (droid.shot()), '
+                'ocr()/ocr_text() do not read files')
+    raise TypeError('%s needs a BGR ndarray (droid.shot() or a numpy slice of it), got %s%s'
+                    % (who, kind, hint))
+
+
 def ocr(img):
     """img: BGR ndarray → [(box 4x2 int, text, score), ...]"""
-    return _ocr_engine()(img)
+    _check_bgr(img, 'ocr()')          # 先检查: _ocr_engine() 内部会 _bundle() 摸设备,
+    return _ocr_engine()(img)         # 写成 _ocr_engine()(_check_bgr(..)) 会先建引擎再检查
 
 
 def ocr_text(img):
     """img: cropped BGR ndarray → (text, score), without text detection."""
+    _check_bgr(img, 'ocr_text()')
     return _ocr_engine().recognize(img)
 
 
