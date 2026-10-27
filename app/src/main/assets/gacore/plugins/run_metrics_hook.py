@@ -159,7 +159,16 @@ def _backfill_unfinished(run_id):
 
 
 def _on_agent_before(ctx):
-    _backfill_unfinished(_last_run.get('id'))   # 先收尾上一次: 它可能被中止得没留下汇总
+    # 兜底一(内存): 上一个 recorder 还在 TLS 里, 说明它的 agent_after 没跑成
+    # (中止/异常/末轮 end_turn 被 _safe 吞掉)。当场 flush——turn 行虽是增量写的,
+    # 但**最后一个轮次和汇总只由 end_run 落**, 不 flush 就随 recorder 一起蒸发。
+    prev = _current_rec()
+    _set_rec(None)
+    if prev is not None:
+        _safe(prev.end_run, 'unfinished')
+    # 兜底二(文件): 上个任务的循环线程已经死了, 它的 recorder 只留在那条线程的
+    # TLS 里, 新任务换线程后 _current_rec() 永远读到 None——所以还要按文件复查。
+    _backfill_unfinished(_last_run.get('id'))
     run_id = _logid(ctx)
     _last_run['id'] = run_id
     _set_rec(run_metrics.RunRecorder(run_id=run_id, gen=_gen(), sink=_make_sink(run_id)))
