@@ -69,6 +69,12 @@ def compress_history_tags(messages, keep_recent=4, max_len=600, force=False, int
         return text
     for i, msg in enumerate(messages):
         if i >= len(messages) - keep_recent: break
+        # [0] 是协议载体: _build_protocol_prompt 把 system + 交互协议 + 工具清单 + L1 记忆索引
+        # 一次性拼成首条 prompt, 后续每条只是它的重复。裁它 = 把交互协议从上下文里删掉,
+        # 第 N 轮起模型既看不到 <tool_use> 协议也看不到记忆路由(实测 7827→619 字符, 全丢)。
+        # system 消息同理: 常驻约束, 不属于"旧轮次"。
+        if i == 0 or msg.get('role') == 'system':
+            continue
         c = msg['content']
         if isinstance(c, str): msg['content'] = _trunc(c)
         elif isinstance(c, list):
@@ -121,9 +127,9 @@ def trim_messages_history(history, sess):
     compress_history_tags(history, keep_recent=4, force=True)   # 超限强压: 与默认一致, 旧轮次只留头尾
     if cost() <= target: return
     while len(history) > 9 and cost() > target:
-        history.pop(0)
-        while history and history[0].get('role') != 'user': history.pop(0)
-        if history and history[0].get('role') == 'user': history[0] = _sanitize_leading_user_msg(history[0])
+        history.pop(1)   # 只丢旧对话轮次; [0]=协议载体必须留, 它是唯一常驻上下文
+        while len(history) > 1 and history[1].get('role') != 'user': history.pop(1)
+        if len(history) > 1 and history[1].get('role') == 'user': history[1] = _sanitize_leading_user_msg(history[1])
     print(f'[Debug] Trimmed context, current: {cost()} chars, {len(history)} messages.')
 
 def auto_make_url(base, path):
