@@ -4,6 +4,7 @@
 探索接口(inspect.signature、试参数、写 OpenCV 分析); 结构化动作协议的 agent
 31 步几乎无空转。经实测对比选择此方案效果更佳: 9 个动作 + 参数硬校验。
 """
+import json
 import sys
 import types
 import unittest
@@ -133,3 +134,138 @@ class GuiActHandlerTest(unittest.TestCase):
         with patch.dict(sys.modules, {'droid': fake}):
             out = self._run({'action': 'wait', 'seconds': 3})
         self.assertIn('"stable": true', str(out.data))
+
+
+class ActProvedChangeTest(unittest.TestCase):
+    """_act_proved_change: 决定 gui_act 要不要再付一次 wait_stable。
+
+    判错的代价是双向的——把"没变化"判成变了会漏等加载页(点到未完成的界面),
+    把"变了"判成没变会让动画/canvas 页每步白睡满 max_wait。
+    """
+    def setUp(self):
+        import ga_android
+        self.f = ga_android.GenericAgentHandler._act_proved_change
+
+    def test_big_diff_skips_the_extra_wait(self):
+        self.assertTrue(self.f('tap', {'diff': 'diff: 12.5% bbox=[1,2,3,4]'}))
+
+    def test_small_diff_still_waits(self):
+        # 页面几乎没变(可能在加载): 必须等, 否则下一步点到未完成的界面
+        self.assertFalse(self.f('tap', {'diff': 'diff: 0.02% bbox=[1,2,3,4]'}))
+        self.assertFalse(self.f('swipe', {'diff': 'diff: n/a'}))
+
+    def test_foreground_pkg_alone_is_not_evidence_of_change(self):
+        # 回归: tap()/swipe() 恒设 fg=当前前台包名。拿它当变化证据会让 tap 永远跳过等待。
+        self.assertFalse(self.f('tap', {'diff': 'diff: 0.01%', 'fg': 'com.example.app'}))
+        self.assertFalse(self.f('swipe', {'fg': 'com.example.app'}))
+
+    def test_launch_foreground_is_evidence(self):
+        self.assertTrue(self.f('launch', {'fg': 'com.example.app'}))
+
+    def test_paste_hit_is_evidence(self):
+        self.assertTrue(self.f('text', {'hit': True}))
+        self.assertFalse(self.f('text', {'hit': False, 'uncertain': True}))
+
+    def test_no_verdict_keys_means_wait(self):
+        for act in ('back', 'home', 'key'):
+            self.assertFalse(self.f(act, {'action': act}))
+
+
+class GuiActSkipsRedundantWaitTest(unittest.TestCase):
+    """动作自带后验已证明页面变化时, gui_act 不得再调 wait_stable(每步白睡 3s)。"""
+    def setUp(self):
+        import ga_android
+        self.h = object.__new__(ga_android.GenericAgentHandler)
+        self.h.cwd = '.'
+        self.h.working = {}
+        self.h.history_info = []
+        self.h.code_stop_signal = []
+        self.h.current_turn = 1
+        self.h.parent = types.SimpleNamespace(task_dir=None, verbose=False, _turn_end_hooks={})
+        self.h.print = lambda *a, **k: None
+
+    def _run(self, args):
+        ret = self.h.do_gui_act(args, types.SimpleNamespace(content=''))
+        if isinstance(ret, StepOutcome):
+            return ret
+        try:
+            next(ret)
+        except StopIteration as e:
+            return e.value
+
+    def test_tap_with_real_change_skips_wait_stable(self):
+        waited = []
+        fake = types.SimpleNamespace(
+            screen=lambda: (1200, 2670),
+            dump=lambda: [],
+            tap=lambda x, y: {'diff': 'diff: 42.0%'},
+            wait_stable=lambda **kw: waited.append(kw) or {'stable': True})
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = self._run({'action': 'tap', 'point': [500, 250]})
+        self.assertEqual(waited, [])
+        self.assertNotIn('stable', str(out.data))
+
+    def test_tap_without_change_still_waits(self):
+        waited = []
+        fake = types.SimpleNamespace(
+            screen=lambda: (1200, 2670),
+            dump=lambda: [],
+            tap=lambda x, y: {'diff': 'diff: 0.01%'},
+            wait_stable=lambda **kw: waited.append(kw) or {'stable': True, 'uncertain': False})
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = self._run({'action': 'tap', 'point': [500, 250]})
+        self.assertEqual(len(waited), 1)
+        self.assertIn('"stable": true', str(out.data))
+
+    def test_tap_forwards_verdict_fields(self):
+        # 坐标失效/点到非热区/验证不可用在模型眼里要能区分, 不能只给一个 diff
+        fake = types.SimpleNamespace(
+            screen=lambda: (1200, 2670),
+            dump=lambda: [],
+            tap=lambda x, y: {'diff': 'diff: n/a', 'verified': False, 'uncertain': True,
+                              'hint': '屏幕尺寸变化；重新截图定位，不复用旧坐标。', 'fg': 'com.a'},
+            wait_stable=lambda **kw: {'stable': True})
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = self._run({'action': 'tap', 'point': [500, 250]})
+        data = str(out.data)
+        self.assertIn('"uncertain": true', data)
+        self.assertIn('重新截图定位', data)
+
+    def test_longpress_is_dispatched_to_droid(self):
+        calls = []
+        fake = types.SimpleNamespace(
+            screen=lambda: (1200, 2670),
+            dump=lambda: [],
+            longpress=lambda x, y, ms: calls.append((x, y, ms)) or {'diff': 'diff: 3.0%'},
+            wait_stable=lambda **kw: {'stable': True})
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = self._run({'action': 'longpress', 'point': [500, 250], 'ms': 900})
+        self.assertEqual(calls, [(600, 667, 900)])
+        self.assertNotIn('[Error]', str(out.data))
+
+    def test_point_actions_observe_before_acting(self):
+        # 预观测是 recipe locator 的唯一来源: 不喂它, gui_act 录出的配方 locator 全是 any
+        dumps = []
+        fake = types.SimpleNamespace(
+            screen=lambda: (1200, 2670),
+            dump=lambda: dumps.append(1) or [],
+            tap=lambda x, y: {'diff': 'diff: 0.01%'},
+            swipe=lambda *a, **k: {'diff': 'diff: 0.01%'},
+            wait_stable=lambda **kw: {'stable': True})
+        with patch.dict(sys.modules, {'droid': fake}):
+            self._run({'action': 'tap', 'point': [500, 250]})
+            self._run({'action': 'swipe', 'point1': [500, 800], 'point2': [500, 200]})
+        self.assertEqual(len(dumps), 2)
+
+    def test_non_point_actions_do_not_pay_for_an_observation(self):
+        dumps = []
+        fake = types.SimpleNamespace(
+            screen=lambda: (1200, 2670),
+            dump=lambda: dumps.append(1) or [],
+            back=lambda: None, home=lambda: None,
+            key=lambda name: None, wait_stable=lambda **kw: {'stable': True})
+        with patch.dict(sys.modules, {'droid': fake}):
+            self._run({'action': 'back'})
+            self._run({'action': 'home'})
+            self._run({'action': 'key', 'value': 'ENTER'})
+        self.assertEqual(dumps, [])      # back/home/key 没有可定位的目标

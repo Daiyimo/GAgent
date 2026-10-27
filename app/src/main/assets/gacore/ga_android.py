@@ -204,6 +204,9 @@ class GenericAgentHandler(BaseHandler):
     def __init__(self, parent, last_history=None, cwd='./temp'):
         phone_ledger.ACTIVE.clear()   # 任务边界: 动作账本不跨任务存活。上个任务卡死的尾巴(等价+aborted)会让
                                       # 新任务第一次动作直接被判 aborted 不下发, 并注入陈旧 [LOOP-GUARD](评审 C1 实证)
+        try:
+            import droid; droid.reset_trace()   # 操作痕迹同理: 不清则上个任务的 dump/tap 混进本次 recipe_record
+        except Exception: pass                   # PC 侧/无设备环境下 droid 不可 import, 不影响工具库注册
         self.parent = parent
         self.working = {}
         self.cwd = cwd;  self.current_turn = 0
@@ -280,6 +283,12 @@ class GenericAgentHandler(BaseHandler):
         if act not in self._GUI_ACTIONS:
             return StepOutcome('[Error] gui_act unknown action %r, choose from: %s'
                                % (act, '/'.join(self._GUI_ACTIONS)), next_prompt='\n')
+        if act in ('tap', 'longpress', 'swipe'):
+            # 预观测: 动作落账要带「动作前」的观测, 才能从点所在节点推导 recipe locator。
+            # 不喂它, gui_act 通道录出的配方 locator 全是 any, 回放第一步就升级(评审实证)。
+            # 只对需要坐标的动作做: back/home/key/wait 没有可定位的目标。
+            try: droid.dump()
+            except Exception: pass
         try:
             if act in ('tap', 'longpress'):
                 x, y = self._norm_pt(args.get('point'))
@@ -287,12 +296,20 @@ class GenericAgentHandler(BaseHandler):
                     ret = droid.tap(x, y)
                 else:
                     ret = droid.longpress(x, y, int(args.get('ms') or 800))
+                # verified/uncertain/hint/fg 必须一起转发: 坐标失效(屏幕形态变化)、点到非热区、
+                # 验证不可用在模型眼里要能区分。只给 diff 会把"没变化"当成"点到了但没反应"反复重发。
                 out = {'action': act, 'point': [x, y], 'diff': ret.get('diff')}
+                for k in ('verified', 'uncertain', 'hint', 'fg'):
+                    if ret.get(k) is not None:
+                        out[k] = ret[k]
             elif act == 'swipe':
                 x1, y1 = self._norm_pt(args.get('point1'))
                 x2, y2 = self._norm_pt(args.get('point2'))
                 ret = droid.swipe(x1, y1, x2, y2, int(args.get('ms') or 300))
                 out = {'action': act, 'diff': ret.get('diff')}
+                for k in ('verified', 'uncertain', 'hint', 'fg'):
+                    if ret.get(k) is not None:
+                        out[k] = ret[k]
             elif act == 'text':
                 val = str(args.get('value') or '')
                 if not val:
@@ -318,8 +335,11 @@ class GenericAgentHandler(BaseHandler):
         except Exception as e:
             return StepOutcome('[Error] gui_act failed: %s: %s' % (type(e).__name__, e), next_prompt='\n')
         # 动作后自动等页面稳定(F1): 静态页几乎不花时间, 加载页不抢跑。
+        # 但动作自带后验已经证明页面变了(diff 超带/hit/fg)时不再等: 消除类棋盘/视频/动画页
+        # 永远等不到两帧 diff<=1.5%, 每步白睡满 max_wait——那等于把 d60f6be 想消掉的固定
+        # action_sleep 又请回来, 只是从 5s 变成 3s 且换成隐式发生。
         # wait 动作自己就是等待, 不重复等。
-        if act != 'wait':
+        if act != 'wait' and not self._act_proved_change(act, out):
             try:
                 st = droid.wait_stable()
                 out['stable'] = st.get('stable')
@@ -329,6 +349,24 @@ class GenericAgentHandler(BaseHandler):
                 pass
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         return StepOutcome(json.dumps(out, ensure_ascii=False), next_prompt=next_prompt)
+
+    @staticmethod
+    def _act_proved_change(act, out):
+        """动作自带后验是否已证明页面变了(此时再等页面稳定是纯浪费)。
+        阈值用 phone_ledger.EVIDENCE_PCT(与账本同一口径): diff 超过它=产出新证据。
+        ⚠️ tap/swipe 的 fg 只是"当前前台包名", 恒有——它不是变化证据。
+        只有 launch 的 fg(目标包已在前台)才是。"""
+        if act == 'launch' and out.get('fg'):
+            return True
+        if out.get('hit') is True:
+            return True
+        d = out.get('diff')
+        if isinstance(d, str) and '%' in d:
+            try:
+                return float(d.split('%', 1)[0].rsplit(' ', 1)[-1]) > phone_ledger.EVIDENCE_PCT
+            except (TypeError, ValueError):
+                return False
+        return False
 
     def do_ask_user(self, args, response):
         question = args.get("question", "请提供输入：")
