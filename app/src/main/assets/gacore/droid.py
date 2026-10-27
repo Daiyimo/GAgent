@@ -84,6 +84,15 @@ def _trace(kind, args=None, result=None, obs="auto"):
     _TRACE.append({"kind": kind, "args": args or {}, "result": result or {},
                    "obs": _LAST_OBS if obs == "auto" else obs, "ts": time.time()})
 
+
+def reset_trace():
+    """任务边界: 清空操作痕迹与末次观测。两者都是任务级状态——不清的话,
+    上个任务(或上一次 recipe_run 自己)产生的 dump/tap 痕迹会混进本次 recipe_record,
+    录出的配方步骤属于别的任务。"""
+    global _LAST_OBS
+    _TRACE.clear()
+    _LAST_OBS = None
+
 _DIR = os.path.dirname(os.path.abspath(__file__))
 BUNDLE = os.path.join(_DIR, "models", "ui_detect_v1")  # 管线py+onnx 捆绑目录
 class _BusSession(requests.Session):
@@ -451,16 +460,46 @@ def _no_effect(pct):
     """「无可观察变化」唯一判据(与既有 tap/swipe miss 提示同口径): 时钟跳字/JPEG 噪声都在带内。"""
     return pct <= phone_ledger.EXACT_PCT
 
+def _finger_direction(p1, p2):
+    """(起点, 终点) → 手指移动方向; 与 scroll() 的 direction 同口径(手指方向, 不是视图方向)。
+    位移不足 1px 判 None——原地长按类手势没有方向可言。四个坐标缺任一即 None:
+    本函数跑在 _settle 里, 抛异常会连带毁掉整条动作落账。"""
+    if not p1 or not p2 or None in p1[:2] or None in p2[:2]:
+        return None
+    dx, dy = p2[0] - p1[0], p2[1] - p1[1]
+    if abs(dx) < 1 and abs(dy) < 1:
+        return None
+    if abs(dx) >= abs(dy):
+        return "right" if dx > 0 else "left"
+    return "down" if dy > 0 else "up"
+
+
+def _trace_args(rec):
+    """落 trace 的动作参数。键必须与 recipe.trace_to_recipe 的读取键一一对应——
+    错键会让录制字段恒为空(评审实证: scroll 方向全落默认值、paste 文本恒空串)。"""
+    if rec.kind in ("tap", "longpress"):
+        return {"x": rec.point[0], "y": rec.point[1]}
+    if rec.kind == "swipe":
+        args = {"x1": rec.point[0], "y1": rec.point[1], "x2": rec.point2[0], "y2": rec.point2[1]}
+        d = _finger_direction(rec.point, rec.point2)
+        if d: args["direction"] = d
+        return args
+    if rec.kind == "scroll":
+        return {"direction": rec.value}          # scroll 的 value 就是手指方向
+    if rec.kind in phone_ledger.INPUT_KINDS:
+        return {"value": rec.value}
+    return {}
+
+
 def _settle(rec, **outcome):
-    """动作结算落账。铁律: 只落已验证事实(verdict/diff_pct/exact_same), 缺省字段的记录不计入判定。"""
+    """动作结算落账。铁律: 只落已验证事实(verdict/diff_pct/exact_same/hit), 缺省字段的记录不计入判定。"""
     if rec is not None:
         rec.outcome = outcome
         _LEDGER.append(rec)
-        _trace(rec.kind, args={"x": rec.point[0], "y": rec.point[1]} if rec.kind in ("tap", "longpress") else
-                             ({"x1": rec.point[0], "y1": rec.point[1], "x2": rec.point2[0], "y2": rec.point2[1]}
-                              if rec.kind == "swipe" else
-                              ({"value": rec.value} if rec.kind in phone_ledger.INPUT_KINDS else {})),
-               result={k: v for k, v in outcome.items() if k in ("diff_pct", "verdict", "fg")})
+        result = {k: v for k, v in outcome.items() if k in ("diff_pct", "verdict", "fg", "hit")}
+        if rec.kind in phone_ledger.INPUT_KINDS and rec.value:
+            result["text"] = rec.value           # paste 的 expected 推导要原文, outcome 里没有
+        _trace(rec.kind, args=_trace_args(rec), result=result)
     return rec
 
 def _pre_dispatch(rec):
@@ -470,15 +509,17 @@ def _pre_dispatch(rec):
     自主导航/注入, 与该策略"少做+先问"的姿态相悖——只保留拒绝/ABORT(拒绝不注入任何事件)。"""
     records = _LEDGER.recent(16) + [rec]
     if rec.kind in ("tap", "longpress"):
-        recovery = phone_ledger.click_recovery(records, pending=rec)
+        recovery = phone_ledger.click_recovery(records, pending=rec, kind=rec.kind)
     elif rec.kind in phone_ledger.INPUT_KINDS:
         recovery = phone_ledger.type_recovery(records, pending=rec)
     else:
         recovery = None
+    if recovery == "ABORT":
+        return {"abort": True}    # 必须先于敏感前台判定: ABORT 的含义是"恢复手段已用尽",
+                                  # 与注入无关。被 sensitive_fg 清掉后 reject_reason 又补不上
+                                  # (强证据门槛不一致), 无效点击会继续打进敏感 App。
     if recovery and _sensitive_fg():
         recovery = None                   # 惰性判定: 只在恢复档真要吃触发时才付一次 ping
-    if recovery == "ABORT":
-        return {"abort": True}
     if recovery:
         return {"recovery": recovery}
     reject = phone_ledger.reject_reason(records, pending=rec)
@@ -536,6 +577,36 @@ def tap(x, y, verify=True, wait=1.0, human=False, *, screen=None):
     ret["fg"] = _fg()
     _settle(rec, verdict="settled", diff_pct=pct, screenshot_exactly_same=_no_effect(pct), fg=ret["fg"])
     return ret
+
+def longpress(x, y, ms=800, verify=True, wait=1.0, *, screen=None):
+    """长按: 唤出上下文菜单/消息多选/桌面图标编辑。同点 swipe(dur>=500) 即长按, 不新增总线 op。
+    verify 与 tap 同款点空后验: 菜单没弹出=屏幕无变化=hint 要求重新观察, 不当成功。
+    ms 夹在 [200,5000]: 过短退化成点击, 过长白等。"""
+    ms = min(max(int(ms), 200), 5000)
+    geometry = _gesture_screen(ping(), [(x, y)], screen)
+    rec = _new_record("longpress", point=(int(x), int(y)), screen=(geometry.get("w"), geometry.get("h")))
+    guard = _pre_dispatch(rec)
+    if guard is not None:
+        return _apply_guard(rec, guard, "长按")
+    before = shot() if verify else None
+    ret = _act(op="swipe", x1=int(x), y1=int(y), x2=int(x), y2=int(y), dur=ms, expected_screen=geometry); ret.pop("ok", None)
+    if not verify: return ret
+    time.sleep(wait)
+    after = shot()
+    diff = _img_diff_str(before, after); ret["diff"] = diff
+    if _shape_changed(before, after):
+        ret.update(verified=False, uncertain=True, hint='屏幕尺寸变化；重新截图定位，不复用旧坐标。', fg=_fg())
+        _settle(rec, verdict="uncertain", diff_pct=100.0)
+        return ret
+    try: pct = float(diff.split("%", 1)[0].split()[-1])
+    except Exception: pct = 0.0
+    if pct < 0.05:
+        ret["hint"] = "长按后屏幕变化很小；可能该元素没有长按菜单，或长按时长不足。请重新观察当前内容再决定下一步，勿原样重发。"
+        _track("droid_longpress_miss", {"diff_pct": round(pct, 3)})   # 与 droid_tap_miss 同款自限量上报
+    ret["fg"] = _fg()
+    _settle(rec, verdict="settled", diff_pct=pct, screenshot_exactly_same=_no_effect(pct), fg=ret["fg"])
+    return ret
+
 def ui_snapshot(package):
     """单窗口的受保护快照；不支持此接口的旧 APK 必须回退，不能用 dump 冒充。"""
     if not package or package == _SELF_PKG or _fg() != package or package in SENSITIVE_APPS:
@@ -1176,11 +1247,11 @@ def paste(text, verify=True, replace=False):
     if "hit" not in ret:
         return ret                      # 未验证/未产出判定: 无证据不落账(铁律)
     if ret.get("hit"):
-        _settle(rec, verdict="settled", evidence_new=True, diff_pct=99.0)          # 已确认上屏=新证据(断尾)
+        _settle(rec, verdict="settled", evidence_new=True, diff_pct=99.0, hit=True)   # 已确认上屏=新证据(断尾)
     elif ret.get("uncertain"):
         _settle(rec, verdict="uncertain")                                           # 验证不可用: 断尾不进阶梯
     else:
-        _settle(rec, verdict="settled", screenshot_exactly_same=True, diff_pct=0.0)  # 明确未上屏=可证明无效果
+        _settle(rec, verdict="settled", screenshot_exactly_same=True, diff_pct=0.0, hit=False)  # 明确未上屏=可证明无效果
     return ret
 
 def _paste_impl(text, verify=True, replace=False):

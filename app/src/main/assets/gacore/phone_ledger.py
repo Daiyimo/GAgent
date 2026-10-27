@@ -200,9 +200,11 @@ def _ladder(records, kind, threshold, ladder, pending=None):
     return ladder[idx]
 
 
-def click_recovery(records, pending=None):
-    """改写级(点击): 连续等价无效点击 → WAIT→BACK→HOME→ABORT(有界)。"""
-    return _ladder(records, "tap", CLICK_THRESHOLD, CLICK_LADDER, pending)
+def click_recovery(records, pending=None, kind="tap"):
+    """改写级(点击): 连续等价无效点击 → WAIT→BACK→HOME→ABORT(有界)。
+    kind 默认 'tap'; tap/longpress 同走点击阶梯——长按若漏了它,
+    在同一位置反复无效长按永远不拦(评审实证: 硬编码 'tap' 使 _settled_tail 一开头就断)。"""
+    return _ladder(records, kind, CLICK_THRESHOLD, CLICK_LADDER, pending)
 
 
 def type_recovery(records, pending=None):

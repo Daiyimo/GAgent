@@ -122,6 +122,19 @@ class RecoveryLadderTest(unittest.TestCase):
         rs = n_taps(3, exact=True) + [rec("back")]
         self.assertIsNone(pl.click_recovery(rs))
 
+    def test_longpress_walks_the_same_click_ladder(self):
+        # 长按与点击同阶梯: kind 曾硬编码 'tap', 长按记录让 _settled_tail 一开头就断,
+        # 同一位置反复无效长按永远不拦(评审实证)。
+        lp = lambda n: [rec("longpress", point=(600, 1200), exact=True) for _ in range(n)]
+        self.assertEqual(pl.click_recovery(lp(3), kind="longpress"), "WAIT")
+        self.assertEqual(pl.click_recovery(lp(5), kind="longpress"), "HOME")
+        self.assertEqual(pl.click_recovery(lp(6), kind="longpress"), "ABORT")
+        # 不传 kind 时仍按 tap 判(向后兼容): 长按记录不该触发 tap 阶梯
+        self.assertIsNone(pl.click_recovery(lp(6)))
+
+    def test_tap_records_do_not_trigger_longpress_ladder(self):
+        self.assertIsNone(pl.click_recovery(n_taps(6, exact=True), kind="longpress"))
+
     def test_type_ladder_advances_and_is_bounded(self):
         pastes = lambda n: [rec("paste", value="123456", point=(600, 2300), exact=True) for _ in range(n)]
         self.assertEqual(pl.type_recovery(pastes(2)), "REFOCUS")
