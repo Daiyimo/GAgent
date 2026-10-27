@@ -35,10 +35,12 @@ LAYER_TODAY = 'L4'                      # 当前只有通用 ReAct 一层; Phase
 VERDICT_KEYS = ('verified', 'uncertain', 'scrolled', 'evidence', 'performed', 'hit')
 
 # 判定函数归因表: (工具名, 见到的白名单键) → 既有判定函数名。归不出返回 None, 不猜。
+# gui_act 是多路复用器: 它按 action 分别调 droid.tap/swipe/paste, 判定仍由那些既有函数产出,
+# 所以归因到同一行(不归它 = 结构化动作通道的判定全部无法解释来源)。
 _VERIFIER_TABLE = (
-    (('tap', 'tap_rel', 'swipe'), ('diff_pct',), '_img_diff_str'),
+    (('tap', 'tap_rel', 'swipe', 'gui_act'), ('diff_pct',), '_img_diff_str'),
     (('scroll', 'scroll_view'), ('evidence',), '_scroll_verdict'),
-    (('paste',), ('hit',), '_classify_paste_rows'),
+    (('paste', 'gui_act'), ('hit',), '_classify_paste_rows'),
 )
 
 # 判定汇总的三个互斥桶(与 tools_no_verdict 一起穷尽 tool_records):
@@ -66,7 +68,14 @@ def diff_pct(value) -> Optional[float]:
 
 
 def extract_verdict(data) -> dict:
-    """从工具结果里取判定证据(白名单); 非 dict 或无线索返回 {}。"""
+    """从工具结果里取判定证据(白名单); 非 dict 或无线索返回 {}。
+    gui_act 的结果是 json.dumps 出的字符串——结构化动作通道的判定全走这里。
+    不解析字符串, 所有 gui_act 调用都会落进 tools_no_verdict 桶, hit/uncertain 永远不计。"""
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except (TypeError, ValueError):
+            return {}
     if not isinstance(data, dict):
         return {}
     out = {}

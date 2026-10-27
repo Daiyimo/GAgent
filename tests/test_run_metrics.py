@@ -48,6 +48,22 @@ class TestExtractVerdict:
         assert run_metrics.extract_verdict('a very long tool result') == {}
         assert run_metrics.extract_verdict([{'t': 'node'}]) == {}
 
+    def test_gui_act_json_string_result_is_parsed(self):
+        # gui_act 的返回是 json.dumps(out) 字符串。不解析它, 结构化动作通道的判定
+        # 全部落进 tools_no_verdict 桶, hit/uncertain/diff_pct 永远不计(评审实证)。
+        payload = json.dumps({'action': 'tap', 'point': [500, 500],
+                              'diff': 'diff: 12.5% bbox=[1,2,3,4]', 'fg': 'com.example.app'},
+                             ensure_ascii=False)
+        assert run_metrics.extract_verdict(payload) == {'diff_pct': 12.5}
+
+        assert run_metrics.extract_verdict(json.dumps({'action': 'text', 'hit': True})) == {'hit': True}
+        assert run_metrics.extract_verdict(json.dumps({'action': 'text', 'hit': False,
+                                                      'uncertain': True})) == {'hit': False, 'uncertain': True}
+
+    def test_non_json_string_still_yields_nothing(self):
+        assert run_metrics.extract_verdict('{"broken') == {}
+        assert run_metrics.extract_verdict('42') == {}
+
 
 class TestAttribVerifier:
     @pytest.mark.parametrize('tool,verdict,expected', [
@@ -61,6 +77,9 @@ class TestAttribVerifier:
         ('tap', {'verified': True}, None),          # 无像素证据 → 不归因
         ('file_read', {'verified': True}, None),    # 非判定类工具 → 不归因
         ('dump', {}, None),
+        # gui_act 是多路复用器, 按它实际调的既有函数归因
+        ('gui_act', {'diff_pct': 12.5}, '_img_diff_str'),
+        ('gui_act', {'hit': True}, '_classify_paste_rows'),
     ])
     def test_mapping(self, tool, verdict, expected):
         assert run_metrics.attrib_verifier(tool, verdict) == expected
