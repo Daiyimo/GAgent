@@ -184,21 +184,27 @@ class GuiActOrientationTest(unittest.TestCase):
             return e.value
 
     def test_orientation_change_skips_wait_but_keeps_obs(self):
-        waited, dumped = [], []
+        waited, observed = [], []   # observed 记 observe() 次数(_compact_obs 现在走它拿观测)
         fake = types.SimpleNamespace(
             screen=lambda: (1200, 2670),
             tap=lambda x, y: {'diff': 'n/a', 'verified': False, 'uncertain': True,
                               'orientation_changed': True, 'screen': (2670, 1200), 'rot': 1,
                               'orientation': 'landscape', 'hint': '屏幕方向已变化'},
             wait_stable=lambda **kw: waited.append(kw) or {'stable': True},
-            dump=lambda: dumped.append(1) or [{'t': '通行证', 'x': 210, 'y': 561}])
+            dump=lambda: [{'t': '通行证', 'x': 210, 'y': 561}],
+            dump_state=lambda: {'nodes': [{'t': '通行证', 'x': 210, 'y': 561}],
+                                'degraded': None},
+            screen_kind=lambda: 'ui',
+            look=lambda *a, **k: [],
+            observe=lambda **k: observed.append(1) or _fake_observe(
+                nodes=[{'t': '通行证', 'x': 210, 'y': 561}], dets=[]))
         with patch.dict(sys.modules, {'droid': fake}):
             out = json.loads(self._run({'action': 'tap', 'point': [500, 250]}).data)
         self.assertEqual(out['screen'], [2670, 1200])
         self.assertEqual(out['rot'], 1)
         self.assertEqual(out['orientation'], 'landscape')
         self.assertEqual(waited, [])                  # 旋转时不等稳定
-        self.assertEqual(len(dumped), 1)              # 但仍取新画面观测
+        self.assertEqual(len(observed), 1)            # 但仍取新画面观测
         self.assertEqual(out['obs'][0]['t'], '通行证')
 
     def test_launch_forwards_screen_and_orientation(self):
@@ -207,7 +213,11 @@ class GuiActOrientationTest(unittest.TestCase):
             launch=lambda pkg: {'fg': pkg, 'screen': (2670, 1200), 'rot': 1,
                                 'orientation': 'landscape'},
             wait_stable=lambda **kw: {'stable': True},
-            dump=lambda: [])
+            dump=lambda: [],
+            dump_state=lambda: {'nodes': [], 'degraded': {'reason': 'tree_empty'}},
+            screen_kind=lambda: 'canvas',
+            look=lambda *a, **k: [{'t': '开始游戏', 'x': 500, 'y': 600}],
+            observe=lambda **k: _fake_observe(nodes=[], dets=[], kind='canvas'))
         with patch.dict(sys.modules, {'droid': fake}):
             out = json.loads(self._run({'action': 'launch', 'value': 'com.tencent.mm'}).data)
         self.assertEqual(out['screen'], [2670, 1200])
@@ -454,9 +464,47 @@ NODES = [
     {'t': '搜索', 'cls': 'EditText', 'x': 645, 'y': 598, 'b': '182,527,1109,670'},
     {'t': '取消', 'cls': 'TextButton', 'x': 100, 'y': 200},
     {'t': '', 'cls': 'Image', 'x': 300, 'y': 300},          # 无文字 → 应被丢掉
-    {'label': '发送', 'cls': 'TextButton', 'bbox': [900, 2400, 1100, 2500]},  # look() 形态
     {'t': 'x' * 80, 'cls': 'Text', 'x': 10, 'y': 20},        # 超长标签 → 应截断
 ]
+# look() 形态的检测框走 observe() 的 yolo 通道(与 dump 节点分开), 不再是塞进 nodes 里
+DETS = [{'label': '发送', 'cls': 'TextButton', 'bbox': [900, 2400, 1100, 2500]}]
+
+
+def _fake_observe(nodes=NODES, dets=DETS, kind='tree'):
+    """droid.observe() 的替身: 按真实契约分 tree/yolo 两个来源产出观测项。
+
+    适配而非弱化: _compact_obs 从"自己分 dump/look 两路"改成"只调 observe()", 于是替身
+    要提供 observe。下游断言(标签/单位/截断/封顶)一字未改。
+    契约: t=显示文本, desc=contentDescription, type='icon'|'text'(仅 yolo)。"""
+    import geom
+    items = []
+    if kind in ('tree', 'unknown'):
+        for n in nodes:
+            bx = n.get('b') or n.get('bbox')
+            x, y = n.get('x'), n.get('y')
+            if x is None or y is None:
+                if isinstance(bx, (list, tuple)) and len(bx) >= 4:
+                    x, y = (bx[0] + bx[2]) / 2, (bx[1] + bx[3]) / 2
+                else:
+                    continue
+            rx, ry = geom.to_norm(x, y, 1200, 2670)
+            items.append({'src': 'tree', 't': n.get('t') or n.get('label') or '',
+                          'desc': n.get('d') or '', 'cls': n.get('cls') or '',
+                          'x': x, 'y': y, 'rx': rx, 'ry': ry, 'click': bool(n.get('click')),
+                          'type': ''})
+    if kind in ('tree', 'blanked', 'unknown'):
+        for d in dets:
+            if isinstance(d.get('bbox'), (list, tuple)) and len(d['bbox']) >= 4:
+                bx1, by1, bx2, by2 = d['bbox']
+                cx, cy = (bx1 + bx2) / 2, (by1 + by2) / 2
+            else:                      # look() 形态: 直接给中心点
+                cx, cy = d.get('x', 0), d.get('y', 0)
+            rx, ry = geom.to_norm(cx, cy, 1200, 2670)
+            items.append({'src': 'yolo', 't': d.get('label') or '', 'desc': '',
+                          'cls': d.get('cls') or '', 'x': cx, 'y': cy, 'rx': rx, 'ry': ry,
+                          'click': None, 'type': 'icon'})
+    return {'kind': kind, 'items': items, 'channels': ['tree', 'yolo'], 'notes': [],
+            'needs_vision': not items, 'ms': 1.0}
 
 
 class PostActionObsTest(unittest.TestCase):
@@ -476,13 +524,17 @@ class PostActionObsTest(unittest.TestCase):
         self.h.parent = types.SimpleNamespace(task_dir=None, verbose=False, _turn_end_hooks={})
         self.h.print = lambda *a, **k: None
 
-    def _run(self, args, nodes=NODES, dets=None):
+    def _run(self, args, nodes=NODES, dets=None, kind='tree'):
         import ga_android
         fake = types.SimpleNamespace(
             screen=lambda: (1200, 2670),
             ensure_fresh_obs=lambda: {'nodes': []},
             dump=lambda: list(nodes),
+            dump_state=lambda: {'nodes': list(nodes),
+                                'degraded': None if nodes else {'reason': 'tree_empty'}},
+            screen_kind=lambda: kind,
             look=lambda *a, **k: list(dets or []),
+            observe=lambda **k: _fake_observe(nodes, dets if dets is not None else DETS, kind),
             tap=lambda x, y: {'diff': 'diff: 8.0%'},
             wait_stable=lambda **kw: {'stable': True})
         with patch.dict(sys.modules, {'droid': fake}):
@@ -503,6 +555,52 @@ class PostActionObsTest(unittest.TestCase):
         self.assertEqual((first['t'], first['cls']), ('搜索', 'EditText'))
         self.assertEqual((first['x'], first['y']), (645, 598))
         self.assertEqual((first['rx'], first['ry']), (538, 224))
+
+    def test_canvas_skips_the_useless_look_for_obs(self):
+        """回归: 游戏/canvas 段每个 gui_act 都白付一次全屏 look()(0.5-0.9s)且返回 []。
+        observe() 在 canvas 页直接不跑本地定位通道, 让模型照 SOP 去问 see()。
+        真机 20 步累计省 10-18s。"""
+        looks = []
+        import ga_android
+        fake = types.SimpleNamespace(
+            screen=lambda: (1200, 2670),
+            ensure_fresh_obs=lambda: {'nodes': []},
+            dump=lambda: [],
+            dump_state=lambda: {'nodes': [], 'degraded': {'reason': 'tree_empty'}},
+            screen_kind=lambda: 'canvas',
+            look=lambda *a, **k: looks.append(1) or [{'t': 'x', 'x': 1, 'y': 1}],
+            observe=lambda **k: _fake_observe(nodes=[], dets=[], kind='canvas'),
+            tap=lambda x, y: {'diff': 'diff: 8.0%'},
+            wait_stable=lambda **kw: {'stable': True})
+        self.h.parent = types.SimpleNamespace(task_dir=None, verbose=False, _turn_end_hooks={})
+        self.h.print = lambda *a, **k: None
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = json.loads(self.h.do_gui_act({'action': 'tap', 'point': [500, 250]},
+                                               types.SimpleNamespace(content='')).data)
+        self.assertEqual(out['obs'], [])
+        self.assertEqual(looks, [], 'canvas 上不该为 obs 跑 look()')
+
+    def test_sensitive_blank_still_falls_back_to_look(self):
+        """对照: 微信这类敏感 App 树被置空但屏幕有大量文字, 必须仍跑 YOLO(OCR 贴 label)。"""
+        import ga_android
+        fake = types.SimpleNamespace(
+            screen=lambda: (1200, 2670),
+            ensure_fresh_obs=lambda: {'nodes': []},
+            dump=lambda: [],
+            dump_state=lambda: {'nodes': [], 'degraded': {'reason': 'sensitive_blank'}},
+            screen_kind=lambda: 'blanked',
+            look=lambda *a, **k: [{'t': '搜索框', 'cls': 'EditText', 'x': 635, 'y': 245}],
+            observe=lambda **k: _fake_observe(
+                nodes=[], dets=[{'label': '搜索框', 'cls': 'EditText',
+                                 'bbox': [625, 235, 645, 255]}], kind='blanked'),
+            tap=lambda x, y: {'diff': 'diff: 8.0%'},
+            wait_stable=lambda **kw: {'stable': True})
+        self.h.parent = types.SimpleNamespace(task_dir=None, verbose=False, _turn_end_hooks={})
+        self.h.print = lambda *a, **k: None
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = json.loads(self.h.do_gui_act({'action': 'tap', 'point': [500, 250]},
+                                               types.SimpleNamespace(content='')).data)
+        self.assertEqual([i['t'] for i in out['obs']], ['搜索框'])
 
     def test_obs_drops_textless_items_and_truncates_labels(self):
         out = json.loads(self._run({'action': 'tap', 'point': [500, 250]}).data)

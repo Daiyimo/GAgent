@@ -225,8 +225,8 @@ class VisualObservationTest(unittest.TestCase):
                               {'bbox': [30, 6, 50, 26], 'label': '搜索'},
                               {'bbox': [55, 6, 75, 26], 'label': '取消'},
                               {'bbox': [80, 6, 90, 26], 'label': None}]
-                cache = {'thumb': None, 'roi': None, 'dets': None}
-                with patch.object(droid, '_LOOK_CACHE', cache), \
+                cache = {'thumb': None, 'roi': None, 'pkg': None, 'rot': None, 'res': None}
+                with patch.object(droid, '_OBS_CACHE', cache), \
                      patch.object(droid, 'shot', return_value=frame) as shot, \
                      patch.object(droid, 'ui_detect', return_value=detections) as detect:
                     hits = droid.look(roi='lower', label='搜索')
@@ -249,7 +249,7 @@ class VisualObservationTest(unittest.TestCase):
 
     def test_look_rejects_prompts_before_capturing_a_frame(self):
         with patch.object(droid, 'shot') as shot:
-            with self.assertRaisesRegex(ValueError, 'ask_vision'):
+            with self.assertRaisesRegex(ValueError, 'see\\(\\)'):
                 droid.look('read the first two cards')
         shot.assert_not_called()
 

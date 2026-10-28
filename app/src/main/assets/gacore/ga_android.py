@@ -35,7 +35,8 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
             def flush(self): pass
         token = [False]   # 协作取消令牌: 超时/停止时置位; 僵尸线程下一次经 droid 副作用入口即抛 RunCancelled 自毁
         def _run():
-            run_guard.enter(token)
+            # 截止时刻一并登记: droid.ask_vision 之类的昂贵调用据此自算总时长预算
+            run_guard.enter(token, time.time() + timeout)
             old_out, old_err, old_cwd = sys.stdout, sys.stderr, os.getcwd()
             try:
                 os.chdir(cwd)
@@ -463,59 +464,24 @@ class GenericAgentHandler(BaseHandler):
     _OBS_LABEL = 24
 
     def _compact_obs(self):
-        """动作后的紧凑观测: [{t, cls, x, y}], 只留选目标必需的字段。
+        """动作后的紧凑观测: [{t, src, label, cls, x, y, rx, ry, click}], 只留选目标必需的字段。
 
-        树不可用(敏感 App/空壳)时退视觉 look(); 两者都空则返回 [],
-        模型照旧走 code_run 观察, 不会因为拿到空观测而误判。"""
+        路由在 droid.observe() 里(_classify 决定跑哪些通道), 这里只负责截断成模型看得动的
+        条数。旧实现在这里分 dump/look 两路 + canvas 特判, 还要额外付一次 screen_kind() 的
+        dump_state 往返; canvas 页现在直接由 observe 返回空, 不再白跑一次全屏 look。"""
         import droid
-        nodes = []
         try:
-            nodes = droid.dump() or []
+            res = droid.observe()
         except Exception:
-            nodes = []
-        if not nodes:
-            try:
-                nodes = droid.look() or []
-            except Exception:
-                nodes = []
-        try:
-            sw, sh = droid.screen()
-        except Exception:
-            sw = sh = 0
+            return []
         items = []
-        for n in nodes[:self._OBS_ITEMS]:
-            if not isinstance(n, dict):
-                continue
-            label = str(n.get('t') or n.get('d') or n.get('label') or '').strip()
-            if not label:
-                continue
-            x, y = n.get('x'), n.get('y')
-            if x is None or y is None:
-                bx = n.get('b') or n.get('bbox')
-                if isinstance(bx, (list, tuple)) and len(bx) >= 4:
-                    try:
-                        x = int((bx[0] + bx[2]) / 2); y = int((bx[1] + bx[3]) / 2)
-                    except (TypeError, ValueError):
-                        continue
-                else:
-                    continue
-            try:
-                px, py = int(x), int(y)
-            except (TypeError, ValueError):
-                continue
-            # x/y = 像素, rx/ry = 0-1000。字段名与 look()/dump()/find()/tap() 完全一致:
-            # 全系统只有一种读法, 模型不需要记住"obs 里的 x/y 是另一种单位"。
-            # 旧版这里 x/y 是归一化、px/py 是像素(与其余 API 相反), 于是 obs 用一次、
-            # look() 用一次就得在两种命名间切换——真机 17:40 正是把 obs 的历史项
-            # (218,583) 原样传给 gui_act, 被当归一化点成 (261,1556)。
-            try:
-                rx, ry = geom.to_norm(px, py, sw, sh) if sw and sh else (px, py)
-            except ValueError:
-                rx, ry = px, py
-            items.append({'t': label[:self._OBS_LABEL],
-                          'cls': str(n.get('cls') or '')[:16],
-                          'x': px, 'y': py,
-                          'rx': rx, 'ry': ry})
+        for i in res['items'][:self._OBS_ITEMS]:
+            # t=显示文本(树节点的 text / yolo 的 OCR 文字), desc=contentDescription; 都没有才退 cls
+            label = str(i.get('t') or i.get('desc') or i.get('cls') or '').strip()[:self._OBS_LABEL]
+            items.append({'t': label, 'src': i['src'], 'label': label,
+                          'cls': str(i.get('cls') or '')[:16],
+                          'x': i['x'], 'y': i['y'], 'rx': i['rx'], 'ry': i['ry'],
+                          'click': i['click']})
         return items
 
     @staticmethod

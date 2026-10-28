@@ -41,7 +41,10 @@ SCREEN_NODES = [
 
 
 def _make_droid_stub(dump_calls, look_calls, tap_calls):
-    """设备侧替身: dump/look 给同一份节点, 动作只记账不改屏幕。"""
+    """设备侧替身: dump/look 给同一份节点, 动作只记账不改屏幕。
+
+    observe() 也由这里提供: _compact_obs 现在只调 observe(), 通道选择在它里面做。
+    契约与真实实现一致: t=显示文本, desc=contentDescription, src='tree'|'yolo'。"""
     def dump(full=False):
         dump_calls.append(1)
         return [dict(n) for n in SCREEN_NODES]
@@ -49,6 +52,17 @@ def _make_droid_stub(dump_calls, look_calls, tap_calls):
     def look(*a, **k):
         look_calls.append(1)
         return [dict(n) for n in SCREEN_NODES]
+
+    def observe(*a, **k):
+        import geom
+        items = []
+        for n in SCREEN_NODES:
+            rx, ry = geom.to_norm(n['x'], n['y'], 1200, 2670)
+            items.append({'src': 'tree', 't': n.get('t') or '', 'desc': n.get('d') or '',
+                          'cls': n.get('cls') or '', 'x': n['x'], 'y': n['y'],
+                          'rx': rx, 'ry': ry, 'click': bool(n.get('click')), 'type': ''})
+        return {'kind': 'tree', 'items': items, 'channels': ['tree', 'yolo'], 'notes': [],
+                'needs_vision': False, 'ms': 1.0}
 
     def tap(x, y, **k):
         tap_calls.append((x, y))
@@ -61,6 +75,7 @@ def _make_droid_stub(dump_calls, look_calls, tap_calls):
     return types.SimpleNamespace(
         screen=lambda: (1200, 2670),
         dump=dump, look=look, tap=tap, swipe=swipe,
+        observe=observe,
         wait_stable=lambda **k: {'stable': True, 'waited_s': 0.0, 'uncertain': False},
         ensure_fresh_obs=lambda: {'nodes': [dict(n) for n in SCREEN_NODES]},
         reset_trace=lambda: None,

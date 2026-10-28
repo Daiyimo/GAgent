@@ -801,7 +801,6 @@ def tap_rel(rx, ry, **tap_kw):
     return tap(*geom.to_px(rx, ry, w, h), **tap_kw)
 
 
-_LOOK_CACHE = {"thumb": None, "roi": None, "dets": None}
 _ROI_NAMES = {"top": (0, 0, 1, 0.34), "upper": (0, 0, 1, 0.5), "middle": (0, 0.25, 1, 0.75),
               "lower": (0, 0.5, 1, 1), "bottom": (0, 0.66, 1, 1)}
 # 通用比例带 + geom 实测的系统 UI 锚带(status/title/navbar)共用一份 0-1000 契约:
@@ -880,28 +879,79 @@ def screen_kind():
     return 'ui' if k == 'unknown' else k
 
 
-def look(conf=0.25, path=None, roi=None, cache=True, *, label=None, yolo=None):
-    """视觉路径一步到位: shot()+ui_detect(). 返回检测列表, 每项附中心 x,y(整屏坐标, 可直接 tap), label=OCR 文字, cls=控件语义.
-    label: 可选 OCR 文字子串筛选，返回全部匹配项；多命中仍需消歧，不自动选择或点击。
-    roi: 只检测屏幕的一部分 —— 'top'|'upper'|'middle'|'lower'|'bottom', 或 (x1,y1,x2,y2)(像素, 或 0~1 的比例). 知道目标在哪(排序条在上半屏/底栏在下方)
-         就传 roi, 耗时按面积成比例下降(整屏 OCR 是主要成本, 自绘 App 整屏 look 约 6-8s).
-    cache: 屏幕与上一次 look 几乎没变(缩略图差异 <0.3%) 且 roi 相同 → 直接返回上次结果(附 'cached': True), 不再跑模型. 刚做完动作想确认变化时它就是证据.
-    path 给出则同时把截图存文件(给用户看/复核). dump 为空(自绘/SurfaceView/敏感置空)时用这个, 不要先 print 整个 ndarray."""
-    if label is not None and not isinstance(label, str):
-        raise TypeError('look label must be a string or None')
+_OBS_CACHE = {"thumb": None, "roi": None, "pkg": None, "rot": None, "res": None}
+
+
+def _yolo_note():
+    """最近一次 ui_detect 的 YOLO 失败原因; 检测器不可 import(PC 侧)时返回 None。"""
     try:
-        conf = float(conf)
-    except (TypeError, ValueError):
-        raise ValueError('look(conf=0.25, ...) 返回检测框，不接受问题；看图问答请用 ask_vision(droid.shot(), "问题")') from None
-    if not 0 <= conf <= 1:
-        raise ValueError('look conf must be between 0 and 1')
+        from models.ui_detect_v1 import ui_detect_lite
+        return getattr(ui_detect_lite, 'LAST_YOLO_ERROR', None)
+    except Exception:
+        return None
+
+
+def _obs_item_from_node(n, x1, y1, W, H):
+    """dump 节点 → 观测项。树给的是可点性/编辑态/精确边界, 这是 YOLO 给不了的。
+
+    契约: t=显示文本(节点的 text), desc=contentDescription。两者都没有就都为空,
+    由 _compact_obs 退到 cls。"""
+    bx = n.get('b') or n.get('bbox')
+    cx, cy = n.get('x'), n.get('y')
+    if cx is None or cy is None:
+        if not (isinstance(bx, (list, tuple)) and len(bx) >= 4):
+            return None
+        cx, cy = (bx[0] + bx[2]) / 2, (bx[1] + bx[3]) / 2
+    cx, cy = int(cx) + x1, int(cy) + y1
+    rx, ry = geom.to_norm(cx, cy, W, H)
+    if isinstance(bx, (list, tuple)) and len(bx) >= 4:
+        bbox = [int(bx[0]) + x1, int(bx[1]) + y1, int(bx[2]) + x1, int(bx[3]) + y1]
+    else:
+        bbox = [cx, cy, cx, cy]
+    return {'src': 'tree', 't': str(n.get('t') or ''), 'desc': str(n.get('d') or ''),
+            'cls': str(n.get('cls') or ''), 'x': cx, 'y': cy, 'rx': rx, 'ry': ry,
+            'bbox': bbox, 'click': bool(n.get('click')), 'conf': None, 'type': ''}
+
+
+def _obs_item_from_det(d, x1, y1, W, H):
+    """YOLO/OCR 检测框 → 观测项。YOLO 给的是无文字图标的控件语义(21 类)。
+
+    契约与树项一致: t=OCR 文字(无文字图标则为空), type='icon'|'text' 是控件形态。"""
+    bx1, by1, bx2, by2 = d['bbox']
+    cx, cy = int((bx1 + bx2) / 2) + x1, int((by1 + by2) / 2) + y1
+    rx, ry = geom.to_norm(cx, cy, W, H)
+    return {'src': 'yolo', 't': str(d.get('label') or ''), 'desc': '',
+            'cls': str(d.get('cls') or ''), 'x': cx, 'y': cy, 'rx': rx, 'ry': ry,
+            'bbox': [bx1 + x1, by1 + y1, bx2 + x1, by2 + y1], 'click': None,
+            'conf': d.get('confidence'), 'type': str(d.get('type') or '')}
+
+
+def observe(roi=None, conf=0.25, cache=True):
+    """本地定位通道一步到位: 一次截图 + 一次分类 + 按类选通道。
+
+    返回 {'kind', 'items', 'channels', 'notes', 'needs_vision', 'ms', 'cached'?}:
+    - kind: _classify 的产物('tree'|'blanked'|'canvas'|'unknown')
+    - items: [{src:'tree'|'yolo', t,desc,cls,type,x,y,rx,ry,bbox,click,conf}] —— t 是显示文本,
+      x/y 像素可直接当 gui_act 的 point, rx/ry 是 0-1000 可直接当 rel
+    - channels: 实际跑了哪些通道
+    - notes: 降级原因(如 detector_unavailable); 空列表=没降级
+    - needs_vision: True = 本地定位通道为空, 要定位得问 see()
+
+    通道选择(判据在 _classify, 不靠模型现推):
+    - tree    : 控件树 + YOLO(YOLO 的 label 由 OCR 贴)
+    - blanked : YOLO(树被策略置空但屏幕有字, 微信)
+    - canvas  : 都不跑 —— 定位问 see(); 要"读画面"由调用方显式 droid.ocr()
+    - unknown : 按 tree(YOLO 失败会降级, 没有风险)
+
+    降级铁律: YOLO 侧任何失败只记 note, 绝不外抛。真机 2026-10-28 10:22 那次 22 分钟的
+    任务就是败在"模型缺失 → look() 抛异常 → 整轮作废"上。"""
+    t0 = time.time()
     import cv2
-    import numpy as np
     img = shot()
     H, W = img.shape[:2]
     if isinstance(roi, str):
         if roi not in _ROI_NAMES:
-            raise ValueError('look: unknown roi %r, choose from: %s' % (roi, '/'.join(sorted(_ROI_NAMES))))
+            raise ValueError('observe: unknown roi %r, choose from: %s' % (roi, '/'.join(sorted(_ROI_NAMES))))
         roi = _ROI_NAMES[roi]
     if roi:
         x1, y1, x2, y2 = roi
@@ -910,35 +960,92 @@ def look(conf=0.25, path=None, roi=None, cache=True, *, label=None, yolo=None):
         x1, y1, x2, y2 = int(max(0, x1)), int(max(0, y1)), int(min(W, x2)), int(min(H, y2))
     else:
         x1, y1, x2, y2 = 0, 0, W, H
-    thumb = cv2.resize(cv2.cvtColor(img[y1:y2, x1:x2], cv2.COLOR_BGR2GRAY), (36, 80), interpolation=cv2.INTER_AREA)
-    c = _LOOK_CACHE
-    if cache and c["dets"] is not None and c["roi"] == (x1, y1, x2, y2) and c["thumb"] is not None:
-        diff = float((cv2.absdiff(thumb, c["thumb"]) > 16).mean())
-        if diff < 0.003:
-            import copy
-            dets = copy.deepcopy(c["dets"])
-            for d in dets: d["cached"] = True
-            return _matching_labels(dets, label)
-    # yolo 默认自动: canvas 画面跳过 YOLO(见 screen_kind)。显式 True/False 可覆盖。
-    if yolo is None:
-        yolo = screen_kind() != 'canvas'
-    dets = ui_detect(img[y1:y2, x1:x2], conf=conf, yolo=yolo)
-    for d in dets:
-        d["label"] = str(d.get("label") or "")
-        bx1, by1, bx2, by2 = d["bbox"]
-        d["bbox"] = [bx1 + x1, by1 + y1, bx2 + x1, by2 + y1]
-        d["x"], d["y"] = int((bx1 + bx2) / 2 + x1), int((by1 + by2) / 2 + y1)
-        # x/y=像素(与 dump/find/tap 同单位), rx/ry=0-1000。两种都带, 模型就不必自己换算——
-        # 单位换算曾经是 gui_act 最大的静默失败源(像素被当归一化, 点偏 300-400px 不报错)。
-        d["rx"], d["ry"] = geom.to_norm(d["x"], d["y"], W, H)
-    c.update(thumb=thumb, roi=(x1, y1, x2, y2), dets=[dict(d) for d in dets])
-    if path:
-        cv2.imwrite(path, img)
-    out = _matching_labels(dets, label)
+    crop = img[y1:y2, x1:x2]
+
+    thumb = cv2.resize(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), (36, 80), interpolation=cv2.INTER_AREA)
+    try:
+        st = dump_state() or {}
+        pkg = str(st.get('pkg') or '')
+    except Exception:
+        st, pkg = {}, ''
+    try:
+        p = ping(); rot = int(p.get('rot') or 0)
+    except Exception:
+        rot = 0
+    c = _OBS_CACHE
+    # 缓存键含 pkg 与 rot: 旧 _LOOK_CACHE 只认缩略图+roi, 于是切个 App 或转个屏都可能
+    # 命中上一帧的结果(SPEC §2.3 记着的缺陷), 而快路径恰恰要靠这个缓存。
+    if cache and c["res"] is not None and c["roi"] == (x1, y1, x2, y2) \
+            and c["pkg"] == pkg and c["rot"] == rot and c["thumb"] is not None:
+        if float((cv2.absdiff(thumb, c["thumb"]) > 16).mean()) < 0.003:
+            res = dict(c["res"]); res["cached"] = True
+            return res
+
+    kind = _classify(st)
+    items, channels, notes = [], [], []
+    if kind in ('tree', 'unknown'):
+        channels.append('tree')
+        for n in (st.get('nodes') or []):
+            if isinstance(n, dict):
+                it = _obs_item_from_node(n, x1, y1, W, H)
+                if it is not None:
+                    items.append(it)
+    if kind in ('tree', 'blanked', 'unknown'):
+        channels.append('yolo')
+        dets = ui_detect(crop, conf=conf)
+        for d in dets:
+            items.append(_obs_item_from_det(d, x1, y1, W, H))
+        note = _yolo_note()
+        if note:
+            notes.append('detector_unavailable: %s' % note)
+            channels = [x for x in channels if x != 'yolo']
+            items = [x for x in items if x['src'] != 'yolo']
+    if kind == 'canvas' or not items:
+        needs_vision = True
+    else:
+        needs_vision = False
+    res = {'kind': kind, 'items': items, 'channels': channels, 'notes': notes,
+           'needs_vision': needs_vision, 'ms': round((time.time() - t0) * 1000, 1)}
+    c.update(thumb=thumb, roi=(x1, y1, x2, y2), pkg=pkg, rot=rot, res=res)
     global _LAST_OBS, _OBS_STALE
-    _LAST_OBS = {"nodes": [], "detections": out, "screen": (W, H), "pkg": _fg()}
+    _LAST_OBS = {"nodes": [], "detections": [i for i in items if i['src'] == 'yolo'],
+                 "screen": (W, H), "pkg": pkg}
     _OBS_STALE = False
-    _trace("look", result={"count": len(out)})
+    _trace("observe", result={"kind": kind, "count": len(items)})
+    return res
+
+
+def look(conf=0.25, path=None, roi=None, cache=True, *, label=None, yolo=None):
+    """视觉路径一步到位: observe() 后取 YOLO 项, 返回形状与历史一致。
+
+    label: 可选 OCR 文字子串筛选，返回全部匹配项；多命中仍需消歧，不自动选择或点击。
+    roi: 'top'|'upper'|'middle'|'lower'|'bottom' 或 (x1,y1,x2,y2)(像素, 或 0~1 的比例).
+    cache: 屏幕与上一次 observe 几乎没变(缩略图差异 <0.3%) 且 roi/pkg/rot 相同 → 附 'cached': True.
+    path 给出则同时把截图存文件(给用户看/复核).
+
+    yolo 形参保留仅为兼容旧调用, 已无意义 —— 通道选择搬进了 observe 的 _classify。
+    新代码请用 observe(): 它额外带回控件树项、kind 与降级原因。"""
+    if label is not None and not isinstance(label, str):
+        raise TypeError('look label must be a string or None')
+    try:
+        conf = float(conf)
+    except (TypeError, ValueError):
+        raise ValueError('look(conf=0.25, ...) 返回检测框，不接受问题；看图问答请用 see()') from None
+    if not 0 <= conf <= 1:
+        raise ValueError('look conf must be between 0 and 1')
+    res = observe(roi=roi, conf=conf, cache=cache)
+    out = []
+    for i in res['items']:
+        if i['src'] != 'yolo':
+            continue
+        out.append({'bbox': list(i['bbox']), 'type': i['type'], 'label': i['t'],
+                    'cls': i['cls'], 'confidence': i['conf'], 'x': i['x'], 'y': i['y'],
+                    'rx': i['rx'], 'ry': i['ry'], 'cached': res.get('cached', False)})
+    if label:
+        out = [d for d in out if label in (d.get('label') or '')]
+    if path:
+        import cv2
+        cv2.imwrite(path, shot())
     return out
 
 
