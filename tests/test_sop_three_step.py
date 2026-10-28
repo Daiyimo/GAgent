@@ -45,9 +45,9 @@ class TestSopThreeStep(unittest.TestCase):
         """工具表必须指向 observe(), 而不是让模型自己拼 dump+look。"""
         self.assertIn('`observe(', _sop())
 
-    def test_detector_unavailable_is_documented_as_degrade_not_fault(self):
-        """YOLO 缺失已改为自动降级; SOP 要说明这不是故障, 否则模型会停下来报错。"""
-        self.assertIn('detector_unavailable', _sop())
+    def test_local_boxes_unavailable_is_documented_as_degrade_not_fault(self):
+        """YOLO 缺失/画面太密已改为自动降级; SOP 要说明这不是故障, 否则模型会停下来报错。"""
+        self.assertIn('local_boxes_unavailable', _sop())
 
 
 if __name__ == '__main__':

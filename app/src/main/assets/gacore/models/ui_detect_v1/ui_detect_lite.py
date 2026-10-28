@@ -43,6 +43,8 @@ TEXT_CLASSES = {"Text", "TextButton", "CheckedTextView"}
 _SESSIONS = {}
 _PPOCR = None
 LAST_YOLO_ERROR = None   # 最近一次 detect() 的 YOLO 失败原因; None=本次没失败。observe() 据此降级并记 note
+LAST_SKIP_REASON = None  # 最近一次 detect() 主动跳过 OCR 的原因; None=没跳过
+OCR_MAX_BOXES = 24       # YOLO 框数超过它就不跑全图 OCR。见 detect() 的 docstring
 
 
 def _session(path):
@@ -124,22 +126,33 @@ def _containment(a, b):
     return inter / area_b if area_b > 0 else 0
 
 
-def detect(image, conf=0.25, contain_thresh=0.5, yolo=True):
+def detect(image, conf=0.25, contain_thresh=0.5, yolo=True, ocr_max_boxes=None):
     """image: 路径 或 BGR ndarray → 元素列表(YOLO 21类 + 全图OCR 空间匹配)。
     conf: 仅向上过滤(见 NMS_CONF_FLOOR, 低于地板无效)。
     contain_thresh: OCR 文字框被 YOLO 框包含到此比例即归属该框(取其文本作 label)。
-    yolo=False: 跳过 YOLO 只跑 OCR。**canvas/游戏/自绘页面用这个**——那类画面里 YOLO 的
-      21 个通用 Android 类既认不出游戏语义, 框还会把模型带偏; 语义只能问 VLM。
+    yolo=False: 跳过 YOLO 只跑 OCR。
+    ocr_max_boxes: YOLO 框数超过它就不跑全图 OCR, 直接返回 [] 并把原因记进
+      LAST_SKIP_REASON。为什么需要这道闸门(真机 2026-10-28 实测): PP-OCR 的识别耗时
+      **按文本框数量线性增长**——微信标题行 5 个框约 2s, 小程序游戏 HUD **52 个框约 6s**,
+      而两者像素量完全相同。那 52 个框绝大多数是游戏美术资源, 模型既读不出语义也点不动,
+      却每次 gui_act 都要为它们付一遍钱。判据用框数而不是包名/屏幕方向: 前者是 YOLO
+      白送的结构信号(165ms), 后者是 App 专属猜。默认 OCR_MAX_BOXES = 2×模型一次能看的条数。
 
     降级: YOLO 侧任何失败不外抛, 只把原因记进 LAST_YOLO_ERROR 并照常跑 OCR ——
     调用方(droid.observe)据此降级到其余通道并告知用户, 不把整轮作废。"""
-    global LAST_YOLO_ERROR
+    global LAST_YOLO_ERROR, LAST_SKIP_REASON
     img = cv2.imread(image) if isinstance(image, str) else image
     assert img is not None, "image load failed"
 
     LAST_YOLO_ERROR = None
+    LAST_SKIP_REASON = None
     if yolo:
         yolo_boxes, LAST_YOLO_ERROR = _yolo(img, conf)
+        if not LAST_YOLO_ERROR and ocr_max_boxes and len(yolo_boxes) > ocr_max_boxes:
+            LAST_SKIP_REASON = ('scene_too_dense: %d yolo boxes > %d —— 不是控件页而是密集自绘画面, '
+                                '不为这些框逐个付 OCR 钱, 也别把不可操作的框喂给模型'
+                                % (len(yolo_boxes), ocr_max_boxes))
+            return []
     else:
         yolo_boxes = []
     # 全图 OCR: 4点box → 轴对齐bbox

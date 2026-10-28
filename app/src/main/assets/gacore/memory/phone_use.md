@@ -14,7 +14,7 @@
 
 通道选择由代码按画面类型决定，**不需要你判断**：`droid.observe()` 一次出 `kind`（`tree`/`blanked`/
 `canvas`/`unknown`）与 `items`（每项带 `src` = `tree` 或 `yolo`）。`obs` 为空且 `needs_vision=true`
-就是在告诉你"这一步得看图"。
+就是在告诉你"这一步得看图"——**此时不要再反复 `look()`/`ocr()` 试图定位**，直接 `see()`。
 
 ## §0.0 高频任务入口（开局先对这把表，能省 4-5 轮）
 
@@ -55,10 +55,15 @@ Python 适合无手机 UI 依赖的计算或文件处理，不得用底层输入
 `obs` 为空且 `needs_vision=true` 时，页面是自绘/canvas/游戏/混淆页——没有可用控件树，
 本地通道拿不到可点目标。此时用 `see()`，并遵守以下纪律：
 
-1. **先问边界，再问细节**：首次 `see("可交互区域有哪些？各用屏幕宽高百分比给出边界", max_pixels=300000)`
-   （强降插图，几秒返回）；把边界换算成 0-1000 的 `roi` 记进 `update_working_checkpoint`。
+1. **目标明确就先问目标，不要先问"这是什么屏幕"**：任务已经指明要找的东西（"点通行证"/"关广告"）时，
+   第一刀就是 `see("<目标>在哪", want='point', roi=?)`。真机实证（2026-10-28，元梦之星）：先花 11-19s
+   问"当前屏幕是什么、有没有弹窗遮挡"，得到的回答对定位毫无帮助，接着还是得重新问一次目标——
+   **一次定位胜过先描述再自己找**。描述性问题只在完全不知道这页是什么时才问，且问完必须立刻落到具体目标。
+   完全陌生的画面才用 `see("可交互区域有哪些？各用屏幕宽高百分比给出边界", max_pixels=300000)`
+   （强降插图，几秒返回），并把边界换算成 0-1000 的 `roi` 记进 `update_working_checkpoint`。
 2. **之后一律带 roi**：`see("<具体问题>", roi=[x1,y1,x2,y2])`——只送局部，像素量降 3-6 倍，
-   单次从 25-50s 降到 8-15s。禁止反复全屏提问。
+   单次从 25-50s 降到 8-15s，**回答也短一个量级**（实测全屏问"有哪些模块" 36s，裁到面板后同级
+   问题 10-15s；图本身已被压到 1.44M 像素，所以慢的是模型写长答案，不是图传）。禁止反复全屏提问。
 3. **能本地判断的不问 VLM，但"画面变了"不等于"操作生效"**：文字变化/加载完成可用区域 diff
    判断；消除类棋盘上的**图案身份、哪张在顶层可拿、点击后是否入槽/消除，禁止用像素 diff 或
    指纹比对下结论**——`tap` 返回的 `diff` 只证明画面变了。真机实证（羊了个羊，无 vision）：
@@ -185,7 +190,7 @@ res = droid.recipe_run({'app': '腾讯新闻'})
 | --- | --- |
 | `ping()` / `screen()` | 前台包、无障碍、`w/h/rot` 等状态 / 当前 `(w,h)` |
 | `pkgs(关键词)` / `launch(包名)` | 候选为 `[{"pkg":"包名","label":"应用名"}]`，向 `launch` 传其中的 `pkg` 字符串；启动并返回观测到的前台，不自动安装 App |
-| `observe(roi=None, conf=0.25, cache=True)` | **本地定位入口**：一次截图 + 一次分类 + 按画面类选通道。返回 `{kind, items, channels, notes, needs_vision, ms}`；`items` 每项 `{src:'tree'|'yolo', t, desc, cls, type, x, y, rx, ry, bbox, click, conf}`。`kind`='tree'（控件树+YOLO）/ 'blanked'（敏感 App 树被置空，只跑 YOLO）/ 'canvas'（游戏/自绘/混淆，不跑本地定位通道）/ 'unknown'（dump 失败，按 tree）。`notes` 有 `detector_unavailable` 表示 YOLO 缺失或损坏，已自动降级——**不是故障，任务继续**。`look()`/`ui_detect()`/`ocr()`/`screen_kind()` 都是它的薄封装，形状与历史一致 |
+| `observe(roi=None, conf=0.25, cache=True)` | **本地定位入口**：一次截图 + 一次分类 + 按画面类选通道。返回 `{kind, items, channels, notes, needs_vision, ms}`；`items` 每项 `{src:'tree'|'yolo', t, desc, cls, type, x, y, rx, ry, bbox, click, conf}`。`kind`='tree'（控件树+YOLO）/ 'blanked'（敏感 App 树被置空，只跑 YOLO）/ 'canvas'（游戏/自绘/混淆，不跑本地定位通道）/ 'unknown'（dump 失败，按 tree）。`notes` 出现 `local_boxes_unavailable` 表示本地框不可用（YOLO 缺失/损坏，或 YOLO 框太密说明这是密集自绘画面而非控件页），已自动降级并**把框收回**——**不是故障，任务继续**；此时 `needs_vision` 会变 true，照 §0.1 问 `see()`。`look()`/`ui_detect()`/`ocr()`/`screen_kind()` 都是它的薄封装，形状与历史一致 |
 | `find(text, exact=False)` | 返回全部匹配节点；优先使用已有 `x/y`，不必手工解析边界 |
 | `tap_text(text, exact=False, idx=None)` | 唯一匹配才点；多个候选须依据当前界面消歧，不能随意取第一项 |
 | `shot()` | BGR 像素数组，供视觉函数使用；**`print(shot())` 只会输出数字，模型看不到图片** |

@@ -41,7 +41,7 @@ def _wire(self, kind, nodes=(), dets=(), note=None, pkg='com.x'):
             ('_classify', lambda st: kind),
             ('shot', lambda *a, **k: _IMG),
             ('ui_detect', lambda img, conf=0.25, yolo=True: list(dets)),
-            ('_yolo_note', lambda: note),
+            ('_detect_note', lambda: note),
             ('screen', lambda: (200, 100)),
             ('ping', lambda: {'w': 200, 'h': 100, 'rot': 0})):
         p = mock.patch.object(droid, name, fake)
@@ -80,7 +80,7 @@ class TestObserve(unittest.TestCase):
         _wire(self, 'tree', nodes=[_node()], dets=[], note='RuntimeError: model not found: /x')
         r = droid.observe()
         self.assertEqual([i['src'] for i in r['items']], ['tree'])
-        self.assertEqual(r['notes'], ['detector_unavailable: RuntimeError: model not found: /x'])
+        self.assertEqual(r['notes'], ['local_boxes_unusable: RuntimeError: model not found: /x'])
         self.assertNotIn('yolo', r['channels'])
 
     def test_unknown_kind_falls_back_to_tree(self):
@@ -96,6 +96,18 @@ class TestObserve(unittest.TestCase):
         self.assertEqual((it['x'], it['y']), (100, 50))
         # to_norm 的分母是 w-1/h-1(与 to_px 互为逆运算, geom.py:72-73), 不是 w/h
         self.assertEqual((it['rx'], it['ry']), (503, 505))
+
+    def test_dense_scene_drops_boxes_and_asks_for_vision(self):
+        """游戏 HUD: YOLO 框太密 → 闸门跳过 OCR → 不把框留给模型, 并告知要问 see()。
+
+        真机 2026-10-28: 小程序游戏画面被判 blanked(前台包名还是微信), observe 跑了全屏
+        YOLO+OCR 返回 52 个框, 模型照着它们点了 3 次才摸到通行证。"""
+        _wire(self, 'blanked', nodes=[], dets=[], note='scene_too_dense: 52 yolo boxes > 24')
+        r = droid.observe()
+        self.assertEqual(r['items'], [])
+        self.assertNotIn('yolo', r['channels'])
+        self.assertTrue(r['needs_vision'])
+        self.assertIn('local_boxes_unusable', r['notes'][0])
 
     def test_cache_miss_after_package_change(self):
         """SPEC §2.3 缺陷: 缓存键不含 pkg → 切 App 后命中旧结果。"""

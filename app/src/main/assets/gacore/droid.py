@@ -882,11 +882,16 @@ def screen_kind():
 _OBS_CACHE = {"thumb": None, "roi": None, "pkg": None, "rot": None, "res": None}
 
 
-def _yolo_note():
-    """最近一次 ui_detect 的 YOLO 失败原因; 检测器不可 import(PC 侧)时返回 None。"""
+def _detect_note():
+    """最近一次 ui_detect 的降级/跳过原因; 正常时(或检测器不可 import 的 PC 侧)返回 None。
+
+    两种原因归一成一个入口, 因为对 observe() 而言后果相同: yolo 通道没产出可用框。
+    - LAST_YOLO_ERROR   检测器缺失/损坏 → 降级到其余通道
+    - LAST_SKIP_REASON  框太密, 不是控件页 → 同样不把框喂给模型, 让它去问 see()"""
     try:
         from models.ui_detect_v1 import ui_detect_lite
-        return getattr(ui_detect_lite, 'LAST_YOLO_ERROR', None)
+        return (getattr(ui_detect_lite, 'LAST_YOLO_ERROR', None)
+                or getattr(ui_detect_lite, 'LAST_SKIP_REASON', None))
     except Exception:
         return None
 
@@ -934,7 +939,7 @@ def observe(roi=None, conf=0.25, cache=True):
     - items: [{src:'tree'|'yolo', t,desc,cls,type,x,y,rx,ry,bbox,click,conf}] —— t 是显示文本,
       x/y 像素可直接当 gui_act 的 point, rx/ry 是 0-1000 可直接当 rel
     - channels: 实际跑了哪些通道
-    - notes: 降级原因(如 detector_unavailable); 空列表=没降级
+    - notes: 降级/跳过原因(如 local_boxes_unavailable); 空列表=没降级
     - needs_vision: True = 本地定位通道为空, 要定位得问 see()
 
     通道选择(判据在 _classify, 不靠模型现推):
@@ -995,9 +1000,11 @@ def observe(roi=None, conf=0.25, cache=True):
         dets = ui_detect(crop, conf=conf)
         for d in dets:
             items.append(_obs_item_from_det(d, x1, y1, W, H))
-        note = _yolo_note()
+        note = _detect_note()
         if note:
-            notes.append('detector_unavailable: %s' % note)
+            # 检测器挂了, 或框太密说明这不是控件页 —— 两种都不把框留给模型:
+            # 前者它读了会白费, 后者它读了会去点游戏美术资源(真机 3 次 tap 摸索的来由)。
+            notes.append('local_boxes_unusable: %s' % note)
             channels = [x for x in channels if x != 'yolo']
             items = [x for x in items if x['src'] != 'yolo']
     if kind == 'canvas' or not items:
@@ -2070,10 +2077,12 @@ def ui_detect(img, conf=0.25):
     label=框内OCR文字; 无文字时图标/控件回退为cls语义名, 文字类回退None。
 
     是否跑 YOLO 由 observe() 按画面类型决定(_classify), 这里不再收 yolo 形参。
-    YOLO 缺失/损坏时自动降级为只跑 OCR 并把原因记进 ui_detect_lite.LAST_YOLO_ERROR, 不外抛。"""
+    YOLO 缺失/损坏时自动降级为只跑 OCR 并把原因记进 ui_detect_lite.LAST_YOLO_ERROR, 不外抛。
+    YOLO 框太密(>OCR_MAX_BOXES)时跳过 OCR 并把原因记进 LAST_SKIP_REASON —— 那种画面不是
+    控件页, 见 detect() 的 docstring。"""
     _bundle()
     import ui_detect_lite
-    return ui_detect_lite.detect(img, conf=conf)
+    return ui_detect_lite.detect(img, conf=conf, ocr_max_boxes=ui_detect_lite.OCR_MAX_BOXES)
 
 
 _ppocr = None
