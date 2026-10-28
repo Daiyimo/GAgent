@@ -290,6 +290,10 @@ class GenericAgentHandler(BaseHandler):
                           # —— 旧实现让 ask_vision 在 code_run 里跟脚本抢这 60s, 一轮最多一次,
                           # 还要靠 4 个常量推导剩余。升为第一级工具后预算独立, 那套全删。
 
+    _GUI_ACT_BUDGET_S = 120   # gui_act 硬墙钟。code_run 已有 timeout(默认 60s, 模型可传),
+                              # see() 有自己的 90s; gui_act 曾是唯一没有上限的工具 —— 真机一次
+                              # wait(seconds=8) 跑了 260s 并返回空 tool_result。
+
     def do_see(self, args, response):
         """看图问答(第一级工具, 不走 code_run)。
 
@@ -421,6 +425,23 @@ class GenericAgentHandler(BaseHandler):
         Measured on a real device against the alternative design: a free-form code agent
         burns 1-3 model calls per round exploring APIs; the structured action protocol
         finished 31 steps with almost no wasted turns. This design measured better."""
+        # 看门狗: gui_act 此前是三个工具里唯一没有墙钟上限的。真机一次 wait(seconds=8)
+        # 跑了 260s 并返回空 tool_result, 只能中止整个任务从头再来。设备侧每次调用自带
+        # 60s 超时, 故检查点式看门狗把失控半径压到 ≤1 次设备调用。
+        try:
+            run_guard.enter_deadline(self._GUI_ACT_BUDGET_S)
+        except Exception:
+            pass
+        try:
+            return self._do_gui_act(args)
+        except run_guard.WatchdogExpired:
+            return StepOutcome('[Error] gui_act 超过墙钟上限 %ds 已停止: 不要原样重试 —— '
+                               '先 dump()/observe() 看屏幕现在什么样, 再决定下一步, 或 ask_user。'
+                               % self._GUI_ACT_BUDGET_S, next_prompt='\n')
+        finally:
+            run_guard.clear_deadline()
+
+    def _do_gui_act(self, args):
         import droid
         act = str(args.get('action') or '')
         if act not in self._GUI_ACTIONS:
