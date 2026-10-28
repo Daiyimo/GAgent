@@ -814,7 +814,73 @@ def _matching_labels(detections, label):
     return detections if not label else [d for d in detections if label in d["label"]]
 
 
-def look(conf=0.25, path=None, roi=None, cache=True, *, label=None):
+def _clickable_count(nodes):
+    """可点节点数。有可点目标就说明树是可用的。"""
+    n = 0
+    for x in nodes or []:
+        try:
+            if x.get('click'):
+                n += 1
+        except AttributeError:
+            continue
+    return n
+
+
+def _text_count(nodes):
+    """带文字(文本或 contentDescription)的节点数。有字就说明树至少可读。"""
+    n = 0
+    for x in nodes or []:
+        try:
+            if str(x.get('t') or '').strip() or str(x.get('d') or '').strip():
+                n += 1
+        except AttributeError:
+            continue
+    return n
+
+
+def _classify(st):
+    """dump_state() 的产物 → 'tree'|'blanked'|'canvas'|'unknown'。纯函数, 无设备依赖。
+
+    为什么要它: YOLO 与 vision 的分流判据。有可用控件树时 YOLO+OCR 又快又准(31ms);
+    没有时(游戏/SurfaceView/自绘/混淆) YOLO 的 21 个通用 Android 类既认不出语义, 框还会
+    把模型带偏——那种画面定位只能问 VLM。判据不额外花钱: 就是一次 dump_state() 的产物。
+
+    旧判据只认 degraded.reason=='tree_empty', 两个方向都错(真机实证):
+    - 漏: 王者荣耀是 1 个不可点节点("Game view"), 不是 tree_empty → 判成 ui, YOLO 在游戏上跑;
+    - 误: 海报页/骨架屏/WebView 首帧 → tree_empty → 判成 canvas, 该拿图标框的普通页被跳过 YOLO。
+    共同根因: 判的是"树空不空", 而该判的是"有没有可用控件树"。
+
+    低信息树 = 没有可点节点, 且(只有<=1 个节点 或 没有任何带字节点):
+    - <=1 个不可点节点   → 王者荣耀/SurfaceView 的"Game view"形态
+    - 多节点但全不带字   → 海报页/图片页: 点不了也读不了, 只能问 VLM
+    反过来这两种都**不**算 canvas: 有可点节点(能操作), 或多个带字节点(能读)。"""
+    if not st:
+        return 'unknown'
+    reason = (st.get('degraded') or {}).get('reason')
+    if reason in ('sensitive_blank', 'unresolved_fg'):
+        return 'blanked'
+    if reason == 'tree_empty':
+        return 'canvas'
+    nodes = st.get('nodes') or []
+    if _clickable_count(nodes) == 0 and (len(nodes) <= 1 or _text_count(nodes) == 0):
+        return 'canvas'
+    return 'tree'
+
+
+def screen_kind():
+    """当前画面类型: 'canvas'(自绘/游戏/SurfaceView) | 'blanked'(敏感 App 树被置空) | 'ui'(普通控件树)。
+
+    _classify 的公开薄封装; 'unknown'(dump_state 抛异常) 归一成 'ui' 保持历史契约。
+    新代码请直接用 _classify —— 'unknown' 与 'ui' 的通道选择不同(见 observe)。"""
+    try:
+        st = dump_state()
+    except Exception:
+        return 'ui'
+    k = _classify(st)
+    return 'ui' if k == 'unknown' else k
+
+
+def look(conf=0.25, path=None, roi=None, cache=True, *, label=None, yolo=None):
     """视觉路径一步到位: shot()+ui_detect(). 返回检测列表, 每项附中心 x,y(整屏坐标, 可直接 tap), label=OCR 文字, cls=控件语义.
     label: 可选 OCR 文字子串筛选，返回全部匹配项；多命中仍需消歧，不自动选择或点击。
     roi: 只检测屏幕的一部分 —— 'top'|'upper'|'middle'|'lower'|'bottom', 或 (x1,y1,x2,y2)(像素, 或 0~1 的比例). 知道目标在哪(排序条在上半屏/底栏在下方)
@@ -853,7 +919,10 @@ def look(conf=0.25, path=None, roi=None, cache=True, *, label=None):
             dets = copy.deepcopy(c["dets"])
             for d in dets: d["cached"] = True
             return _matching_labels(dets, label)
-    dets = ui_detect(img[y1:y2, x1:x2], conf=conf)
+    # yolo 默认自动: canvas 画面跳过 YOLO(见 screen_kind)。显式 True/False 可覆盖。
+    if yolo is None:
+        yolo = screen_kind() != 'canvas'
+    dets = ui_detect(img[y1:y2, x1:x2], conf=conf, yolo=yolo)
     for d in dets:
         d["label"] = str(d.get("label") or "")
         bx1, by1, bx2, by2 = d["bbox"]
@@ -879,7 +948,11 @@ def look(conf=0.25, path=None, roi=None, cache=True, *, label=None):
 _VISION_FAILS = {"n": 0, "until": 0.0}
 _VISION_FAIL_LIMIT = 2          # 连续失败此次数后熔断
 _VISION_COOLDOWN_S = 120        # 熔断静默期: 期间直接拒, 不再反复烧超时
-_VISION_TIMEOUT_S = 30          # 单次上限(原默认 60s: 超时一次就烧掉一分钟)
+_VISION_TIMEOUT_S = 30          # 单次**读**超时(流式下=两个 chunk 之间最多静默多久): 抓"真挂住"
+                                # 它不是总预算——总预算见 _vision_total_budget()
+_VISION_TOTAL_S = 45            # 无 code_run 上下文时的总时长预算(主线程/PC 调试)
+_VISION_RESERVE_S = 6           # code_run 预算里留给脚本自己收尾(print/return)的部分
+_VISION_MIN_S = 15              # 一次视觉调用至少给这么多; 少于它宁可立刻失败
 _VISION_TLS = threading.local() # code_run 执行线程注入当前任务的 llmclient.backend(模型切换自动跟随)
 
 
@@ -923,6 +996,29 @@ def reset_vision_fuse():
     _VISION_FAILS.update({"n": 0, "until": 0.0})
 
 
+def _vision_total_budget(requested=None):
+    """视觉调用的**总时长**预算: 优先从 code_run 的剩余时间推导, 不再用固定值。
+
+    为什么改: 真机实测这台设备一次视觉调用要 15-46s(step-5-preview 思考慢), 而旧实现把
+    _VISION_TIMEOUT_S=30 同时当读超时和总上限用 —— 2026-10-28 第 14 步一个 33s 才返回的
+    调用被拦腰掐断, 报"视觉调用超过总时长上限 30s"; 用户的模型/配置毫无问题却全线失败。
+    固定数字在外部依赖上必然反复踩: 给小了误杀, 给大了又变 60s+ 挂住。
+
+    真正的约束是 code_run 的 timeout(默认 60s): 一次视觉调用必须给足时间, 但又不能吃掉
+    整个脚本预算——吃光会触发超时并留下僵尸线程(60.285s 那次的真因)。
+    所以: 预算 = code_run 剩余 - 预留, 夹在 [下限, 调用方请求值] 之间。
+    剩余不够一次调用时**立刻抛错**并说清剩多少, 让模型本轮改用 look()/ocr 或 ask_user。"""
+    left = run_guard.remaining()
+    if left is None:                       # 不在 code_run 里: 用配置值
+        return float(requested or _VISION_TOTAL_S)
+    usable = left - _VISION_RESERVE_S
+    if usable < _VISION_MIN_S:
+        raise RuntimeError('code_run 仅剩 %.1fs, 不够一次视觉调用(至少 %ds, 另需 %ds 收尾)。'
+                           '本轮不要再调 ask_vision/ask_point: 先用 look()/ocr 读屏, 或 ask_user。'
+                           % (left, _VISION_MIN_S, _VISION_RESERVE_S))
+    return min(float(requested or usable), usable)
+
+
 def _vision_failed():
     _VISION_FAILS["n"] += 1
     if _VISION_FAILS["n"] >= _VISION_FAIL_LIMIT:
@@ -939,6 +1035,9 @@ def ask_vision(image_input, prompt="描述当前界面", roi=None, max_pixels=No
     roi='title': 主要收益是**把状态栏裁掉**(VLM 就不会把时间/电池算进去), 顺带图传变小。
     ⚠️ 别把它当加速手段——实测单次视觉调用 15-46s, 大头是模型生成不是图传。"""
     roi = _resolve_roi(roi)
+    run_guard.check()        # 僵尸线程检查点: code_run 超时/被停后, 视觉调用是最容易长时间挂住的
+                             # 副作用(一次 15-46s), 不设卡则僵尸会继续拿旧后端打网络, 反复烧预算
+    timeout = _vision_total_budget(timeout)   # 总预算从 code_run 剩余时间推导(见该函数docstring)
     if _VISION_FAILS["n"] >= _VISION_FAIL_LIMIT and time.time() < _VISION_FAILS["until"]:
         raise RuntimeError("视觉模型连续失败已熔断 %ds: 不要重试 ask_vision —— 立即改用 droid.look()/droid.ocr 读屏; "
                            "确需看图问答, 等熔断结束或检查当前任务选择的模型是否支持图片" % _VISION_COOLDOWN_S)
@@ -1821,13 +1920,14 @@ def _bundle():
         sys.path.insert(0, BUNDLE)
 
 
-def ui_detect(img, conf=0.25):
+def ui_detect(img, conf=0.25, yolo=True):
     """img: BGR ndarray 或 路径 → [{'bbox':[x1,y1,x2,y2],'type':'icon'|'text','label','cls','confidence'}]
     检测器=Android专调YOLOv8n(21类语义)+PP-OCR空间匹配。cls给出控件语义(即便纯图标无文字),
-    label=框内OCR文字; 无文字时图标/控件回退为cls语义名, 文字类回退None。"""
+    label=框内OCR文字; 无文字时图标/控件回退为cls语义名, 文字类回退None。
+    yolo=False 只跑 OCR: canvas/游戏/自绘页面的正确选择(那类画面 YOLO 认不出游戏语义)。"""
     _bundle()
     import ui_detect_lite
-    return ui_detect_lite.detect(img, conf=conf)
+    return ui_detect_lite.detect(img, conf=conf, yolo=yolo)
 
 
 _ppocr = None
