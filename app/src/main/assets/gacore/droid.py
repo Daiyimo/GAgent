@@ -4,8 +4,9 @@
 服务状态唯一判据 = droid.ping()。bus_port.txt 是内部实现且 code_run cwd=temp 相对路径看不到它,
 禁止用文件存在性判断服务状态; ping 不通=总线组件未监听(重启 App 恢复), 与 agent/会话是否运行无关。
 红线四则(完整规程=../memory/phone_use.md, 操作手机前必读):
-  ①坐标优先来源=dump/ui_detect/ocr 文字框; VLM(视觉大模型)只用于**静态**界面上的语义理解与定位,
-    且必须走 droid.ask_point()(固定问句+只认 0-1000+映射回整屏), 拿到的数对原样当 gui_act 的 rel。
+  ①坐标优先来源=dump/ui_detect/ocr 文字框; 无文字图标先 `look()`(装了 Android UI 检测模型时它给
+    `type='icon'` 的框, 真机 31ms), 找不到再 `droid.ask_point()`(固定问句+只认 0-1000+映射回整屏,
+    数对原样当 gui_act 的 rel)。VLM(视觉大模型)只用于**静态**界面上的语义理解与定位。
     **canvas/自绘/动画画面上的 VLM 坐标一律禁用**(见 ①-b): 那种画面没有可信锚, VLM 的坐标是猜。
     ①-b: dump 空壳(canvas 游戏)时 look() 也只有文字; 若目标连文字都不是, 按 phone_use §0.1 第 6/7 条
     即停或 ask_user, 不要用 VLM 坐标操作动态画面。
@@ -118,15 +119,23 @@ def _is_pc():
 
 
 def _remote_model_path(model_path):
-    """PC 调试时把本机模型路径映射到当前 APK 默认私有目录；手机端保持原样。"""
-    if not _is_pc():
-        return str(model_path)
-def _remote_model_path(model_path):
+    """设备侧绝对路径原样透传; 只有 PC 调试才把仓库路径映射到 APK 默认私有目录。
+
+    ⚠️ 设备侧前缀要同时认 /data/user/ 和 /data/data/: Android 上 /data/user/0 是指向
+    /data/data 的符号链接, 而 detector_models.model_path() 对用户自装模型做了
+    Path.resolve(), 会把 /data/user/0/... 解析成 /data/data/...。只认 /data/user/ 时,
+    自装检测器会落进下面的"按 basename 重建"分支, 被拼成
+    models/ui_detect_v1/models/<name> → Kotlin 侧报 model not found → look() 整体失败。
+    真机 2026-10-28 实证: 装上 YOLO 后 droid.look 反而"执行失败", 视觉静默降级成纯 OCR。
+
+    (本函数曾有两个定义, 前一个带 _is_pc() 守卫的被后一个完全遮蔽——死代码, 已删。)"""
     p = str(model_path).replace("\\", "/")
-    if p.startswith("/data/user/"):
+    if p.startswith(("/data/user/", "/data/data/")):
         return p                      # 设备侧绝对路径(App 内 ppocr_engine/detector_models 传的正是它):
                                      # 包名与子目录(user_models/ 等)都在路径里, 原样透传, 禁用 GA_PACKAGE 重建
                                      # (旧实现丢弃目录+默认包名重建 → debug 包全部 model not found, 本地视觉整链死掉)
+    if not _is_pc():
+        return p                      # 设备侧其余路径(相对/其它绝对)也原样透传, 由 Kotlin 侧按自己的上下文解析
     name = os.path.basename(p)
     if not name:
         raise ValueError("empty model path")
@@ -628,8 +637,9 @@ def tap(x, y, verify=True, wait=1.0, human=False, *, screen=None):
                    "(与 obs/look 的 rx/ry 同单位)——两种只能给一种, 混用会偏出几百像素且不报错。"
                    "若目标是已聚焦的搜索框/输入框且输入法已弹出，diff 0 可能只是没有视觉变化："
                    "不要重复点框，直接输入/粘贴。"
-                   "若目标是顶栏无文字图标（放大镜/+），look() 的 OCR 看不到它："
-                   "用 droid.ask_point(<目标描述>, roi='title') 拿 0-1000 数对后原样传给 rel，不要猜 x/y。"
+                   "若目标是顶栏无文字图标（放大镜/+）：先 look(roi='title') 看有没有 type='icon' 的框"
+                   "（x/y 是整屏像素，可直接当 point）；没有再 droid.ask_point(<目标描述>, roi='title') "
+                   "拿 0-1000 数对原样传给 rel。不要猜 x/y。"
                    "请看截图/diff后再决定。")
         _track("droid_tap_miss", {"diff_pct": round(pct, 3)})   # 只在验证失败时上报(自限量): 手机操控版"中止率", 与 a11y_act_stats 的 tap 总数配对算命中率
     ret["fg"] = _fg()

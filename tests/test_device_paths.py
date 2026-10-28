@@ -27,6 +27,23 @@ class RemoteModelPathTest(unittest.TestCase):
         p = "/data/user/0/io.github.shenhaostu.gagent.debug/files/ga/user_models/my_detector.onnx"
         self.assertEqual(droid._remote_model_path(p), p)
 
+    def test_resolved_data_data_path_passes_through(self):
+        """回归(真机 2026-10-28): detector_models.model_path() 对用户自装模型做了
+        Path.resolve(); Android 上 /data/user/0 是指向 /data/data 的符号链接, 于是
+        /data/user/0/... 被解析成 /data/data/...。只认 /data/user/ 时它会落进
+        "按 basename 重建" 分支, 被拼成 models/ui_detect_v1/models/<name> →
+        Kotlin 报 model not found → look() 整体失败(装上 YOLO 后 droid.look 反而
+        "执行失败", 视觉静默降级成纯 OCR)。"""
+        p = "/data/data/io.github.shenhaostu.gagent.debug/files/ga/user_models/ui_detect_deadbeef.onnx"
+        self.assertEqual(droid._remote_model_path(p), p)
+
+    def test_only_one_definition_survives(self):
+        """本函数曾有两个定义, 前一个(带 _is_pc() 守卫)被后一个完全遮蔽=死代码。
+        以后再出现重复定义, 静默行为漂移很难查。"""
+        import inspect
+        src = inspect.getsource(droid)
+        self.assertEqual(src.count("def _remote_model_path("), 1, "重复定义会互相遮蔽")
+
     def test_backslash_device_path_normalized(self):
         p = "\\data\\user\\0\\io.github.shenhaostu.gagent.debug\\files\\ga\\models\\ui_detect_v1\\models\\x.onnx"
         self.assertEqual(droid._remote_model_path(p), p.replace("\\", "/"))
