@@ -18,19 +18,20 @@ if str(_CORE) not in sys.path:
 @pytest.fixture(autouse=True)
 def _reset_module_state():
     """重置 gacore 的模块级可变状态, 防止跨用例泄漏:
-    phone_ledger.ACTIVE(守卫账本) / droid._TRACE+_LAST_OBS(录制痕跡) / droid._VISION_FAILS(视觉熔断) /
-    droid._OBS_CACHE(观测缓存) / ui_detect_lite.LAST_YOLO_ERROR(YOLO 降级原因)。
+    phone_ledger.ACTIVE(守卫账本) / droid._TRACE+_LAST_OBS(录制痕跡) /
+    droid._FUSE+_CAP+_ACTIVE_BACKEND(视觉生命周期) / droid._OBS_CACHE(观测缓存) /
+    ui_detect_lite.LAST_YOLO_ERROR(YOLO 降级原因)。
 
-    后两者是本轮新引入的: LAST_YOLO_ERROR 一旦被某个降级用例设上且不清, 之后任何
-    observe() 都会读到陈旧原因 → 静默剥掉 YOLO 项。按文件名字母序它恰好跑在后面,
-    换并行执行或改个文件名就会炸, 所以在这里显式清。"""
+    后三者是本轮新引入的: LAST_YOLO_ERROR 一旦被某个降级用例设上且不清, 之后任何
+    observe() 都会读到陈旧原因 → 静默剥掉 YOLO 项; _ACTIVE_BACKEND 不跨用例清, 上个
+    用例的假后端会漏到下个用例的视觉调用里。"""
     import phone_ledger
     import droid
     phone_ledger.ACTIVE.clear()
     droid._TRACE.clear()
     droid._LAST_OBS = None
-    droid._VISION_FAILS.update({"n": 0, "until": 0.0})
     droid._OBS_CACHE.update(thumb=None, roi=None, pkg=None, rot=None, res=None)
+    droid._FUSE.clear(); droid._CAP.clear(); droid._ACTIVE_BACKEND = None
     try:
         from models.ui_detect_v1 import ui_detect_lite
         ui_detect_lite.LAST_YOLO_ERROR = None
@@ -40,8 +41,8 @@ def _reset_module_state():
     phone_ledger.ACTIVE.clear()
     droid._TRACE.clear()
     droid._LAST_OBS = None
-    droid._VISION_FAILS.update({"n": 0, "until": 0.0})
     droid._OBS_CACHE.update(thumb=None, roi=None, pkg=None, rot=None, res=None)
+    droid._FUSE.clear(); droid._CAP.clear(); droid._ACTIVE_BACKEND = None
     try:
         from models.ui_detect_v1 import ui_detect_lite
         ui_detect_lite.LAST_YOLO_ERROR = None

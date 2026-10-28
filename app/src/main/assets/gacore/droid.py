@@ -1049,27 +1049,76 @@ def look(conf=0.25, path=None, roi=None, cache=True, *, label=None, yolo=None):
     return out
 
 
-# ---- canvas 页面视觉加速(通用机制, 不针对具体 App) ----
-# 真机实证(羊了个羊一局 652s): 游戏段每步 1-2 次 ask_vision, 全屏 320 万像素+长 prompt, 单次 25-50s;
-# 且 vision 超时后会拖垮 a11y。通用修法: ROI 裁剪(只送局部) + 超时上限 + 连续失败熔断。
-_VISION_FAILS = {"n": 0, "until": 0.0}
-_VISION_FAIL_LIMIT = 2          # 连续失败此次数后熔断
-_VISION_COOLDOWN_S = 120        # 熔断静默期: 期间直接拒, 不再反复烧超时
-_VISION_TIMEOUT_S = 30          # 单次**读**超时(流式下=两个 chunk 之间最多静默多久): 抓"真挂住"
-                                # 它不是总预算——总预算见 _vision_total_budget()
-_VISION_TOTAL_S = 45            # 无 code_run 上下文时的总时长预算(主线程/PC 调试)
-_VISION_RESERVE_S = 6           # code_run 预算里留给脚本自己收尾(print/return)的部分
-_VISION_MIN_S = 15              # 一次视觉调用至少给这么多; 少于它宁可立刻失败
-_VISION_TLS = threading.local() # code_run 执行线程注入当前任务的 llmclient.backend(模型切换自动跟随)
+# ---- 视觉通道生命周期 ----
+# 三件事各自独立, 曾互相打架(真机 2026-10-28: 选个不支持图片的模型 = 2 次 2.4s 快速失败
+# = 120s 全瞎, 而熔断只在任务开始清零, 新任务替上个任务的模型选择受罚):
+#   ① backend 从哪来  ② 这个模型能不能看图  ③ 传输失败几次算熔断
+# ① 任务开始由 ga_android 登记到模块级 _ACTIVE_BACKEND。**不是 threading.local** ——
+#    后者不跨线程继承, 用户代码自起子线程调 ask_vision 会莫名拿不到后端。
+# ② 首次真实调用失败时按错误形态分类并缓存, 不预探(预探让每个新模型都多付一次往返)。
+# ③ 熔断按 backend 身份, 切模型即重置。
+_ACTIVE_BACKEND = None
+_FUSE = {}                 # backend_id -> {'n': int, 'until': float}
+_CAP = {}                  # backend_id -> 'ok'|'no_vision'
+_VISION_FAIL_LIMIT = 2     # 连续传输失败此次数后熔断
+_VISION_COOLDOWN_S = 120   # 熔断静默期: 期间直接拒, 不再反复烧超时
+_VISION_TIMEOUT_S = 30     # 单次**读**超时(流式下=两个 chunk 之间最多静默多久): 抓"真挂住"
+_NO_VISION_MARKS = ('image', 'vision', 'multimodal', 'multi-modal', '不支持图片',
+                    '无法处理图片', 'image_url', 'base64')
 
 
-def set_vision_backend(backend):
-    """由 ga_android.do_code_run 在 code_run 线程注入; None=清除。"""
-    _VISION_TLS.backend = backend
+def set_active_backend(backend):
+    """ga_android 在任务开始/模型切换时登记当前任务的模型后端; None=清除。"""
+    global _ACTIVE_BACKEND
+    _ACTIVE_BACKEND = backend
 
 
-def _vision_backend():
-    return getattr(_VISION_TLS, 'backend', None)
+def active_backend():
+    return _ACTIVE_BACKEND
+
+
+def _backend_id(backend):
+    """backend 的稳定身份: provider/model/base 的拼接。切模型即变, 熔断与能力缓存随之失效。"""
+    if backend is None:
+        return None
+    parts = []
+    for name in ('model', 'name', 'api_base', 'base_url', 'provider'):
+        try:
+            v = getattr(backend, name, None)
+            if isinstance(v, str) and v:
+                parts.append(v)
+        except Exception:
+            pass
+    if not parts:
+        parts.append(type(backend).__name__)
+    return '|'.join(parts)
+
+
+def _fuse_state(backend):
+    return _FUSE.setdefault(_backend_id(backend), {'n': 0, 'until': 0.0})
+
+
+def reset_vision_fuse(backend=None):
+    """清零视觉熔断。backend=None 全清(任务边界, 兼容旧调用); 给了只清那一个(切模型时)。"""
+    if backend is None:
+        _FUSE.clear(); _CAP.clear()
+    else:
+        _FUSE.pop(_backend_id(backend), None)
+        _CAP.pop(_backend_id(backend), None)
+
+
+def _looks_like_no_vision(msg):
+    low = str(msg).lower()
+    return any(m in low for m in _NO_VISION_MARKS)
+
+
+def _vision_cap(backend):
+    """该模型能不能看图: 'ok' | 'no_vision' | None(还没试过)。"""
+    return _CAP.get(_backend_id(backend))
+
+
+def _mark_cap(backend, value):
+    _CAP[_backend_id(backend)] = value
 
 
 def _resolve_roi(roi):
@@ -1095,100 +1144,88 @@ def _crop_roi(img, roi):
     return img[int(y1 / 1000.0 * h):int(y2 / 1000.0 * h), int(x1 / 1000.0 * w):int(x2 / 1000.0 * w)]
 
 
-def reset_vision_fuse():
-    """清零视觉熔断(任务边界调用): 熔断是**跨任务存活**的进程级状态, 而上个任务早期
-    连撞两次失败(最常见成因: 任务页选中的模型根本不支持图片, 2.4s 就连错两次)会让新任务
-    在整个游戏阶段——也就是唯一需要视觉 grounding 的阶段——连续 120s 拿不到任何观察。
-    任务边界必须清零, 否则新任务是在替上个任务的模型选择受罚。"""
-    _VISION_FAILS.update({"n": 0, "until": 0.0})
+def reset_vision_fuse(backend=None):
+    """清零视觉熔断与能力缓存。backend=None 全清(任务边界调用, 兼容旧无参调用);
+    给了只清那一个(模型切换时调用)。
+
+    为什么任务边界要全清: 熔断曾只在此处复位, 而上个任务早期连撞两次失败(最常见成因:
+    选中的模型根本不支持图片, 2.4s 就连错两次)会让新任务在整个游戏阶段——也就是唯一
+    需要视觉 grounding 的阶段——连续 120s 拿不到任何观察。现在熔断按模型身份走,
+    切模型自动失效, 这道全清只是兜底。"""
+    if backend is None:
+        _FUSE.clear(); _CAP.clear()
+    else:
+        _FUSE.pop(_backend_id(backend), None)
+        _CAP.pop(_backend_id(backend), None)
 
 
-def _vision_total_budget(requested=None):
-    """视觉调用的**总时长**预算: 优先从 code_run 的剩余时间推导, 不再用固定值。
-
-    为什么改: 真机实测这台设备一次视觉调用要 15-46s(step-5-preview 思考慢), 而旧实现把
-    _VISION_TIMEOUT_S=30 同时当读超时和总上限用 —— 2026-10-28 第 14 步一个 33s 才返回的
-    调用被拦腰掐断, 报"视觉调用超过总时长上限 30s"; 用户的模型/配置毫无问题却全线失败。
-    固定数字在外部依赖上必然反复踩: 给小了误杀, 给大了又变 60s+ 挂住。
-
-    真正的约束是 code_run 的 timeout(默认 60s): 一次视觉调用必须给足时间, 但又不能吃掉
-    整个脚本预算——吃光会触发超时并留下僵尸线程(60.285s 那次的真因)。
-    所以: 预算 = code_run 剩余 - 预留, 夹在 [下限, 调用方请求值] 之间。
-    剩余不够一次调用时**立刻抛错**并说清剩多少, 让模型本轮改用 look()/ocr 或 ask_user。"""
-    left = run_guard.remaining()
-    if left is None:                       # 不在 code_run 里: 用配置值
-        return float(requested or _VISION_TOTAL_S)
-    usable = left - _VISION_RESERVE_S
-    if usable < _VISION_MIN_S:
-        raise RuntimeError('code_run 仅剩 %.1fs, 不够一次视觉调用(至少 %ds, 另需 %ds 收尾)。'
-                           '本轮不要再调 ask_vision/ask_point: 先用 look()/ocr 读屏, 或 ask_user。'
-                           % (left, _VISION_MIN_S, _VISION_RESERVE_S))
-    return min(float(requested or usable), usable)
-
-
-def _vision_failed():
-    _VISION_FAILS["n"] += 1
-    if _VISION_FAILS["n"] >= _VISION_FAIL_LIMIT:
-        _VISION_FAILS["until"] = time.time() + _VISION_COOLDOWN_S
+def _vision_failed(backend):
+    """传输类失败计数; 连败到上限即熔断。**能力类失败不走这里**(见 ask_vision)。"""
+    st = _fuse_state(backend)
+    st['n'] += 1
+    if st['n'] >= _VISION_FAIL_LIMIT:
+        st['until'] = time.time() + _VISION_COOLDOWN_S
 
 
 def ask_vision(image_input, prompt="描述当前界面", roi=None, max_pixels=None, timeout=None, **options):
-    """canvas/自绘页面的视觉问答。ROI(0-1000)裁剪后只送局部——全屏 320 万像素 vs 局部 ~50 万,
-    单次调用耗时差 3-6 倍(真机实证 25-50s → 8-15s)。超时上限 + 连续失败熔断, 不再让 vision
-    超时拖垮 a11y。首次进 canvas 页先用强降插图问区域边界, 之后所有调用带该 roi。
+    """看图问答。ROI(0-1000)裁剪后只送局部——全屏 320 万像素 vs 局部 ~50 万, 单次调用
+    耗时差 3-6 倍(真机实证 25-50s → 8-15s)。超时上限 + 连续失败熔断, 不再让 vision
+    超时拖垮 a11y。
 
     roi 也接受锚带名: 'status'/'title'/'navbar'(geom 实测的系统 UI 带)与
     'top'/'upper'/'middle'/'lower'/'bottom'。顶栏无文字图标(放大镜/+)问位置时传
     roi='title': 主要收益是**把状态栏裁掉**(VLM 就不会把时间/电池算进去), 顺带图传变小。
-    ⚠️ 别把它当加速手段——实测单次视觉调用 15-46s, 大头是模型生成不是图传。"""
+    ⚠️ 别把它当加速手段——实测单次视觉调用 15-46s, 大头是模型生成不是图传。
+
+    第一级工具是 see(); 本函数是它在 code_run 内的薄封装, SOP 只教 see()。"""
     roi = _resolve_roi(roi)
     run_guard.check()        # 僵尸线程检查点: code_run 超时/被停后, 视觉调用是最容易长时间挂住的
                              # 副作用(一次 15-46s), 不设卡则僵尸会继续拿旧后端打网络, 反复烧预算
-    timeout = _vision_total_budget(timeout)   # 总预算从 code_run 剩余时间推导(见该函数docstring)
-    if _VISION_FAILS["n"] >= _VISION_FAIL_LIMIT and time.time() < _VISION_FAILS["until"]:
-        raise RuntimeError("视觉模型连续失败已熔断 %ds: 不要重试 ask_vision —— 立即改用 droid.look()/droid.ocr 读屏; "
-                           "确需看图问答, 等熔断结束或检查当前任务选择的模型是否支持图片" % _VISION_COOLDOWN_S)
-    backend = _vision_backend()
-    if backend is not None:
-        try:
-            from vision_llm import ask_with_backend
-            kw = {"timeout": timeout or _VISION_TIMEOUT_S}
-            if max_pixels:
-                kw["max_pixels"] = max_pixels
-            result = ask_with_backend(backend, _crop_roi(image_input, roi), prompt, **kw)
-        except Exception as exc:
-            _vision_failed()
-            raise RuntimeError("任务页当前选择的模型视觉请求失败(%s): 不要重试 ask_vision —— 立即改用 "
-                               "droid.look()/droid.ocr 读屏; 确需看图请在任务页选择支持图片的模型。"
-                               % (str(exc)[:160],)) from None
-    else:
-        try:
-            from vision_api import ask_vision as invoke
-        except ImportError:
-            raise RuntimeError("视觉不可用(当前任务未提供模型, 且找不到 vision_api): 不要重试 ask_vision —— "
-                               "立即改用 droid.look()/droid.ocr 读屏; 确需看图请在任务页选择支持图片的模型") from None
-        kw = dict(options)
-        kw.setdefault("timeout", timeout or _VISION_TIMEOUT_S)
+    backend = active_backend()
+    if backend is None:
+        raise RuntimeError('当前任务没有可用模型后端, 视觉不可用: 不要重试 ask_vision/see —— '
+                           '立即改用 droid.observe() 拿本地图标框、droid.ocr() 读屏, 或 ask_user。')
+    if _vision_cap(backend) == 'no_vision':
+        # 明确拒绝, 不计熔断不重试: 这是配置问题, 不是网络问题。用户切到纯文本模型时
+        # 旧实现会让它 2.4s 连错两次 → 熔断 120s → 整个游戏阶段瞎掉。
+        raise RuntimeError('当前任务选择的模型不支持图片(%s), 视觉通道已停用: 不要重试 '
+                           'ask_vision/see —— 立即改用 droid.observe() 拿本地图标框、'
+                           'droid.ocr() 读画面文字, 或 ask_user 请用户换个支持图片的模型。'
+                           % (_backend_id(backend)[:80],))
+    st = _fuse_state(backend)
+    if st['n'] >= _VISION_FAIL_LIMIT and time.time() < st['until']:
+        raise RuntimeError('该模型视觉连续失败已熔断 %ds: 不要重试 ask_vision/see —— 立即改用 '
+                           'droid.observe()/droid.ocr() 读屏, 或 ask_user。换个模型会自动解除。'
+                           % _VISION_COOLDOWN_S)
+    try:
+        from vision_llm import ask_with_backend
+        kw = {"timeout": timeout or _VISION_TIMEOUT_S}
         if max_pixels:
             kw["max_pixels"] = max_pixels
-        try:
-            result = invoke(_crop_roi(image_input, _resolve_roi(roi)), prompt, **kw)
-        except Exception:
-            _vision_failed()
-            raise
+        result = ask_with_backend(backend, _crop_roi(image_input, roi), prompt, **kw)
+    except Exception as exc:
+        if _looks_like_no_vision(exc):
+            _mark_cap(backend, 'no_vision')
+            raise RuntimeError('当前任务选择的模型不支持图片(%s): %s。不要重试 ask_vision/see '
+                               '—— 立即改用 droid.observe()/droid.ocr() 读屏, 或 ask_user。'
+                               % (_backend_id(backend)[:80], str(exc)[:120])) from None
+        _vision_failed(backend)
+        raise RuntimeError('视觉请求失败(%s): 不要重试 ask_vision/see —— 立即改用 droid.observe()/'
+                           'droid.ocr() 读屏; 确需看图请在任务页选择支持图片的模型。'
+                           % (str(exc)[:160],)) from None
     # 空响应 = 静默失败(真机实证): 某轮 ask_vision 返回空串, stdout 只剩 _prepare_image 的
     # 「缩放/Base64」两行 print, agent 把"没有回答"当成功, 又整轮重问同一问题(白付一轮模型 + ~17s)。
-    # vision_api 的契约是「错误以 "Error: ..." 字符串返回, 空串则完全无信号」——OpenAI 兼容后端
-    # 直接 return content 且无空检查, Claude 后端才有 raise。故在此补显式失败: 空/纯空白一律抛错,
-    # 不让无信号结果流过; 已以 "Error:" 开头的字符串保持原样回传(那是可见的失败, 由调用方按错处理)。
+    # vision_llm.ask_with_backend 的契约是「空文本 raise」, 这里再兜一层: 空/纯空白一律抛错,
+    # 不让无信号结果流过; 已以 "Error:" 开头的字符串保持原样回传(那是可见的失败)。
     if result is None or not str(result).strip():
-        _vision_failed()
-        raise RuntimeError("视觉模型未返回回答内容(空响应): 不要重试 ask_vision —— 立即改用 droid.look()/droid.ocr 读屏; "
-                           "若确需看图问答, 检查当前任务选择的模型是否支持图片输入")
+        _vision_failed(backend)
+        raise RuntimeError('视觉模型未返回回答内容(空响应): 不要重试 ask_vision/see —— 立即改用 '
+                           'droid.observe()/droid.ocr() 读屏; 若确需看图, 检查当前任务选择的模型是否支持图片输入')
     if str(result).startswith("Error:"):
-        _vision_failed()                      # 可见失败也计入熔断(原样回传, 由调用方按错处理)
+        _vision_failed(backend)              # 可见失败也计入熔断(原样回传, 由调用方按错处理)
     else:
-        _VISION_FAILS["n"] = 0                # 成功即重置
+        _mark_cap(backend, 'ok')
+        _fuse_state(backend)['n'] = 0        # 成功即重置
     return result
 
 

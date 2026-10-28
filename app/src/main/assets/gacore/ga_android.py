@@ -17,7 +17,7 @@ def safe_print(*args, **kwargs):
     try: print(*args, **kwargs)
     except: pass
 
-def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop_signal=None, maxlen=10000, myprint=safe_print, vision_backend=None):
+def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop_signal=None, maxlen=10000, myprint=safe_print):
     """代码执行器 (Android: python进程内exec, sh走/system/bin/sh)"""
     preview = (code[:60].replace('\n', ' ') + '...') if len(code) > 60 else code.strip()
     cwd = cwd or os.path.join(script_dir, 'temp')
@@ -41,11 +41,6 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
             try:
                 os.chdir(cwd)
                 sys.stdout = sys.stderr = _Cap()
-                try:
-                    import droid
-                    droid.set_vision_backend(vision_backend)
-                except Exception:
-                    pass
                 exec(compile(header + '\n' + code, '<code_run>', 'exec'),
                      {'__name__': '__main__', '__file__': os.path.join(cwd, '_code_run.py')})
                 box['exit'] = 0
@@ -56,11 +51,6 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
             except BaseException:
                 full_stdout.append(traceback.format_exc()); box['exit'] = 1
             finally:
-                try:
-                    import droid
-                    droid.set_vision_backend(None)
-                except Exception:
-                    pass
                 run_guard.leave()
                 sys.stdout, sys.stderr = old_out, old_err
                 try: os.chdir(old_cwd)
@@ -224,6 +214,10 @@ class GenericAgentHandler(BaseHandler):
                                                       # 早期连撞两次(选中的模型不支持图片就会 2.4s 连错两次)
                                                       # 会让新任务整个游戏阶段失去唯一的 grounding 通道
         except Exception: pass
+        try:
+            import droid; droid.set_active_backend(self._vision_backend())   # 任务边界登记模型后端:
+                                                      # 不登记则 ask_vision 只会报"没有可用模型后端"
+        except Exception: pass
         self.parent = parent
         self.working = {}
         self.cwd = cwd;  self.current_turn = 0
@@ -245,7 +239,11 @@ class GenericAgentHandler(BaseHandler):
         return bare[-1].strip() if bare else None
 
     def _vision_backend(self):
-        """当前任务选择的模型后端: 视觉问答复用同一 provider/model/key/proxy, 随任务页切换。"""
+        """当前任务选择的模型后端: 视觉问答复用同一 provider/model/key/proxy, 随任务页切换。
+
+        由 __init__(任务边界)与 turn_end_callback(每轮前) 登记进 droid._ACTIVE_BACKEND。
+        模块级而不是 threading.local: 后者不跨线程继承, 用户代码自起子线程调 ask_vision
+        会莫名拿不到后端。"""
         try:
             c = getattr(self.parent, 'llmclient', None)
             return getattr(c, 'backend', None) if c is not None else None
@@ -277,22 +275,12 @@ class GenericAgentHandler(BaseHandler):
             try:
                 os.chdir(cwd)
                 try:
-                    import droid
-                    droid.set_vision_backend(self._vision_backend())
-                except Exception:
-                    pass
-                try:
                     try: result = repr(eval(code, ns))
                     except SyntaxError: exec(code, ns); result = ns.get('_r', 'OK')
                 except Exception as e: result = f'Error: {e}'
-                finally:
-                    try:
-                        import droid
-                        droid.set_vision_backend(None)
-                    except Exception:
-                        pass
-            finally: os.chdir(old_cwd)
-        else: result = yield from code_run(code, code_type, timeout, cwd, code_cwd=code_cwd, stop_signal=self.code_stop_signal, maxlen=maxlen, myprint=self.print, vision_backend=self._vision_backend())
+            finally:
+                os.chdir(old_cwd)
+        else: result = yield from code_run(code, code_type, timeout, cwd, code_cwd=code_cwd, stop_signal=self.code_stop_signal, maxlen=maxlen, myprint=self.print)
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         return StepOutcome(result, next_prompt=next_prompt)
     
@@ -700,6 +688,11 @@ class GenericAgentHandler(BaseHandler):
         return prompt
     
     def turn_end_callback(self, response, tool_calls, tool_results, turn, next_prompt, exit_reason):
+        # 每轮前刷新登记的模型后端: 模型在任务间隙被换掉时(/llm 换的是整个 client 对象),
+        # 视觉必须跟着换, 不能拿着上个 backend 继续打。
+        try:
+            import droid; droid.set_active_backend(self._vision_backend())
+        except Exception: pass
         _c = re.sub(r'```.*?```|<thinking>.*?</thinking>', '', response.content, flags=re.DOTALL)
         rsumm = re.search(r"<summary>(.*?)</summary>", _c, re.DOTALL)
         if rsumm: summary = rsumm.group(1).strip()
