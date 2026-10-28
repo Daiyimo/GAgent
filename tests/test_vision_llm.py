@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import time
+
 import numpy as np
 import pytest
 
@@ -139,3 +141,25 @@ def test_mixin_shell_retry_count_is_zeroed_too():
     vision_llm.ask_with_backend(m, _img(), 'q', timeout=5)
     assert m.seen_retries == 0, m.seen_retries
     assert m._retries == 3                 # 调用后恢复
+
+
+class _SlowLLM(_FakeLLM):
+    """流式下 read_timeout 管不住的总时长: 一个 token 都不吐地跑很久, 单次读超时永不触发。"""
+
+    def raw_ask(self, messages):
+        time.sleep(3)
+        yield 'too late'
+
+
+def test_total_wall_clock_budget_beats_the_per_read_timeout():
+    """回归(真机 2026-10-28 09:34): ask_point 跑了 46.8s 还没回来, 用户手动停止。
+    根因是 read_timeout 是 requests 的**单次读**超时(流式下=两个 chunk 之间最多静默多久),
+    思考型模型可以长时间不吐 token 而从不触发它; 而 code_run 默认只有 60s, 一个视觉调用
+    就吃掉四分之三预算。必须按墙钟兜底。"""
+    with pytest.raises(RuntimeError, match='总时长上限'):
+        vision_llm.ask_with_backend(_SlowLLM(), _img(), 'q', timeout=1)
+
+
+def test_no_deadline_when_timeout_not_given():
+    b = _FakeLLM()
+    assert vision_llm.ask_with_backend(b, _img(), 'q') == '视觉回答'

@@ -12,6 +12,7 @@ proxy, 模型切换时自动跟随; 只需要在 code_run 执行线程里由 ga_
 import base64
 import contextlib
 import io
+import time
 
 import cv2
 import numpy as np
@@ -142,8 +143,18 @@ def ask_with_backend(backend, image_input, prompt, max_pixels=1440000, timeout=N
                 if 'connect_timeout' in saved:
                     target.connect_timeout = _tighten_timeout(saved['connect_timeout'], timeout)
         # 视觉请求不需要主工具的 system/tools; 提供商解析器可能 print 噪声, 不进入 code_run stdout
+        #
+        # 总时长硬上限: `read_timeout` 是 requests 的**单次读**超时(流式下=两个 chunk 之间
+        # 最多静默多久), 不是总预算。思考型模型可以一个 token 都不吐地跑满 45s+ 而从不触发
+        # 它——真机 2026-10-28 09:34 的 ask_point 就这样跑了 46.8s 还没回来(用户手动停止),
+        # 而 code_run 默认只有 60s, 一个视觉调用就吃掉四分之三的预算。这里按墙钟兜底。
+        deadline = time.monotonic() + timeout if timeout else None
         with contextlib.redirect_stdout(io.StringIO()):
-            chunks = [str(c) for c in backend.raw_ask([msg])]
+            chunks = []
+            for chunk in backend.raw_ask([msg]):
+                chunks.append(str(chunk))
+                if deadline is not None and time.monotonic() > deadline:
+                    raise RuntimeError('视觉调用超过总时长上限 %ss(单次读超时管不住流式静默)' % timeout)
     finally:
         for target, saved in targets:
             for name, value in saved.items():

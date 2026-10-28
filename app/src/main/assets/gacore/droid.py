@@ -894,8 +894,8 @@ def _resolve_roi(roi):
 
 def _crop_roi(img, roi):
     """按 0-1000 归一化 ROI 裁剪 ndarray(与全系统坐标契约一致); 非 ndarray(路径)原样返回。
-    roi 也接受锚带名('title' 等): 顶栏无文字图标是 ask_vision 的主要用途, 裁到标题行
-    比送整屏快数倍, 且不可能把状态栏的时间/电池算进来。"""
+    roi 也接受锚带名('title' 等): 顶栏无文字图标是 ask_vision 的主要用途, 裁掉状态栏
+    后 VLM 不可能把时间/电池算进来(提速只是顺带, 真正的大头是模型生成)。"""
     import numpy as np
     if not isinstance(img, np.ndarray) or not roi or len(roi) != 4:
         return img
@@ -926,7 +926,8 @@ def ask_vision(image_input, prompt="描述当前界面", roi=None, max_pixels=No
 
     roi 也接受锚带名: 'status'/'title'/'navbar'(geom 实测的系统 UI 带)与
     'top'/'upper'/'middle'/'lower'/'bottom'。顶栏无文字图标(放大镜/+)问位置时传
-    roi='title'——裁到标题行比送整屏快数倍, 且不可能把状态栏的时间/电池算进来。"""
+    roi='title': 主要收益是**把状态栏裁掉**(VLM 就不会把时间/电池算进去), 顺带图传变小。
+    ⚠️ 别把它当加速手段——实测单次视觉调用 15-46s, 大头是模型生成不是图传。"""
     roi = _resolve_roi(roi)
     if _VISION_FAILS["n"] >= _VISION_FAIL_LIMIT and time.time() < _VISION_FAILS["until"]:
         raise RuntimeError("视觉模型连续失败已熔断 %ds: 不要重试 ask_vision —— 立即改用 droid.look()/droid.ocr 读屏; "
