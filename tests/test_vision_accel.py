@@ -21,6 +21,15 @@ import droid
 IMG = np.zeros((2670, 1200, 3), dtype=np.uint8)
 
 
+def _boom_module():
+    mod = types.ModuleType("vision_api")
+
+    def _raise(*a, **k):
+        raise RuntimeError('视觉不可用')
+    mod.ask_vision = _raise
+    return mod
+
+
 def _fake_vision(result="ok"):
     calls = []
 
@@ -46,6 +55,33 @@ class VisionRoiTest(unittest.TestCase):
         for p in patches:
             p.start(); self.addCleanup(p.stop)
         return invoke
+
+    def test_band_names_crop_to_the_measured_system_ui(self):
+        """roi='title' 必须裁到 geom 实测的标题行(1200x2670 上 y 146..320),
+        且与 look(roi='title') 裁的是同一块——否则"OCR 在标题行没看到图标, 用
+        ask_vision 看同一块"就落空, 模型得重新描述位置。"""
+        import geom
+        invoke = self._patch_vision()
+        droid.ask_vision(IMG, "放大镜在哪", roi='title')
+        img = invoke.calls[0]["image"]
+        x1, y1, x2, y2 = geom.band('title', 1200, 2670)
+        # _crop_roi 按 0-1000 比例切, 与 geom.band 的像素值有 1px 取舍差
+        self.assertLessEqual(abs(img.shape[0] - (y2 - y1)), 2)
+        self.assertLessEqual(abs(img.shape[1] - (x2 - x1)), 2)
+        self.assertLess(img.shape[0], IMG.shape[0] * 0.2)      # 裁到 <20% 高度才叫"快"
+
+    def test_unknown_roi_name_lists_the_available_bands(self):
+        with self.assertRaises(ValueError) as cm:
+            droid.ask_vision(IMG, "x", roi='nope')
+        for name in ('title', 'status', 'navbar', 'top'):
+            self.assertIn(name, str(cm.exception))
+
+    def test_look_and_ask_vision_agree_on_the_same_band(self):
+        import geom
+        from_vision = droid._resolve_roi('title')
+        from_look = tuple(int(round(v * geom.NORM)) for v in droid._ROI_NAMES['title'])
+        self.assertEqual(from_vision, from_look)
+        self.assertEqual(from_vision, geom.band_norm('title'))
 
     def test_roi_crops_before_send(self):
         invoke = self._patch_vision()
@@ -190,3 +226,43 @@ class StabilityWaitTest(unittest.TestCase):
             r = droid.wait_stable()
         self.assertTrue(r['stable'])
         self.assertTrue(r.get('uncertain'))
+
+
+class VisionFuseResetTest(unittest.TestCase):
+    """回归: 熔断是跨任务存活的进程级状态。上个任务早期连撞两次失败(最常见成因=任务页
+    选中的模型不支持图片, 2.4s就连错两次)会让新任务在整个游戏阶段——唯一需要视觉
+    grounding 的阶段——连续 120s 拿不到任何观察。任务边界必须清零。"""
+
+    def setUp(self):
+        droid._VISION_FAILS.update({"n": 0, "until": 0.0})
+        self.addCleanup(lambda: droid._VISION_FAILS.update({"n": 0, "until": 0.0}))
+
+    def _fail_vision(self):
+        """让真实 ask_vision 走一遍失败分支(计数在它内部), 不打桩 ask_vision 本身。"""
+        class _Ctx:
+            def __enter__(self):
+                self.a = patch.dict(sys.modules, {"vision_api": _boom_module()}); self.a.start()
+                self.b = patch.object(droid, 'shot', lambda *a, **k: IMG); self.b.start()
+                return self
+
+            def __exit__(self, *exc):
+                self.b.stop(); self.a.stop()
+        return _Ctx()
+
+    def test_two_failures_open_the_fuse(self):
+        with self._fail_vision():
+            for _ in range(2):
+                with self.assertRaises(RuntimeError):
+                    droid.ask_point('放大镜')
+        self.assertGreaterEqual(droid._VISION_FAILS['n'], 2)
+        self.assertGreater(droid._VISION_FAILS['until'], 0)
+        # 熔断期内 ask_point 直接拒, 不再烧超时
+        with self._fail_vision():
+            with self.assertRaises(RuntimeError) as cm:
+                droid.ask_point('放大镜')
+        self.assertIn('熔断', str(cm.exception))
+
+    def test_reset_clears_both_counter_and_window(self):
+        droid._VISION_FAILS.update({"n": 2, "until": __import__('time').time() + 120})
+        droid.reset_vision_fuse()
+        self.assertEqual(droid._VISION_FAILS, {"n": 0, "until": 0.0})

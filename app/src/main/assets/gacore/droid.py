@@ -4,8 +4,11 @@
 服务状态唯一判据 = droid.ping()。bus_port.txt 是内部实现且 code_run cwd=temp 相对路径看不到它,
 禁止用文件存在性判断服务状态; ping 不通=总线组件未监听(重启 App 恢复), 与 agent/会话是否运行无关。
 红线四则(完整规程=../memory/phone_use.md, 操作手机前必读):
-  ①坐标唯一来源=dump/ui_detect; VLM(视觉大模型)只用于语义理解/认第几个, 其返回的任何坐标一律禁用
-    (VLM 认目标→ui_detect 定位 bbox→tap 中心; ui_detect 漏检时用 ocr 文字框定位, 再不行 ask_user, 禁用 VLM 坐标兜底)。
+  ①坐标优先来源=dump/ui_detect/ocr 文字框; VLM(视觉大模型)只用于**静态**界面上的语义理解与定位,
+    且必须走 droid.ask_point()(固定问句+只认 0-1000+映射回整屏), 拿到的数对原样当 gui_act 的 rel。
+    **canvas/自绘/动画画面上的 VLM 坐标一律禁用**(见 ①-b): 那种画面没有可信锚, VLM 的坐标是猜。
+    ①-b: dump 空壳(canvas 游戏)时 look() 也只有文字; 若目标连文字都不是, 按 phone_use §0.1 第 6/7 条
+    即停或 ask_user, 不要用 VLM 坐标操作动态画面。
   ②paste 后看返回: hit=True=已确认上屏; hit=False, uncertain=True=验证不可用/结论不确定, 禁止重复输入或盲目降级;
     ime_label 仅为元数据, 只有 ime_hint 可点击; hit=False 且无 uncertain 才按 hint 递进。
   ③一步一验: 一个操作→短暂等待→dump/shot 验新状态; 无变化立即停下诊断, 禁盲目重试、禁把多步决策写进一个大脚本。
@@ -20,7 +23,8 @@
     droid.look(roi='top')           # 只检测上 1/3 屏(排序条/搜索框在上面时): 耗时随面积降; roi 也可 'upper'|'middle'|'lower'|'bottom' 或 (x1,y1,x2,y2); 屏幕没变时自动返回缓存('cached':True)
     w, h = droid.screen()           # 当前朝向屏幕尺寸; 位置判断用比例(顶栏 <0.12h, 底栏 >0.9h), 绝不把绝对坐标写进记忆
     droid.tap(x, y); droid.swipe(x1,y1,x2,y2,dur=300)  # 长按=swipe同点dur>=800(已验:弹快捷菜单); swipe端点已自动夹进安全带避开系统手势区; 两者默认带前后截图 diff 后验(变化<0.05%→hint 点空/未滚成)
-    droid.tap_rel(500, 500)         # 0-1000 归一化坐标(左上原点, x右y下): 仅当目标本身就是相对区域(棋盘中心/四角/比例位)且 look()/dump() 均无目标时的最后一级; 不是给认不准的按钮猜坐标(红线①不变, 那种情况仍走 OCR/ask_user)
+    droid.tap_rel(500, 500)         # 0-1000 归一化坐标(左上原点, x右y下): 仅当目标本身就是相对区域(棋盘中心/四角/比例位)且 look()/dump() 均无目标时的最后一级; 不是给认不准的按钮猜坐标
+    droid.ask_point('放大镜', roi='title')  # 问"屏幕上某物在哪"→整屏 0-1000 数对(可直接当 gui_act 的 rel): look() 的 OCR 看不到无文字图标时的定位通道; 问句/单位/解析都定死, 别自己写 ask_vision 问坐标
     droid.scroll('up')              # 安全滚动(手指方向); 必须检查 scrolled/evidence/uncertain; uncertain=True=观察不可用/结论不确定, 不是已验证未滚动, 禁盲目重试
     droid.scroll_view('down')       # 安全滚动, 参数=浏览方向('down' 看下方内容/'up' 看上方); 必须检查 scrolled/evidence/uncertain; uncertain=True=观察不可用/结论不确定, 不是已验证未滚动, 禁盲目重试 (旧 scroll() 参数是手指方向, 与此相反)
     droid.back(); droid.home()
@@ -54,6 +58,7 @@ import os
 import re
 import struct
 import sys
+import threading
 import time
 from collections import deque
 import requests
@@ -61,6 +66,7 @@ import bus_auth
 import run_guard   # 僵尸线程护栏: code_run 超时/被停后, 后台线程每次操作手机在 _act/adb_shell 被拒, 不再驱动整机
 import run_metrics   # 只观测: 动作后验计时打点(SPEC Phase 0); 不参与任何门禁/几何判定
 import phone_ledger   # 动作账本与三档防循环(SPEC W3): 纯函数模块; droid 落账+执行边界守卫, agent 侧(ga_android)读 hint
+import geom          # 坐标换算唯一权威(0-1000 ↔ 像素) + 实测系统 UI 锚带; 纯函数无设备依赖
 _LEDGER = phone_ledger.ACTIVE   # 进程级共享账本: 与 ga_android 每轮提示注入同一实例
 
 # ---- operation trace(SPEC L1 录制源): 每次设备操作带紧凑观测快照, recipe_record 据此机械派生配方 ----
@@ -367,6 +373,9 @@ def dump_state(full=False):
     nodes = _get("/a11y/dump", **({"full": 1} if full else {}))
     # 返回 [] 且前台可信 = 真空壳树(SurfaceView 游戏/自绘页): 语义见 phone_use.md §1/§5, 上层直接转视觉, 勿当空 UI 反复重试
     degraded = {"reason": "tree_empty", "channel": "dump"} if not nodes else None
+    # 注意: 这里**不**给节点补 rx/ry(0-1000)。补它要一次额外 ping, 而 dump 在每个 tap
+    # 前都会走一遍; 而且没必要——x/y 本就是像素, 与 gui_act 的 point 同单位, 原样传即对。
+    # 需要千分比的场合(look 结果 / gui_act 动作后的 obs)已经在那些出口补好了。
     return {"nodes": nodes, "degraded": degraded, "pkg": pkg}
 
 def dump(full=False):
@@ -530,9 +539,10 @@ def _pre_dispatch(rec):
     策略敏感前台(微信 visual-only/未解析 fail-closed)跳过恢复档: BACK/HOME/REFOCUS 是模型从未请求的
     自主导航/注入, 与该策略"少做+先问"的姿态相悖——只保留拒绝/ABORT(拒绝不注入任何事件)。"""
     records = _LEDGER.recent(16) + [rec]
+    input_kind = rec.kind in phone_ledger.INPUT_KINDS
     if rec.kind in ("tap", "longpress"):
         recovery = phone_ledger.click_recovery(records, pending=rec, kind=rec.kind)
-    elif rec.kind in phone_ledger.INPUT_KINDS:
+    elif input_kind:
         recovery = phone_ledger.type_recovery(records, pending=rec)
     else:
         recovery = None
@@ -544,6 +554,8 @@ def _pre_dispatch(rec):
         recovery = None                   # 惰性判定: 只在恢复档真要吃触发时才付一次 ping
     if recovery:
         return {"recovery": recovery}
+    if input_kind:
+        return None                       # 输入类由专用阶梯全权接管(2 次即触发, 早于拒绝级的 5 次)
     reject = phone_ledger.reject_reason(records, pending=rec)
     return {"reject": reject} if reject else None
 
@@ -556,7 +568,14 @@ def _apply_guard(rec, guard, label):
                 "hint": "循环守卫: 同一动作连续无可观察变化且恢复手段已用尽, 本次未执行。请重新观察当前屏幕, 更换目标或策略, 或 ask_user 说明阻塞。"}
     if guard.get("recovery"):
         action = guard["recovery"]
-        before = shot()
+        try:
+            before = shot()
+        except Exception:
+            # 观察不可用: 既不执行恢复(不盲目注入 BACK/HOME), 也不假称已恢复;
+            # 如实结算 uncertain, 让模型重新观察。
+            _settle(rec, verdict="uncertain")
+            return {"ok": 0, "uncertain": True,
+                    "hint": "循环守卫: 无法取得当前截图, 本次动作与恢复均未执行。请重新观察当前屏幕再决定下一步。"}
         if action == "WAIT": time.sleep(1.0)
         elif action == "BACK": _act(op="back")
         elif action == "HOME": _act(op="home")
@@ -585,18 +604,36 @@ def tap(x, y, verify=True, wait=1.0, human=False, *, screen=None):
     ret = _act(op="tap", x=int(x), y=int(y), human=bool(human), expected_screen=geometry); ret.pop("ok", None)
     if not verify: return ret
     time.sleep(wait)
+    post = _post_geom(geometry)
+    if post and post['changed']:
+        ret.update(verified=False, uncertain=True, orientation_changed=True, diff='n/a',
+                   hint='屏幕方向/尺寸已变化 (%dx%d, rot=%d, %s)；这是小程序/游戏已启动的正常现象，动作已下发。'
+                        '请用返回的 screen/rot 和新 obs 继续观察/操作，不要因坐标失效结束或 ask_user。'
+                        % (post['screen'][0], post['screen'][1], post['rot'], post['orientation']),
+                   fg=_fg(), screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
+        _settle(rec, verdict="uncertain", diff_pct=100.0)
+        return ret
     after = shot()
     diff = _img_diff_str(before, after); ret["diff"] = diff
     if _shape_changed(before, after):
         ret.update(verified=False, uncertain=True, hint='屏幕尺寸变化；重新截图定位，不复用旧坐标。', fg=_fg())
+        if post: ret.update(screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
         _settle(rec, verdict="uncertain", diff_pct=100.0)
         return ret
     try: pct = float(diff.split("%", 1)[0].split()[-1])
     except Exception: pct = 0.0
     if pct < 0.05:
-        ret["hint"] = "tap后屏幕变化很小；可能点到非热区，或前台有弹窗/浮层导致后层页面不响应。请看截图/diff后再重试。"
+        ret["hint"] = ("tap后屏幕变化很小；可能点到非热区，或前台有弹窗/浮层导致后层页面不响应。"
+                   "先核对手上的坐标单位: point=像素(与 dump/look/obs 的 x/y 同单位), rel=0-1000"
+                   "(与 obs/look 的 rx/ry 同单位)——两种只能给一种, 混用会偏出几百像素且不报错。"
+                   "若目标是已聚焦的搜索框/输入框且输入法已弹出，diff 0 可能只是没有视觉变化："
+                   "不要重复点框，直接输入/粘贴。"
+                   "若目标是顶栏无文字图标（放大镜/+），look() 的 OCR 看不到它："
+                   "用 droid.ask_point(<目标描述>, roi='title') 拿 0-1000 数对后原样传给 rel，不要猜 x/y。"
+                   "请看截图/diff后再决定。")
         _track("droid_tap_miss", {"diff_pct": round(pct, 3)})   # 只在验证失败时上报(自限量): 手机操控版"中止率", 与 a11y_act_stats 的 tap 总数配对算命中率
     ret["fg"] = _fg()
+    if post: ret.update(screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
     _settle(rec, verdict="settled", diff_pct=pct, screenshot_exactly_same=_no_effect(pct), fg=ret["fg"])
     return ret
 
@@ -614,10 +651,20 @@ def longpress(x, y, ms=800, verify=True, wait=1.0, *, screen=None):
     ret = _act(op="swipe", x1=int(x), y1=int(y), x2=int(x), y2=int(y), dur=ms, expected_screen=geometry); ret.pop("ok", None)
     if not verify: return ret
     time.sleep(wait)
+    post = _post_geom(geometry)
+    if post and post['changed']:
+        ret.update(verified=False, uncertain=True, orientation_changed=True, diff='n/a',
+                   hint='屏幕方向/尺寸已变化 (%dx%d, rot=%d, %s)；这是小程序/游戏已启动的正常现象，动作已下发。'
+                        '请用返回的 screen/rot 和新 obs 继续观察/操作，不要因坐标失效结束或 ask_user。'
+                        % (post['screen'][0], post['screen'][1], post['rot'], post['orientation']),
+                   fg=_fg(), screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
+        _settle(rec, verdict="uncertain", diff_pct=100.0)
+        return ret
     after = shot()
     diff = _img_diff_str(before, after); ret["diff"] = diff
     if _shape_changed(before, after):
         ret.update(verified=False, uncertain=True, hint='屏幕尺寸变化；重新截图定位，不复用旧坐标。', fg=_fg())
+        if post: ret.update(screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
         _settle(rec, verdict="uncertain", diff_pct=100.0)
         return ret
     try: pct = float(diff.split("%", 1)[0].split()[-1])
@@ -626,6 +673,7 @@ def longpress(x, y, ms=800, verify=True, wait=1.0, *, screen=None):
         ret["hint"] = "长按后屏幕变化很小；可能该元素没有长按菜单，或长按时长不足。请重新观察当前内容再决定下一步，勿原样重发。"
         _track("droid_longpress_miss", {"diff_pct": round(pct, 3)})   # 与 droid_tap_miss 同款自限量上报
     ret["fg"] = _fg()
+    if post: ret.update(screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
     _settle(rec, verdict="settled", diff_pct=pct, screenshot_exactly_same=_no_effect(pct), fg=ret["fg"])
     return ret
 
@@ -673,10 +721,20 @@ def swipe(x1, y1, x2, y2, dur=300, verify=True, wait=0.6, *, screen=None):
     ret = _act(op="swipe", x1=int(x1), y1=int(y1), x2=int(x2), y2=int(y2), dur=int(dur), expected_screen=geometry); ret.pop("ok", None)
     if not verify: return ret
     time.sleep(wait)
+    post = _post_geom(geometry)
+    if post and post['changed']:
+        ret.update(verified=False, uncertain=True, orientation_changed=True, diff='n/a',
+                   hint='屏幕方向/尺寸已变化 (%dx%d, rot=%d, %s)；这是小程序/游戏已启动的正常现象，动作已下发。'
+                        '请用返回的 screen/rot 和新 obs 继续观察/操作，不要因坐标失效结束或 ask_user。'
+                        % (post['screen'][0], post['screen'][1], post['rot'], post['orientation']),
+                   fg=_fg(), screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
+        _settle(rec, verdict="uncertain", diff_pct=100.0)
+        return ret
     after = shot()
     diff = _img_diff_str(before, after); ret["diff"] = diff
     if _shape_changed(before, after):
         ret.update(verified=False, uncertain=True, hint='屏幕尺寸变化；重新截图定位，不复用旧坐标。', fg=_fg())
+        if post: ret.update(screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
         _settle(rec, verdict="uncertain", diff_pct=100.0)
         return ret
     try: pct = float(diff.split("%", 1)[0].split()[-1])
@@ -685,6 +743,7 @@ def swipe(x1, y1, x2, y2, dur=300, verify=True, wait=0.6, *, screen=None):
         ret["hint"] = "swipe后屏幕变化很小；可能没滚成/没拖动，或列表已在端点。请重新观察当前内容再决定下一步，勿原样重发同一手势。"
         _track("droid_swipe_miss", {"diff_pct": round(pct, 3)})   # 与 droid_tap_miss 同款自限量上报, 配对算手势命中率
     ret["fg"] = _fg()
+    if post: ret.update(screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
     _settle(rec, verdict="settled", diff_pct=pct, screenshot_exactly_same=_no_effect(pct), fg=ret["fg"])
     return ret
 
@@ -728,11 +787,17 @@ def tap_rel(rx, ry, **tap_kw):
     w, h = screen()
     if w <= 0 or h <= 0:
         raise RuntimeError("tap_rel: 屏幕尺寸未知(ping w/h 非正); 先 ping() 确认总线与前台状态")
-    return tap(int(round(rx / 1000.0 * (w - 1))), int(round(ry / 1000.0 * (h - 1))), **tap_kw)
+    # 换算走 geom(唯一权威): 与 gui_act 的 rel 字段同一条路径, 不再各写一份 round/夹取
+    return tap(*geom.to_px(rx, ry, w, h), **tap_kw)
 
 
 _LOOK_CACHE = {"thumb": None, "roi": None, "dets": None}
-_ROI_NAMES = {"top": (0, 0, 1, 0.34), "upper": (0, 0, 1, 0.5), "middle": (0, 0.25, 1, 0.75), "lower": (0, 0.5, 1, 1), "bottom": (0, 0.66, 1, 1)}
+_ROI_NAMES = {"top": (0, 0, 1, 0.34), "upper": (0, 0, 1, 0.5), "middle": (0, 0.25, 1, 0.75),
+              "lower": (0, 0.5, 1, 1), "bottom": (0, 0.66, 1, 1)}
+# 通用比例带 + geom 实测的系统 UI 锚带(status/title/navbar)共用一份 0-1000 契约:
+# look(roi='title') 与 ask_vision(..., roi='title') 裁的是同一块区域, 于是
+# "OCR 在标题行没找到无文字图标 → 用 ask_vision 看同一块"能在同一区域上对照。
+_ROI_NAMES.update({name: tuple(v / geom.NORM for v in geom.band_norm(name)) for name in geom.BANDS})
 
 
 def _matching_labels(detections, label):
@@ -759,6 +824,8 @@ def look(conf=0.25, path=None, roi=None, cache=True, *, label=None):
     img = shot()
     H, W = img.shape[:2]
     if isinstance(roi, str):
+        if roi not in _ROI_NAMES:
+            raise ValueError('look: unknown roi %r, choose from: %s' % (roi, '/'.join(sorted(_ROI_NAMES))))
         roi = _ROI_NAMES[roi]
     if roi:
         x1, y1, x2, y2 = roi
@@ -782,6 +849,9 @@ def look(conf=0.25, path=None, roi=None, cache=True, *, label=None):
         bx1, by1, bx2, by2 = d["bbox"]
         d["bbox"] = [bx1 + x1, by1 + y1, bx2 + x1, by2 + y1]
         d["x"], d["y"] = int((bx1 + bx2) / 2 + x1), int((by1 + by2) / 2 + y1)
+        # x/y=像素(与 dump/find/tap 同单位), rx/ry=0-1000。两种都带, 模型就不必自己换算——
+        # 单位换算曾经是 gui_act 最大的静默失败源(像素被当归一化, 点偏 300-400px 不报错)。
+        d["rx"], d["ry"] = geom.to_norm(d["x"], d["y"], W, H)
     c.update(thumb=thumb, roi=(x1, y1, x2, y2), dets=[dict(d) for d in dets])
     if path:
         cv2.imwrite(path, img)
@@ -800,10 +870,32 @@ _VISION_FAILS = {"n": 0, "until": 0.0}
 _VISION_FAIL_LIMIT = 2          # 连续失败此次数后熔断
 _VISION_COOLDOWN_S = 120        # 熔断静默期: 期间直接拒, 不再反复烧超时
 _VISION_TIMEOUT_S = 30          # 单次上限(原默认 60s: 超时一次就烧掉一分钟)
+_VISION_TLS = threading.local() # code_run 执行线程注入当前任务的 llmclient.backend(模型切换自动跟随)
+
+
+def set_vision_backend(backend):
+    """由 ga_android.do_code_run 在 code_run 线程注入; None=清除。"""
+    _VISION_TLS.backend = backend
+
+
+def _vision_backend():
+    return getattr(_VISION_TLS, 'backend', None)
+
+
+def _resolve_roi(roi):
+    """ROI 名 → 0-1000 矩形。'title'/'status'/'navbar' 走 geom 实测锚带(与 look() 同一份),
+    'top'/'upper'/... 走通用比例带; 已是 4 元组就原样返回。"""
+    if isinstance(roi, str):
+        if roi not in _ROI_NAMES:
+            raise ValueError('unknown roi %r, choose from: %s' % (roi, '/'.join(sorted(_ROI_NAMES))))
+        return tuple(int(round(v * geom.NORM)) for v in _ROI_NAMES[roi])
+    return roi
 
 
 def _crop_roi(img, roi):
-    """按 0-1000 归一化 ROI 裁剪 ndarray(与全系统坐标契约一致); 非 ndarray(路径)原样返回。"""
+    """按 0-1000 归一化 ROI 裁剪 ndarray(与全系统坐标契约一致); 非 ndarray(路径)原样返回。
+    roi 也接受锚带名('title' 等): 顶栏无文字图标是 ask_vision 的主要用途, 裁到标题行
+    比送整屏快数倍, 且不可能把状态栏的时间/电池算进来。"""
     import numpy as np
     if not isinstance(img, np.ndarray) or not roi or len(roi) != 4:
         return img
@@ -811,6 +903,14 @@ def _crop_roi(img, roi):
     x1, x2 = sorted((max(0, min(1000, roi[0])), max(0, min(1000, roi[2]))))
     y1, y2 = sorted((max(0, min(1000, roi[1])), max(0, min(1000, roi[3]))))
     return img[int(y1 / 1000.0 * h):int(y2 / 1000.0 * h), int(x1 / 1000.0 * w):int(x2 / 1000.0 * w)]
+
+
+def reset_vision_fuse():
+    """清零视觉熔断(任务边界调用): 熔断是**跨任务存活**的进程级状态, 而上个任务早期
+    连撞两次失败(最常见成因: 任务页选中的模型根本不支持图片, 2.4s 就连错两次)会让新任务
+    在整个游戏阶段——也就是唯一需要视觉 grounding 的阶段——连续 120s 拿不到任何观察。
+    任务边界必须清零, 否则新任务是在替上个任务的模型选择受罚。"""
+    _VISION_FAILS.update({"n": 0, "until": 0.0})
 
 
 def _vision_failed():
@@ -822,24 +922,43 @@ def _vision_failed():
 def ask_vision(image_input, prompt="描述当前界面", roi=None, max_pixels=None, timeout=None, **options):
     """canvas/自绘页面的视觉问答。ROI(0-1000)裁剪后只送局部——全屏 320 万像素 vs 局部 ~50 万,
     单次调用耗时差 3-6 倍(真机实证 25-50s → 8-15s)。超时上限 + 连续失败熔断, 不再让 vision
-    超时拖垮 a11y。首次进 canvas 页先用强降插图问区域边界, 之后所有调用带该 roi。"""
+    超时拖垮 a11y。首次进 canvas 页先用强降插图问区域边界, 之后所有调用带该 roi。
+
+    roi 也接受锚带名: 'status'/'title'/'navbar'(geom 实测的系统 UI 带)与
+    'top'/'upper'/'middle'/'lower'/'bottom'。顶栏无文字图标(放大镜/+)问位置时传
+    roi='title'——裁到标题行比送整屏快数倍, 且不可能把状态栏的时间/电池算进来。"""
+    roi = _resolve_roi(roi)
     if _VISION_FAILS["n"] >= _VISION_FAIL_LIMIT and time.time() < _VISION_FAILS["until"]:
         raise RuntimeError("视觉模型连续失败已熔断 %ds: 不要重试 ask_vision —— 立即改用 droid.look()/droid.ocr 读屏; "
-                           "确需看图问答, 等熔断结束或检查 vision_api 后端" % _VISION_COOLDOWN_S)
-    try:
-        from vision_api import ask_vision as invoke
-    except ImportError:
-        raise RuntimeError("视觉模型未配置(找不到 vision_api 模块): 不要重试 ask_vision —— 立即改用 droid.look()/droid.ocr 读屏; "
-                           "确需看图问答时, 先按 memory/vision_sop.md 配置 vision_api 再继续") from None
-    kw = dict(options)
-    kw.setdefault("timeout", timeout or _VISION_TIMEOUT_S)
-    if max_pixels:
-        kw["max_pixels"] = max_pixels
-    try:
-        result = invoke(_crop_roi(image_input, roi), prompt, **kw)
-    except Exception:
-        _vision_failed()
-        raise
+                           "确需看图问答, 等熔断结束或检查当前任务选择的模型是否支持图片" % _VISION_COOLDOWN_S)
+    backend = _vision_backend()
+    if backend is not None:
+        try:
+            from vision_llm import ask_with_backend
+            kw = {"timeout": timeout or _VISION_TIMEOUT_S}
+            if max_pixels:
+                kw["max_pixels"] = max_pixels
+            result = ask_with_backend(backend, _crop_roi(image_input, roi), prompt, **kw)
+        except Exception as exc:
+            _vision_failed()
+            raise RuntimeError("任务页当前选择的模型视觉请求失败(%s): 不要重试 ask_vision —— 立即改用 "
+                               "droid.look()/droid.ocr 读屏; 确需看图请在任务页选择支持图片的模型。"
+                               % (str(exc)[:160],)) from None
+    else:
+        try:
+            from vision_api import ask_vision as invoke
+        except ImportError:
+            raise RuntimeError("视觉不可用(当前任务未提供模型, 且找不到 vision_api): 不要重试 ask_vision —— "
+                               "立即改用 droid.look()/droid.ocr 读屏; 确需看图请在任务页选择支持图片的模型") from None
+        kw = dict(options)
+        kw.setdefault("timeout", timeout or _VISION_TIMEOUT_S)
+        if max_pixels:
+            kw["max_pixels"] = max_pixels
+        try:
+            result = invoke(_crop_roi(image_input, _resolve_roi(roi)), prompt, **kw)
+        except Exception:
+            _vision_failed()
+            raise
     # 空响应 = 静默失败(真机实证): 某轮 ask_vision 返回空串, stdout 只剩 _prepare_image 的
     # 「缩放/Base64」两行 print, agent 把"没有回答"当成功, 又整轮重问同一问题(白付一轮模型 + ~17s)。
     # vision_api 的契约是「错误以 "Error: ..." 字符串返回, 空串则完全无信号」——OpenAI 兼容后端
@@ -848,12 +967,66 @@ def ask_vision(image_input, prompt="描述当前界面", roi=None, max_pixels=No
     if result is None or not str(result).strip():
         _vision_failed()
         raise RuntimeError("视觉模型未返回回答内容(空响应): 不要重试 ask_vision —— 立即改用 droid.look()/droid.ocr 读屏; "
-                           "若确需看图问答, 检查 vision_api 的后端与模型是否支持图片输入, 或稍后重试")
+                           "若确需看图问答, 检查当前任务选择的模型是否支持图片输入")
     if str(result).startswith("Error:"):
         _vision_failed()                      # 可见失败也计入熔断(原样回传, 由调用方按错处理)
     else:
         _VISION_FAILS["n"] = 0                # 成功即重置
     return result
+
+
+# ask_point 的固定提问: 短、只问一件事、只许一种单位。让提问词不随任务漂移——
+# 真机 17:48 那次模型自己写的问句是"…占屏幕宽和高的**百分比**，0-1000归一化坐标"，
+# 百分数和千分比混在一句话里, VLM 回了一段自相矛盾的散文("靠右边距15%即85%位置",
+# "左边缘约10%约90%位置"), 模型再自己乘 10 又猜了 y, 点到状态栏, 搜索页从未打开。
+_ASK_POINT_PROMPT = (
+    "Answer with ONLY two integers: x,y where the center of the target is, on a 0-1000 "
+    "scale (0,0 = top-left of the image; 1000,1000 = bottom-right). "
+    "Do not use percent, do not use pixels, do not explain. "
+    "If the target is not visible, answer: none. Target: %s")
+
+
+def _parse_point(text):
+    """从视觉回答里取前两个整数当 0-1000 坐标; 带 %/percent 的回答一律拒(那是单位陷阱, 不是坐标)。
+
+    取"前两个整数"而不是"第一个 x,y 模式": 模型的问句是固定的, 但 VLM 的回答格式不可控,
+    "x=831, y=81" / "约 (831, 81)" / "831 和 81" 都要吃得下。范围校验兜住"把屏幕尺寸
+    当时标回了"这类回答(1200x2670 → 越界 → 拒), 不猜。"""
+    import re
+    s = str(text)
+    if '%' in s or 'percent' in s.lower():
+        raise ValueError('视觉回答带了百分号(%s), 不是 0-1000 坐标; 请重问并明确"只回复两个整数 x,y, '
+                         '0-1000"。原回答: %s' % ('%', s[:120]))
+    nums = re.findall(r'-?\d+', s)
+    if len(nums) < 2:
+        raise ValueError('视觉回答里找不到两个整数坐标(%s); 请重问或改用 look()/ask_user' % s[:120])
+    a, b = int(nums[0]), int(nums[1])
+    if not (0 <= a <= geom.NORM and 0 <= b <= geom.NORM):
+        raise ValueError('视觉回答的坐标 %r 不在 0-1000 内(可能回的是屏幕尺寸); 请重问' % ((a, b),))
+    return a, b
+
+
+def ask_point(question, roi=None, timeout=None):
+    """问"屏幕上某个东西在哪", 拿回 **整屏 0-1000** 坐标对(可直接传给 gui_act 的 `rel`)。
+
+    为什么要有这层: `look()` 的 OCR 看不到无文字图标(放大镜/+ /返回/菜单), canvas 页
+    连文字都没有, 这两类目标的唯一定位通道就是看图问答。而裸 `ask_vision` 的答案是自由
+    文本, 单位随口来——真机 17:48 因此点了状态栏、17:57 又整轮超时。这里把提问词、单位、
+    解析一次定死: 固定问句 + 只认 0-1000 + 拒百分号, 失败就抛错让上层照 SOP 停手。
+
+    roi 传 'title'/'status'/'navbar' 或 'top'/'upper'/...: 问顶栏图标位置时传 'title',
+    裁到标题行比送整屏快数倍, VLM 也不会把状态栏算进来。
+
+    ⚠️ 返回的是**整屏**坐标, 不是裁剪框坐标: ask_vision 在送图前就裁好了, VLM 只看到裁剪
+    后的图, 它的 0-1000 必然是**裁剪框**的。这里必须把它映射回整屏, 否则整体偏移——
+    实测 roi='title' 时放大镜会从 (996,215) 偏到 (995,1068), 点进聊天列表, 而 tap 的 diff
+    很大、前台也没变, 模型会以为搜索页已经打开。"""
+    box = _resolve_roi(roi) if roi else (0, 0, geom.NORM, geom.NORM)
+    text = ask_vision(shot(), _ASK_POINT_PROMPT % question, roi=box, timeout=timeout)
+    cx, cy = _parse_point(text)
+    rx1, ry1, rx2, ry2 = box
+    return (int(round(rx1 + cx / float(geom.NORM) * (rx2 - rx1))),
+            int(round(ry1 + cy / float(geom.NORM) * (ry2 - ry1))))
 
 
 def wait_stable(max_wait=3.0, poll=0.25, diff_pct=1.5):
@@ -917,6 +1090,23 @@ def _shape_changed(base, *others):
     return base is not None and any(
         o is not None and o.shape != base.shape for o in others
     )
+def _orientation(w, h):
+    try: w, h = int(w), int(h)
+    except (TypeError, ValueError): return ''
+    return 'landscape' if w > h else ('portrait' if h > w else 'square')
+def _post_geom(geometry):
+    """动作后一次 ping 的几何快照: 打开游戏/小程序常竖→横, 先花一次 ping 检测,
+    命中就不再做 after 截图/diff(那是旋转时最贵的一段), 直接把 screen/rot 交给模型。"""
+    try:
+        p = ping()
+        w, h, rot = int(p.get('w') or 0), int(p.get('h') or 0), int(p.get('rot') or 0)
+    except Exception:
+        return None
+    if not w or not h:
+        return None
+    base = (int(geometry.get('w') or 0), int(geometry.get('h') or 0), int(geometry.get('rot') or 0))
+    return {'screen': (w, h), 'rot': rot, 'orientation': _orientation(w, h),
+            'changed': (w, h, rot) != base}
 def _scroll_verdict(text_ratio, first_pixel_pct, stable_pixel_pct):
     if text_ratio is not None and text_ratio > .30:
         return "text"
@@ -966,6 +1156,7 @@ def scroll(direction="up", frac=0.35, dur=600, times=1, verify=True, settle=0.5)
     致 times=650 全屏狂滑失控。下方夹取幅度/时长/次数, 任何误用都退化为少量有界滚动(要精细滑用 droid.swipe)。
     循环守卫(SPEC W3): 派发前做等价检测——连续无效滚动(截图逐次一致)第 6 次起拒绝下发;
     一次调用落一条聚合账: scrolled=新证据(长列表扫描豁免, 断尾), 滑不动才计等价, uncertain=断尾。"""
+    direction = _scroll_direction(direction)   # 非法方向必须在建账/守卫之前 fail-fast
     rec = _new_record("scroll", value=direction)
     guard = _pre_dispatch(rec)
     if guard is not None:
@@ -981,11 +1172,16 @@ def scroll(direction="up", frac=0.35, dur=600, times=1, verify=True, settle=0.5)
         _settle(rec, verdict="settled", screenshot_exactly_same=True, diff_pct=0.0)   # 明确未滚动=可证明无效果
     return ret
 
-def _scroll_impl(direction="up", frac=0.35, dur=600, times=1, verify=True, settle=0.5):
-    """scroll 的实现体(签名/契约见 scroll docstring); 内部专用——直接调用会绕过守卫与落账。"""
-    if direction not in ("up", "down", "left", "right"):   # 非法方向 fail-fast(误当 swipe 传坐标必命中): 不静默回退'up'再滚一堆
+def _scroll_direction(direction):
+    """方向校验: 非法方向(误当 swipe 传坐标必命中) fail-fast, 不静默回退 'up' 再滚一堆。"""
+    if direction not in ("up", "down", "left", "right"):
         raise ValueError("scroll 的 direction 必须是 'up'/'down'/'left'/'right'(看下方内容用 'up'), 收到 %r; "
                          "要按坐标精细滑请用 droid.swipe(x1,y1,x2,y2,dur)" % (direction,))
+    return direction
+
+def _scroll_impl(direction="up", frac=0.35, dur=600, times=1, verify=True, settle=0.5):
+    """scroll 的实现体(签名/契约见 scroll docstring); 内部专用——直接调用会绕过守卫与落账。"""
+    direction = _scroll_direction(direction)
     frac = min(max(float(frac), 0.05), 1.0)      # 一屏内的滚动比例; >1 或负值(误传坐标)夹回
     dur = min(max(int(dur), 50), 3000)           # 单次滑动时长(ms)
     settle = min(max(float(settle), 0.0), 3.0)   # 每次滚动后的沉降等待(s)
@@ -1258,14 +1454,11 @@ def paste(text, verify=True, replace=False):
         if action == "RETRY":
             # 最后一次自动放行: 先落一条 recovered 标记推进阶梯, 再走正常流程
             _settle(_new_record("paste", value=text), verdict="recovered", recovery="RETRY", screenshot_exactly_same=True)
-        elif guard.get("abort"):
+        else:
+            # 输入类只有 ABORT 一种"不下发"形态(拒绝级被 type ladder 完全覆盖)
             _settle(rec, verdict="aborted", screenshot_exactly_same=True)
             return {"ok": 0, "aborted": True, "hit": False,
                     "hint": "循环守卫: 同一输入连续无可观察变化且恢复手段已用尽, 本次未执行。请重新观察当前屏幕, 更换目标或策略, 或 ask_user 说明阻塞。"}
-        else:
-            _settle(rec, verdict="rejected", screenshot_exactly_same=True)
-            return {"ok": 0, "rejected": guard["reject"], "hit": False,
-                    "hint": "循环守卫: 最近多步动作互为等价且前后截图逐次完全一致, 本次未下发。请比较前后截图, 更换目标或策略。"}
     ret = _paste_impl(text, verify=verify, replace=replace)
     if "hit" not in ret:
         return ret                      # 未验证/未产出判定: 无证据不落账(铁律)
@@ -1284,7 +1477,9 @@ def _paste_impl(text, verify=True, replace=False):
         raise ValueError("paste text must not be empty")
     if _sensitive_fg():
         _act(op="clipboard", text=text)
-        hint = "文本已放入剪贴板，尚未输入。用截图定位输入框，长按后点击可见的粘贴菜单或键盘剪贴板提示；替换时先通过GUI清空/全选。"
+        hint = ("文本已放入剪贴板，尚未输入。用当前截图/obs 精确定位输入框中心，长按输入框后点击"
+                "可见的粘贴菜单或键盘剪贴板提示；长按空白处会收起键盘/让搜索框消失。"
+                "替换时先通过GUI清空/全选。")
         print("[GUI input] " + hint)
         return {"hit": False, "uncertain": True, "needs_gui_paste": True, "hint": hint}
     ret = _act(op="paste", text=text, replace=bool(replace)); ret.pop("ok", None)
@@ -1438,6 +1633,12 @@ def launch(pkg, wait=1.0):
     # 免adb启动app。敏感 App(nofloat 策略)不起 GA 悬浮窗并收起已有悬浮窗: overlay 是 App 可观测的"自动化工具在场"信号(见 SENSITIVE_APPS 注释)
     nofloat = bool(SENSITIVE_APPS.get(pkg, {}).get("nofloat"))
     ret = _act(op="launch", pkg=pkg, nofloat=nofloat); ret["fg"] = _wait_fg(pkg, wait)
+    try:
+        p = ping()
+        w, h, rot = int(p.get('w') or 0), int(p.get('h') or 0), int(p.get('rot') or 0)
+        if w and h: ret.update(screen=(w, h), rot=rot, orientation=_orientation(w, h))
+    except Exception:
+        pass
     if nofloat:
         ret["policy"] = "sensitive: visual-only; overlay follows user preference" + (", act=locked(零注入, 见 droid.sensitive_status())" if SENSITIVE_APPS[pkg].get("act") == "locked" else "")
     _trace("launch", args={"pkg": pkg}, result={"pkg": ret.get("fg") or pkg})

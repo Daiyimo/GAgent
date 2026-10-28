@@ -9,6 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from agent_loop import BaseHandler, StepOutcome, json_default
 import run_guard   # 僵尸线程协作取消护栏(超时/停止后仍在后台派发手势的线程, 下一次操作手机即自毁)
 import phone_ledger   # 动作账本(SPEC W3): 每轮 [LOOP-GUARD] 提示注入; 与 droid 执行边界守卫共用 ACTIVE 实例(本模块保持设备无关, 不 import droid)
+import geom          # 坐标换算唯一权威(0-1000 ↔ 像素) + 实测系统 UI 锚带; 纯函数无设备依赖
 run_guard.install_thread_inheritance()   # 让用户代码派生的子线程也继承取消令牌(僵尸孙线程同样受护栏); 幂等
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -16,7 +17,7 @@ def safe_print(*args, **kwargs):
     try: print(*args, **kwargs)
     except: pass
 
-def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop_signal=None, maxlen=10000, myprint=safe_print):
+def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop_signal=None, maxlen=10000, myprint=safe_print, vision_backend=None):
     """代码执行器 (Android: python进程内exec, sh走/system/bin/sh)"""
     preview = (code[:60].replace('\n', ' ') + '...') if len(code) > 60 else code.strip()
     cwd = cwd or os.path.join(script_dir, 'temp')
@@ -39,6 +40,11 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
             try:
                 os.chdir(cwd)
                 sys.stdout = sys.stderr = _Cap()
+                try:
+                    import droid
+                    droid.set_vision_backend(vision_backend)
+                except Exception:
+                    pass
                 exec(compile(header + '\n' + code, '<code_run>', 'exec'),
                      {'__name__': '__main__', '__file__': os.path.join(cwd, '_code_run.py')})
                 box['exit'] = 0
@@ -49,6 +55,11 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
             except BaseException:
                 full_stdout.append(traceback.format_exc()); box['exit'] = 1
             finally:
+                try:
+                    import droid
+                    droid.set_vision_backend(None)
+                except Exception:
+                    pass
                 run_guard.leave()
                 sys.stdout, sys.stderr = old_out, old_err
                 try: os.chdir(old_cwd)
@@ -207,6 +218,11 @@ class GenericAgentHandler(BaseHandler):
         try:
             import droid; droid.reset_trace()   # 操作痕迹同理: 不清则上个任务的 dump/tap 混进本次 recipe_record
         except Exception: pass                   # PC 侧/无设备环境下 droid 不可 import, 不影响工具库注册
+        try:
+            import droid; droid.reset_vision_fuse()   # 视觉熔断同理: 两次失败即冻结 120s, 上个任务
+                                                      # 早期连撞两次(选中的模型不支持图片就会 2.4s 连错两次)
+                                                      # 会让新任务整个游戏阶段失去唯一的 grounding 通道
+        except Exception: pass
         self.parent = parent
         self.working = {}
         self.cwd = cwd;  self.current_turn = 0
@@ -226,6 +242,14 @@ class GenericAgentHandler(BaseHandler):
         # 兜底: 无语言标签的裸围栏(模型高频发; 旧正则只认带标签的→提取失败→整轮作废, 实证连废2轮≈19s)
         bare = re.findall(r"```\n(.*?)\n```", response.content, re.DOTALL)
         return bare[-1].strip() if bare else None
+
+    def _vision_backend(self):
+        """当前任务选择的模型后端: 视觉问答复用同一 provider/model/key/proxy, 随任务页切换。"""
+        try:
+            c = getattr(self.parent, 'llmclient', None)
+            return getattr(c, 'backend', None) if c is not None else None
+        except Exception:
+            return None
 
     def do_code_run(self, args, response):
         '''执行代码片段，有长度限制，不允许代码中放大量数据，如有需要应当通过文件读取进行。'''
@@ -252,39 +276,83 @@ class GenericAgentHandler(BaseHandler):
             try:
                 os.chdir(cwd)
                 try:
+                    import droid
+                    droid.set_vision_backend(self._vision_backend())
+                except Exception:
+                    pass
+                try:
                     try: result = repr(eval(code, ns))
                     except SyntaxError: exec(code, ns); result = ns.get('_r', 'OK')
                 except Exception as e: result = f'Error: {e}'
+                finally:
+                    try:
+                        import droid
+                        droid.set_vision_backend(None)
+                    except Exception:
+                        pass
             finally: os.chdir(old_cwd)
-        else: result = yield from code_run(code, code_type, timeout, cwd, code_cwd=code_cwd, stop_signal=self.code_stop_signal, maxlen=maxlen, myprint=self.print)
+        else: result = yield from code_run(code, code_type, timeout, cwd, code_cwd=code_cwd, stop_signal=self.code_stop_signal, maxlen=maxlen, myprint=self.print, vision_backend=self._vision_backend())
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         return StepOutcome(result, next_prompt=next_prompt)
     
     _GUI_ACTIONS = ('tap', 'swipe', 'longpress', 'text', 'key', 'launch', 'back', 'home', 'wait')
 
-    def _norm_pt(self, v):
-        """坐标 → 当前屏幕物理像素。接受 0-1000 归一化值, 也接受像素值。
+    def _resolve_point(self, args, key, rel_key):
+        """gui_act 坐标: `point`=像素, `rel`=0-1000。两个具名字段二选一, 不猜单位。
 
-        为什么两种都收: dump()/look() 返回的是**像素**坐标, 而本工具要 0-1000,
-        而 schema 又写着 "Point must come from the current observation (dump bounds
-        or look() box)"——照做就必然传像素。真机实证 7 次 gui_act 整个轮次废在
-        这个 ValueError 上(占 145 个 tool_result 里全部错误的一半), 是最大的单一失败源。
-        任一坐标 >1000 即判定为像素: 归一化值不可能超过 1000, 故无歧义;
-        屏宽小于 1000 的老设备上像素值会落进 ≤1000 区间, 那种情况仍按归一化解释。"""
-        if not isinstance(v, (list, tuple)) or len(v) != 2:
-            raise ValueError('point must be [x, y], got %r' % (v,))
-        try:
-            x, y = float(v[0]), float(v[1])
-        except (TypeError, ValueError):
-            raise ValueError('point must be two numbers, got %r' % (v,))
+        为什么不再用一个 point 猜(旧 _norm_pt 的「任一轴 >1000 就当像素」): 在
+        1200x2670 上, y<=1000(屏幕上方 37%)且 x<=1000(宽 83%)的区域里, 像素坐标会被
+        静默当成归一化值再缩一遍。实测放大镜像素 (996,215) → (1195,574), 偏 199px
+        右、359px 下; 搜索框 (635,245) → (762,654), 偏 409px 下。不报错、无 hint,
+        模型只看到 diff=0, 于是反复重点。而搜索框/放大镜/标题行**全在这片区域**,
+        「点不到搜索框」因此是必然, 不是偶发。单位无法从一个数值对里可靠推断, 所以
+        让调用方显式选: 观测 API(dump/look/find/obs 的 x,y)给的像素走 point,
+        ask_vision 给的千分比走 rel。
+
+        越界像素**报错而不夹取**: 夹取会把"单位选错"变成一个看似合理的落点, 正是要消掉
+        的那类静默失败; 报错带上当前屏幕尺寸和 rel 写法, 模型一轮就能改对。rel 侧
+        仍夹取(见 geom.to_px): VLM 估算溢出几个单位是噪声, 不值得废一轮。
+
+        落在状态栏里的像素点同样报错: 状态栏(geom 的 status 锚带, 本机 y 0-4%)没有
+        可点目标, SOP 也明令"绝不点状态栏", 所以踩进去几乎只有一个成因——把 0-1000
+        的数对当成了像素。真机 17:48 实证: ask_vision 回的是百分数(85%), 模型乘 10 得
+        850、又猜了 y=45, 当 point 传进去 → 实际点 (1020,120) 状态栏, 搜索页从未打开,
+        而模型只看到 diff 29% 以为成功了。这里把它变成一句能自解释的错。
+        确需点状态栏(极少数)走 code_run 的 droid.tap(x,y), 那条路没有这道门。"""
         import droid
         w, h = droid.screen()
-        if x > 1000 or y > 1000:            # 只可能是像素(归一化上限就是 1000)
-            return int(x), int(y)
-        if x < 0 or y < 0:
-            raise ValueError('point %r out of range: 0-1000 normalized, or pixels '
-                             '(screen is %sx%s)' % (v, w, h))
-        return int(x / 1000.0 * w), int(y / 1000.0 * h)
+        has_px = args.get(key) is not None
+        has_rel = args.get(rel_key) is not None
+        if has_px and has_rel:
+            raise ValueError('%s (pixels) and %s (0-1000) are the same coordinate in two '
+                             'units; pass only one' % (key, rel_key))
+        if not has_px and not has_rel:
+            raise ValueError('%s needs point [x,y] in pixels (dump()/look()/obs x,y) or '
+                             '%s [x,y] in 0-1000 (ask_vision); screen is %dx%d'
+                             % (key, rel_key, w, h))
+        name = key if has_px else rel_key
+        v = args[name]
+        if not isinstance(v, (list, tuple)) or len(v) != 2:
+            raise ValueError('%s must be [x, y], got %r' % (name, v))
+        try:
+            a, b = float(v[0]), float(v[1])
+        except (TypeError, ValueError):
+            raise ValueError('%s must be two numbers, got %r' % (name, v))
+        if has_rel:
+            return geom.to_px(a, b, w, h)
+        if not (0 <= a < w and 0 <= b < h):
+            raise ValueError('%s %r is outside the current screen (%dx%d). If those are '
+                             '0-1000 normalized values, pass them as %s instead.'
+                             % (name, v, w, h, rel_key))
+        if w > 1 and h > 1 and geom.in_band('status', int(a), int(b), w, h):
+            raise ValueError('%s %r lands in the status bar (y 0-%d on a %dx%d screen), '
+                             'which has no tap target. That almost always means these are '
+                             '0-1000 normalized values, not pixels — pass them as %s '
+                             '(e.g. %s:[%d, %d]). If you really must tap the status bar, '
+                             'use droid.tap(x, y) in code_run.'
+                             % (name, v, int(0.04 * h), w, h, rel_key, rel_key,
+                                *geom.to_norm(int(a), int(b), w, h)))
+        return int(a), int(b)
 
     def do_gui_act(self, args, response):
         """GUI structured action: the model picks an action instead of writing Python.
@@ -306,7 +374,7 @@ class GenericAgentHandler(BaseHandler):
             except Exception: pass
         try:
             if act in ('tap', 'longpress'):
-                x, y = self._norm_pt(args.get('point'))
+                x, y = self._resolve_point(args, 'point', 'rel')
                 if act == 'tap':
                     ret = droid.tap(x, y)
                 else:
@@ -314,15 +382,15 @@ class GenericAgentHandler(BaseHandler):
                 # verified/uncertain/hint/fg 必须一起转发: 坐标失效(屏幕形态变化)、点到非热区、
                 # 验证不可用在模型眼里要能区分。只给 diff 会把"没变化"当成"点到了但没反应"反复重发。
                 out = {'action': act, 'point': [x, y], 'diff': ret.get('diff')}
-                for k in ('verified', 'uncertain', 'hint', 'fg'):
+                for k in ('verified', 'uncertain', 'hint', 'fg', 'screen', 'rot', 'orientation', 'orientation_changed'):
                     if ret.get(k) is not None:
                         out[k] = ret[k]
             elif act == 'swipe':
-                x1, y1 = self._norm_pt(args.get('point1'))
-                x2, y2 = self._norm_pt(args.get('point2'))
+                x1, y1 = self._resolve_point(args, 'point1', 'rel1')
+                x2, y2 = self._resolve_point(args, 'point2', 'rel2')
                 ret = droid.swipe(x1, y1, x2, y2, int(args.get('ms') or 300))
                 out = {'action': act, 'diff': ret.get('diff')}
-                for k in ('verified', 'uncertain', 'hint', 'fg'):
+                for k in ('verified', 'uncertain', 'hint', 'fg', 'screen', 'rot', 'orientation', 'orientation_changed'):
                     if ret.get(k) is not None:
                         out[k] = ret[k]
             elif act == 'text':
@@ -331,12 +399,24 @@ class GenericAgentHandler(BaseHandler):
                     return StepOutcome('[Error] text needs value (the content to type)', next_prompt='\n')
                 ret = droid.paste(val)
                 out = {'action': act, 'hit': ret.get('hit'), 'uncertain': ret.get('uncertain')}
+                # 敏感 App(微信等): paste 只入剪贴板; 不把 needs_gui_paste/hint 带回去,
+                # 模型只看到 hit=false/uncertain, 会误判“输入失败”并重复点搜索框。
+                for k in ('needs_gui_paste', 'hint', 'ime_hint', 'ime_label'):
+                    if ret.get(k) is not None:
+                        out[k] = ret[k]
             elif act == 'key':
                 droid.key(str(args.get('value') or 'ENTER'))
                 out = {'action': act}
             elif act == 'launch':
                 ret = droid.launch(str(args.get('value') or ''))
                 out = {'action': act, 'fg': ret.get('fg')}
+                for k in ('screen', 'rot', 'orientation', 'fullscreen', 'shell', 'policy', 'hint'):
+                    # fullscreen/shell/hint 必须一起转发: Kotlin 在两条 shell 通道都不可用时**故意**
+                    # 回一份自解释的降级载荷(fullscreen:false + 两条通道真值 + 怎么修)。丢掉它,
+                    # stepOS 把第三方 uid 的启动改写成小窗, 而 ping() 仍报整屏几何——于是后续所有
+                    # 相对坐标全部落在小窗之外, agent 既不知道原因, 也没法告诉用户怎么修。
+                    if ret.get(k) is not None:
+                        out[k] = ret[k]
             elif act == 'back':
                 droid.back()
                 out = {'action': act}
@@ -354,7 +434,8 @@ class GenericAgentHandler(BaseHandler):
         # 永远等不到两帧 diff<=1.5%, 每步白睡满 max_wait——那等于把 d60f6be 想消掉的固定
         # action_sleep 又请回来, 只是从 5s 变成 3s 且换成隐式发生。
         # wait 动作自己就是等待, 不重复等。
-        if act != 'wait' and not self._act_proved_change(act, out):
+        changed = bool(out.get('orientation_changed'))
+        if act != 'wait' and not changed and not self._act_proved_change(act, out):
             try:
                 st = droid.wait_stable()
                 out['stable'] = st.get('stable')
@@ -366,6 +447,8 @@ class GenericAgentHandler(BaseHandler):
         # 才知道屏幕上现在有什么, "观察一轮→动作一轮"把每个动作的成本翻倍。
         # 真机实证: 39 轮任务里约 20 次是纯观察轮; 在供应商 p50 延迟 5~10s 的现状下,
         # 省一轮就是省 5~10s。观测封顶 12 项、标签截断, 比模型自己 print 全量节点小一个量级。
+        # 旋转/折叠时 wait_stable 仍跳过(那是 16.3s/15.6s 后验的主要来源), 但必须给新画面的
+        # 紧凑观测: 只给 screen/rot 不足以让弱模型继续——真机 3.7flash 看到横屏后直接放弃。
         if act in ('tap', 'swipe', 'longpress', 'back', 'home', 'key', 'launch'):
             try:
                 out['obs'] = self._compact_obs()
@@ -395,6 +478,10 @@ class GenericAgentHandler(BaseHandler):
                 nodes = droid.look() or []
             except Exception:
                 nodes = []
+        try:
+            sw, sh = droid.screen()
+        except Exception:
+            sw = sh = 0
         items = []
         for n in nodes[:self._OBS_ITEMS]:
             if not isinstance(n, dict):
@@ -412,9 +499,23 @@ class GenericAgentHandler(BaseHandler):
                         continue
                 else:
                     continue
+            try:
+                px, py = int(x), int(y)
+            except (TypeError, ValueError):
+                continue
+            # x/y = 像素, rx/ry = 0-1000。字段名与 look()/dump()/find()/tap() 完全一致:
+            # 全系统只有一种读法, 模型不需要记住"obs 里的 x/y 是另一种单位"。
+            # 旧版这里 x/y 是归一化、px/py 是像素(与其余 API 相反), 于是 obs 用一次、
+            # look() 用一次就得在两种命名间切换——真机 17:40 正是把 obs 的历史项
+            # (218,583) 原样传给 gui_act, 被当归一化点成 (261,1556)。
+            try:
+                rx, ry = geom.to_norm(px, py, sw, sh) if sw and sh else (px, py)
+            except ValueError:
+                rx, ry = px, py
             items.append({'t': label[:self._OBS_LABEL],
                           'cls': str(n.get('cls') or '')[:16],
-                          'x': int(x), 'y': int(y)})
+                          'x': px, 'y': py,
+                          'rx': rx, 'ry': ry})
         return items
 
     @staticmethod

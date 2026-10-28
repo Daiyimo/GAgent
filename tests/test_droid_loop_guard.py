@@ -254,6 +254,11 @@ class PasteLedgerTest(_BusCase):
             ret = droid.paste("hello")
         self.assertTrue(ret.get("needs_gui_paste"))
         self.assertEqual(phone_ledger.ACTIVE.recent()[-1].outcome["verdict"], "uncertain")
+        # 长按“准确的输入框”是有效粘贴路径; 长按空白处才会收起键盘/搜索框
+        hint = ret.get("hint", "")
+        self.assertIn("长按输入框", hint)
+        self.assertIn("粘贴菜单", hint)
+        self.assertIn("空白处", hint)
 
 
 class NoEffectBandTest(_BusCase):

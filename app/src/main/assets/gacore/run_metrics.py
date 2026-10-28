@@ -22,6 +22,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Optional
 
 SCHEMA_VERSION = 1
@@ -225,6 +226,53 @@ def summarize(run: RunRecord) -> dict:
         'tools_pixel_evidence': buckets['pixel'],
         'tools_no_verdict': buckets['none'],
     }
+
+
+def _num(v, default=0.0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def recovered_summary(run_id: str, turns) -> Optional[dict]:
+    """从已落盘的 turn 行重建一次运行的汇总(用户中止/线程死亡, agent_after 没跑)。
+
+    为什么需要: 每个任务跑在独立线程, RunRecorder 存在线程局部; 下一个任务的
+    agent_before 在另一条线程, 读不到旧 recorder, 只能按文件补写。文件里 turn 行
+    已经包含轮数/耗时/token/判定, 足够重建真实汇总, 不必留只有 run_id 的 stub。
+
+    ended_at 只能取「最后一轮 t_start + model_wait + tool_exec」——真实暂停可能
+    发生在下一轮模型调用中, 所以标 ended_at_estimated=True, 不冒充精确值。
+    没有任何 turn 行时返回 None, 调用方保留诚实的 stub(unfinished_summary)。
+    """
+    dicts = [t for t in (turns or []) if isinstance(t, dict) and t.get('type') == 'turn']
+    if not dicts:
+        return None
+    objs = []
+    for t in dicts:
+        recs = []
+        for r in (t.get('tool_records') or []):
+            if isinstance(r, dict):
+                recs.append(SimpleNamespace(
+                    verdict=r.get('verdict') if isinstance(r.get('verdict'), dict) else {}))
+        objs.append(SimpleNamespace(
+            model_wait_s=_num(t.get('model_wait_s')), tool_exec_s=_num(t.get('tool_exec_s')),
+            verify_wait_s=_num(t.get('verify_wait_s')),
+            in_tok=int(_num(t.get('in_tok'))), out_tok=int(_num(t.get('out_tok'))),
+            resend_chars=t.get('resend_chars'),
+            escalations=list(t.get('escalations') or []), tool_records=recs))
+    first = dicts[0]
+    started_at = _num(first.get('t_start'))
+    ended_at = max((_num(t.get('t_start')) + o.model_wait_s + o.tool_exec_s
+                    for t, o in zip(dicts, objs)), default=started_at)
+    run = RunRecord(run_id=str(run_id), gen=0,
+                    layer=first.get('layer') or LAYER_TODAY,
+                    started_at=started_at, turns=objs,
+                    end_reason='unfinished', ended_at=ended_at)
+    summary = summarize(run)
+    summary.update(recovered=True, ended_at_estimated=True, summary_source='turn_rows')
+    return summary
 
 
 def unfinished_summary(run_id: str) -> dict:

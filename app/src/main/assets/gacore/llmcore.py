@@ -97,7 +97,7 @@ def compress_history_tags(messages, keep_recent=4, max_len=600, force=False, int
                         for sub in tc:
                             if isinstance(sub, dict) and sub.get('type') == 'text': sub['text'] = _cut(sub.get('text'), lim)
                 elif t == 'tool_use' and isinstance(b.get('input'), dict):
-                    for k, v in b['input'].items(): b['input'][k] = _cut(v)
+                    for k, v in b['input'].items(): b['input'][k] = _cut(v, lim)
     print(f"[Cut] {_before} -> {sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)}")
     return messages
 
@@ -313,6 +313,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
     else:
         tc_buf = {}  # index -> {id, name, args}
         reasoning_text = ""
+        last_usage = None   # chat_completions 流式: 每个 chunk 都可能带 usage(累计值), 只记最后一次
         for line in resp_lines:
             if not line: continue
             line = line.decode('utf-8', errors='replace') if isinstance(line, bytes) else line
@@ -337,7 +338,8 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
                 if tc.get("function", {}).get("arguments"): tc_buf[idx]["args"] += tc["function"]["arguments"]
                 if tc.get("id") and not tc_buf[idx]["id"]: tc_buf[idx]["id"] = tc["id"]
             usage = evt.get("usage")
-            if usage: _record_usage(usage, api_mode)
+            if usage: last_usage = usage
+        if last_usage: _record_usage(last_usage, api_mode)   # 一次请求只记一次; 每 chunk 累计上报会放大几百倍
         blocks = []
         if reasoning_text: blocks.append({"type": "thinking", "thinking": reasoning_text})
         if content_text: blocks.append({"type": "text", "text": content_text})

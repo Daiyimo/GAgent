@@ -3,7 +3,7 @@
   "type": "function",
   "function": {
    "name": "gui_act",
-   "description": "Phone GUI structured action. PREFERRED for any screen operation — no Python needed. Actions: tap/longpress {point:[x,y] 0-1000}; swipe {point1,point2,ms}; text {value}; key {value:ENTER}; launch {value:pkg}; back; home; wait {seconds}. Coordinates are 0-1000 normalized (top-left origin), BUT dump()/look() report PIXELS — convert first: rx = round(x * 1000 / screen_w), ry = round(y * 1000 / screen_h). Any value over 1000 is accepted as pixels and converted for you, so passing a raw dump/look coordinate also works. Never guess a point without a current observation. The result carries `obs` — a compact list of what is on screen now ([{t, cls, x, y}], up to 12 items, pixels) — so you can usually pick the next target straight from it instead of spending a separate code_run turn on dump()/look(). Use code_run to observe only when `obs` is empty or you need something it does not carry. One action per call. Use code_run to OBSERVE the screen (dump()/look()), for multi-step logic, or for non-GUI work — observation is not an action.",
+   "description": "手机 GUI 结构化动作。任何屏幕操作都优先用它——不需要写 Python。动作: tap/longpress {point 或 rel, ms?}; swipe {point1+point2 或 rel1+rel2, ms}; text {value}; key {value:ENTER}; launch {value:pkg}; back; home; wait {seconds}。坐标单位——每个点只能给下面两种写法之一, 不能同时给: `point` = 像素, 与 dump()/look()/find() 的 x/y 以及 obs 的 x/y 同一单位, 照抄即可, 不要做任何换算; `rel` = 0-1000 归一化(左上原点, x 右 y 下), 用于 ask_vision 的返回值和本身就是相对位置的目标。绝不要自己把一种单位换算成另一种, 也不要猜一个数字是哪种单位: 像素被当成归一化时会偏出几百像素, 而且**不报错、没有 hint**, 你只会看到 diff=0 然后反复重点。两种都给或都不给都会被拒, 报错里会列出两种正确写法。像素越界会被拒, 报错带当前屏幕尺寸——这时改用 rel。结果自带 `obs`——当前屏幕上的紧凑清单([{t, cls, x, y, rx, ry}], 最多 12 项; x/y 是像素可直接当 point, rx/ry 是 0-1000 可直接当 rel), 因此通常可以直接从它选下一个目标, 不必再花一轮 code_run 去 dump()/look()。只有在 obs 为空或需要它不带的信息时才用 code_run 观察。一次调用一个动作。用 code_run 来**观察**屏幕(dump()/look())、做多步逻辑或非 GUI 工作——观察不是动作。look/dump 不是 gui_act 动作, 观察请用 code_run。任何搜索框/搜索页: 点框就会拉起输入法, 不要再点一次去\"激活\"(点已聚焦的框可能 diff=0, 这不是失败)。敏感 App(微信等): text/paste 只写剪贴板; 优先点键盘上可见的粘贴/剪贴板建议; 没有就用当前 obs/截图精确定位输入框中心后长按输入框再点粘贴菜单。长按空白处会收起键盘/搜索框; 不要重复 paste。无文字图标按钮(放大镜/+ /返回/菜单): YOLO 缺失时 look() 的 OCR 看不到它们(设备可能只加载了 PP-OCR)。不要用状态栏时间/电池文字猜位置。无文字图标按钮(放大镜/+ /返回/菜单): YOLO 缺失时 look() 的 OCR 看不到它们(设备可能只加载了 PP-OCR)。不要用状态栏时间/电池文字猜位置。在 code_run 里用 droid.ask_point(<要找什么>, roi='title')——它用固定问句向当前模型要一个 0-1000 数对, 并拒掉带百分号的回答——拿到的数对原样传给 rel, 点后核验。裸 ask_vision 只留给“这张图是什么意思”这类语义问题, 不要用它问坐标。",
    "parameters": {
     "type": "object",
     "properties": {
@@ -26,19 +26,21 @@
       "items": {
        "type": "number"
       },
-      "description": "[x,y] 0-1000 normalized"
+      "description": "[x,y] in PIXELS — same unit as dump()/look()/obs x/y; copy straight through"
      },
      "point1": {
       "type": "array",
       "items": {
        "type": "number"
-      }
+      },
+      "description": "swipe start, PIXELS (or use rel1)"
      },
      "point2": {
       "type": "array",
       "items": {
        "type": "number"
-      }
+      },
+      "description": "swipe end, PIXELS (or use rel2)"
      },
      "ms": {
       "type": "integer",
@@ -50,6 +52,27 @@
      },
      "seconds": {
       "type": "number"
+     },
+     "rel": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "description": "[x,y] in 0-1000 normalized (top-left origin) — ask_vision answers, relative targets"
+     },
+     "rel1": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "description": "swipe start, 0-1000 normalized"
+     },
+     "rel2": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "description": "swipe end, 0-1000 normalized"
      }
     },
     "required": [
@@ -62,7 +85,7 @@
   "type": "function",
   "function": {
    "name": "code_run",
-   "description": "代码执行器。优先 python(进程内 exec)。**代码一律放进 script 参数**。仅当没有 script 参数时才会取回复正文里带 python 标签的 ```python 代码块作为兜底, 且这次工具调用仍然必须发——只在回复里写代码而不调用本工具, 代码不会执行(该轮作废)。禁止在代码里硬编码大量数据。",
+   "description": "代码执行器。优先 python(进程内 exec)。**代码一律放进 script 参数**。仅当没有 script 参数时才会取回复正文里带 python 标签的 ```python 代码块作为兜底, 且这次工具调用仍然必须发——只在回复里写代码而不调用本工具, 代码不会执行(该轮作废)。禁止在代码里硬编码大量数据。 script 是纯 Python，不要包含 </script> 或其他 HTML 标签（会 SyntaxError）。",
    "parameters": {
     "type": "object",
     "properties": {

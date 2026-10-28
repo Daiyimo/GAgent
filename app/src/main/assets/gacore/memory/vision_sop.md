@@ -19,7 +19,10 @@ ask_vision(droid.shot(), '可交互区域百分比边界', max_pixels=300000) # 
 真机实证单次全屏 60s 超时后 agent 放弃视觉、盲玩 20 轮（白烧 300s+）。
 code_run 已预导入 `from droid import ask_vision`，直接调用即可。
 
-## 没有 memory/vision_api.py 时(初次自建)
-按 `memory/vision_api.template.py` 头部三步说明操作：复制为 vision_api.py → 扫 mykey 配置变量名(禁止输出key值)填头部 → 小图实测。
+## 模型来源
+`ask_vision` 默认复用**任务页当前选择的模型**（多模态）：同一个 provider / model / key / proxy，切换模型时自动跟随，不需要单独配置。
+只有需要独立的视觉后端/端点时，才复制 `memory/vision_api.template.py` → `memory/vision_api.py`；它仅在该任务没有可用模型时作为后备。
+
+如果当前模型不支持图片，`ask_vision` 会明确报错，立即改用 `droid.look()`/`droid.ocr()`，不要重试或自写 CV。
 
 Anthropic 视觉请求复用该 provider 的 `max_tokens`，未设置时为 8192；推理和回答共用输出预算。小图成功后，还需用真实任务截图验证完整回答。`stop_reason=max_tokens` 表示截断，不能据此操作；调整 provider 预算后再验证，不自动反复请求。已复制的旧 `vision_api.py` 不随 APK 覆盖，升级模板实现时保留头部配置引用，不复制密钥值。

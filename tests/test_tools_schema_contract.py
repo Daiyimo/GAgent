@@ -33,6 +33,25 @@ class GuiActSchemaContractTest(unittest.TestCase):
                 return tool['function']
         raise AssertionError('gui_act not found in %s' % name)
 
+    # 中英两份 schema 必须各自把同一件事讲明白; 关键短语按语言给, 免得断言只对英文生效
+    PHRASES = {
+        'tools_schema.json': {
+            'pixels': 'PIXELS', 'norm': '0-1000', 'rel': 'rel',
+            'silent': 'NO error', 'obs_empty': 'when obs is empty',
+            'next_target': 'pick the next target straight from it',
+        },
+        'tools_schema_cn.json': {
+            'pixels': '像素', 'norm': '0-1000', 'rel': 'rel',
+            'silent': '不报错', 'obs_empty': 'obs 为空',
+            'next_target': '选下一个目标',
+        },
+    }
+
+    def _assert_phrases(self, name, *keys):
+        desc = self._schema(name)['description']
+        for k in keys:
+            self.assertIn(self.PHRASES[name][k], desc, '%s missing %s' % (name, k))
+
     def test_every_advertised_action_has_a_droid_implementation(self):
         import droid
         fn = self._schema('tools_schema.json')
@@ -60,17 +79,26 @@ class GuiActSchemaContractTest(unittest.TestCase):
             self.assertNotIn('point?', desc, name)
             self.assertIn('key {value:ENTER}', desc, name)
 
-    def test_description_states_the_pixel_to_normalized_conversion(self):
-        """回归(真机实证): 145 个 tool_result 里 7 次整个轮次废在
-        'point must be 0-1000 normalized, got [752, 2512]' 上, 占全部错误一半。
-        根因是原描述说 point 取自 "dump bounds or look() box"——那两处给的是**像素**,
-        与同段的 0-1000 要求自相矛盾, 模型照做就必错。描述必须把换算讲明白。"""
+    def test_description_states_both_coordinate_spellings(self):
+        """回归(真机 1200x2670 实测): 旧契约只认 0-1000, 又靠「任一轴 >1000 就当像素」
+        兼容 dump/look 的像素值。在上方 37% 且左侧 83% 的区域内这句恒错且**不报错**——
+        放大镜像素 (996,215) 被当成归一化点成 (1195,574)。修正方向是两种写法都显式命名:
+        point=像素(照抄观测值), rel=0-1000(ask_vision 答案)。描述必须把两种写法、
+        "只能给一种"、以及"不要自己换算"讲明白, 否则模型仍会混。"""
         for name in ('tools_schema.json', 'tools_schema_cn.json'):
             desc = self._schema(name)['description']
-            self.assertIn('PIXELS', desc, name)
-            self.assertIn('convert first', desc, name)
-            # 换算公式要在, 否则模型仍不知道拿 screen() 除
-            self.assertIn('1000/screen_w', desc.replace(' ', ''), name)
+            self._assert_phrases(name, 'pixels', 'norm', 'rel')
+            # 关键教训要写进去: 混用不报错, 只是点偏
+            self._assert_phrases(name, 'silent')
+            # 旧描述那句会把模型引回"自己换算"的话不许再出现
+            self.assertNotIn('convert first', desc, name)
+            self.assertNotIn('also works', desc, name)
+            self.assertNotIn('1000/screen_w', desc.replace(' ', ''), name)
+        # 参数表里必须真有 rel 字段, 否则描述教了也传不进去
+        for name in ('tools_schema.json', 'tools_schema_cn.json'):
+            props = self._schema(name)['parameters']['properties']
+            self.assertIn('rel', props, name)
+            self.assertIn('point', props, name)
 
     def test_description_promises_the_post_action_observation(self):
         """回归(真机实证): 39 轮任务里约 20 轮是纯观察(code_run + dump/look),
@@ -80,9 +108,9 @@ class GuiActSchemaContractTest(unittest.TestCase):
         for name in ('tools_schema.json', 'tools_schema_cn.json'):
             desc = self._schema(name)['description']
             self.assertIn('obs', desc, name)
-            self.assertIn('pick the next target straight from it', desc, name)
+            self._assert_phrases(name, 'next_target')
             # 也要说清 obs 为空时怎么办, 否则模型可能拿着空观测硬猜
-            self.assertIn('when `obs` is empty', desc, name)
+            self._assert_phrases(name, 'obs_empty')
 
     def test_description_does_not_forbid_observing_the_screen(self):
         # 观察(dump/look)只有 code_run 一条路; 曾把"非 GUI 工作"当成唯一许可, 自相矛盾

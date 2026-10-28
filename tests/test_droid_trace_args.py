@@ -187,6 +187,101 @@ class AbortBeatsSensitiveForegroundTest(_BusCase):
         self.assertIn("tap", [a.get("op") for a in self.acts])
 
 
+class InvalidScrollDirectionTest(_BusCase):
+    """评审 M5: 方向校验必须先于守卫与落账。
+
+    原实现先建账并跑 _pre_dispatch, 再在 _scroll_impl 里校验方向: 非法方向会被
+    守卫改写成 recovered/rejected 并落账, 模型看到的是一个"执行过的动作",
+    而不是参数错误。校验提前后, 非法调用 fail-fast 且不污染账本。
+    """
+
+    def test_invalid_direction_raises_before_guard_and_is_not_recorded(self):
+        for _ in range(5):
+            droid._LEDGER.append(phone_ledger.ActionRecord(
+                kind="scroll", value="bogus", screen=(1200, 2670),
+                outcome={"verdict": "settled", "screenshot_exactly_same": True, "diff_pct": 0.0}))
+        with self.assertRaises(ValueError):
+            droid.scroll("bogus")
+        self.assertEqual(len(droid._LEDGER.recent()), 5)     # 非法调用不新增账
+
+
+class RecoveryScreenshotFailureTest(_BusCase):
+    """评审 M6: 恢复路径的截图失败不能把异常抛给模型。
+
+    _apply_guard 在恢复档先 shot() 再执行 BACK/HOME; 截图失败时原实现直接抛异常,
+    待发动作既不结算也不返回。观察不可用时也不能盲目注入系统导航, 只如实结算
+    uncertain 并让模型重新观察。
+    """
+
+    def _settled_taps(self, n):
+        for _ in range(n):
+            droid._LEDGER.append(phone_ledger.ActionRecord(
+                kind="tap", point=(500, 1000), screen=(1200, 2670),
+                outcome={"verdict": "settled", "screenshot_exactly_same": True, "diff_pct": 0.0}))
+
+    def test_screenshot_failure_during_recovery_does_not_raise(self):
+        self._settled_taps(3)                  # 第 4 次等价点击 → BACK 档
+        with patch.object(droid, 'shot', side_effect=RuntimeError('no frame')):
+            ret = droid.tap(500, 1000)
+        self.assertTrue(ret.get("uncertain"))
+        self.assertNotIn("recovered", ret)     # 没核验就不宣称恢复成功
+        self.assertEqual(self.acts, [])        # 观察不可用时不盲目注入 BACK/HOME
+        rec = droid._LEDGER.recent()[-1]
+        self.assertEqual(rec.outcome.get("verdict"), "uncertain")
+
+    def test_normal_recovery_still_reports_recovered(self):
+        self._settled_taps(3)
+        ret = droid.tap(500, 1000)
+        self.assertEqual(ret.get("recovered"), "BACK")
+        self.assertEqual(self.acts[0].get("op"), "back")
+
+
+class OrientationChangeTest(_BusCase):
+    """打开游戏/小程序后屏幕会转横屏: 动作后用一次 ping 检测几何变化,
+    立刻返回 uncertain+screen/rot, 不再取 after 截图做昂贵的 diff。"""
+
+    def test_tap_rotation_returns_orientation_without_after_shot(self):
+        pings = [
+            {"w": 1200, "h": 2670, "rot": 0, "pkg": "com.tencent.mm"},
+            {"w": 2670, "h": 1200, "rot": 1, "pkg": "com.tencent.mm"},
+        ]
+        shots = []
+        def _shot(*a, **k):
+            shots.append(1)
+            return np.zeros((2670, 1200, 3), dtype=np.uint8)
+        with patch.object(droid, 'ping', side_effect=pings), \
+             patch.object(droid, 'shot', side_effect=_shot):
+            ret = droid.tap(500, 1000)
+        self.assertTrue(ret.get("uncertain"))
+        self.assertTrue(ret.get("orientation_changed"))
+        self.assertEqual(ret.get("screen"), (2670, 1200))
+        self.assertEqual(ret.get("rot"), 1)
+        self.assertEqual(ret.get("orientation"), "landscape")
+        self.assertEqual(len(shots), 1)          # 只取动作前帧; 旋转后不再取 after
+        rec = droid._LEDGER.recent()[-1]
+        self.assertEqual(rec.outcome.get("verdict"), "uncertain")
+
+    def test_tap_reports_current_orientation_when_unchanged(self):
+        with patch.object(droid, 'ping', return_value={"w": 1200, "h": 2670, "rot": 0,
+                                                       "pkg": "com.android.settings"}):
+            ret = droid.tap(500, 1000)
+        self.assertEqual(ret.get("screen"), (1200, 2670))
+        self.assertEqual(ret.get("rot"), 0)
+        self.assertEqual(ret.get("orientation"), "portrait")
+        self.assertNotIn("orientation_changed", ret)
+
+
+class LaunchOrientationTest(_BusCase):
+    def test_launch_returns_screen_and_orientation(self):
+        with patch.object(droid, '_wait_fg', return_value='com.tencent.mm'), \
+             patch.object(droid, 'ping', return_value={"w": 2670, "h": 1200, "rot": 1,
+                                                       "pkg": "com.tencent.mm"}):
+            ret = droid.launch('com.tencent.mm')
+        self.assertEqual(ret.get('screen'), (2670, 1200))
+        self.assertEqual(ret.get('rot'), 1)
+        self.assertEqual(ret.get('orientation'), 'landscape')
+
+
 class ResetTraceTest(unittest.TestCase):
     def test_reset_trace_clears_trace_and_last_obs(self):
         droid._LAST_OBS = {"nodes": [{"t": "x"}], "detections": [], "screen": None, "pkg": "p"}

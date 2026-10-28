@@ -236,8 +236,16 @@ def test_unfinished_backfill_survives_a_new_thread(run_dir, tmp_path):
     t.start(); t.join()
     assert box.get('ok')
     lines = _lines(run_dir / 'metrics_1.jsonl')
-    assert lines[-1]['end_reason'] == 'unfinished'
-    assert lines[-1]['recovered'] is True        # 标明是补写, 别被当成真实汇总
+    last = lines[-1]
+    assert last['end_reason'] == 'unfinished'
+    assert last['recovered'] is True             # 标明是补写, 别被当成真实汇总
+    # B: 汇总从已落盘的 turn 行重建, 不再只有 run_id/end_reason 的 stub
+    assert last['summary_source'] == 'turn_rows'
+    assert last['ended_at_estimated'] is True
+    assert last['turns'] == 1
+    assert isinstance(last['model_wait_s'], (int, float))
+    assert last['started_at'] > 0
+    assert last['ended_at'] >= last['started_at']
 
 
 def test_backfill_does_not_touch_a_run_that_already_has_a_summary(run_dir, tmp_path):

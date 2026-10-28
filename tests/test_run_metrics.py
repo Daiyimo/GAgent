@@ -347,6 +347,40 @@ class TestRunRecorder:
         assert json.loads(sink.lines[0])['tool_records'][0]['verify_s'] is None
 
 
+class TestRecoveredSummary:
+    """B: 手动中止/跨线程的 run 只剩 turn 行, 汇总要从这些行重建, 不能只留 stub。"""
+
+    def _turn(self, n, model, tool, in_tok, out_tok, verdicts):
+        return {'type': 'turn', 'turn': n, 'layer': 'L4', 't_start': 1000 + n * 10,
+                'model_wait_s': model, 'tool_exec_s': tool, 'verify_wait_s': 0,
+                'in_tok': in_tok, 'out_tok': out_tok, 'resend_chars': 100 + n,
+                'escalations': [],
+                'tool_records': [{'name': 'gui_act', 'exec_s': 1, 'verify_s': 0,
+                                  'verdict': v, 'verifier': None} for v in verdicts]}
+
+    def test_rebuilds_totals_buckets_and_span_from_turn_rows(self):
+        turns = [self._turn(1, 4, 2, 100, 10, [{'diff_pct': 5.0}, {'hit': True}]),
+                 self._turn(2, 6, 3, 200, 20, [{'uncertain': True}])]
+        s = run_metrics.recovered_summary('r1', turns)
+        assert s['recovered'] is True
+        assert s['summary_source'] == 'turn_rows'
+        assert s['ended_at_estimated'] is True
+        assert s['turns'] == 2 and s['model_calls'] == 2
+        assert s['model_wait_s'] == 10 and s['tool_exec_s'] == 5
+        assert s['in_tok'] == 300 and s['out_tok'] == 30
+        assert s['started_at'] == 1010
+        assert s['ended_at'] == 1029          # 最后一轮 t_start + model_wait + tool_exec
+        assert (s['tools_verified'], s['tools_uncertain'], s['tools_pixel_evidence'],
+                s['tools_no_verdict']) == (1, 1, 1, 0)
+        assert s['tools_total'] == 3
+        assert s['p50_turn_s'] == 7.5          # [4+2, 6+3] 的中位
+        assert s['end_reason'] == 'unfinished'
+
+    def test_no_turn_rows_returns_none_so_caller_keeps_the_honest_stub(self):
+        assert run_metrics.recovered_summary('r1', []) is None
+        assert run_metrics.recovered_summary('r1', [{'type': 'run_summary'}]) is None
+
+
 class TestActionMark:
     """droid._act() 是动作派发唯一入口; 打完点必须原样返回, 且任何异常路径不得被观测改变。"""
 

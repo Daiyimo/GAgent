@@ -32,8 +32,8 @@ CLICK_LADDER = ("WAIT", "BACK", "HOME", "ABORT")
 TYPE_LADDER = ("REFOCUS", "RETRY", "ABORT")
 _POINT_KINDS = frozenset({"tap", "longpress"})
 _PATH_KINDS = frozenset({"swipe"})
-_VALUE_KINDS = frozenset({"paste", "adb_input_text", "scroll"})   # scroll 比方向(value), 端点由安全滚动自算
-INPUT_KINDS = frozenset({"paste", "adb_input_text"})              # 仅真输入(提示/恢复阶梯专用; scroll 是值类但不是输入)
+_VALUE_KINDS = frozenset({"paste", "scroll"})   # scroll 比方向(value), 端点由安全滚动自算
+INPUT_KINDS = frozenset({"paste"})              # 仅真输入(提示/恢复阶梯专用; scroll 是值类但不是输入)
 
 
 @dataclass
@@ -148,7 +148,9 @@ def repetition_hint(records):
         return (f"检测到 {['', '两', '三'][period]} 步一循环的策略循环(如 A→B→A→B)。"
                 "请检查是否在同一两个状态间反复；不得在没有新证据时再次从该序列开头进入。")
     if len(window) >= TYPE_WINDOW:
-        types = sum(1 for r in window if r.kind in INPUT_KINDS)
+        # 只数没有产出新证据的输入: 多字段填表(每个字段都成功上屏)不是循环,
+        # 提示只针对"输入了但没确认生效"的连续动作。
+        types = sum(1 for r in window if r.kind in INPUT_KINDS and not r.outcome.get("evidence_new"))
         if types >= TYPE_THRESHOLD:
             return ("最近多步都在做文本输入。请先核对目标字段是否已显示等长文本或掩码，"
                     "确认输入是否真正生效，再决定是否继续输入。")

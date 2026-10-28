@@ -152,8 +152,17 @@ def _backfill_unfinished(run_id):
     try:
         if not os.path.exists(path) or _has_summary(path):
             return
-        run_metrics.append_jsonl(path, [run_metrics.jsonl_line(
-            run_metrics.unfinished_summary(run_id))])
+        turns = []
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                try:
+                    obj = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(obj, dict) and obj.get('type') == 'turn':
+                    turns.append(obj)
+        summary = run_metrics.recovered_summary(run_id, turns) or run_metrics.unfinished_summary(run_id)
+        run_metrics.append_jsonl(path, [run_metrics.jsonl_line(summary)])
     except Exception:
         pass
 

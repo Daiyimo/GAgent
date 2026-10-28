@@ -108,9 +108,20 @@ class GuiActHandlerTest(unittest.TestCase):
             tap=lambda x, y: calls.append(('tap', x, y)) or {'diff': 'diff: 8.0%'},
             wait_stable=lambda **kw: {'stable': True, 'waited_s': 0.3, 'uncertain': False})
         with patch.dict(sys.modules, {'droid': fake}):
-            out = self._run({'action': 'tap', 'point': [500, 250]})
-        self.assertEqual(calls, [('tap', 600, 667)])
+            out = self._run({'action': 'tap', 'point': [996, 215]})
+        self.assertEqual(calls, [('tap', 996, 215)])      # point 是像素, 原样落点
         self.assertIn('"action": "tap"', str(out.data))
+
+    def test_rel_is_the_normalized_spelling(self):
+        import ga_android
+        calls = []
+        fake = types.SimpleNamespace(
+            screen=lambda: (1200, 2670),
+            tap=lambda x, y: calls.append(('tap', x, y)) or {'diff': 'diff: 8.0%'},
+            wait_stable=lambda **kw: {'stable': True, 'waited_s': 0.3, 'uncertain': False})
+        with patch.dict(sys.modules, {'droid': fake}):
+            self._run({'action': 'tap', 'rel': [831, 81]})
+        self.assertEqual(calls, [('tap', 996, 216)])
 
     def test_out_of_range_rejected_before_device_call(self):
         import ga_android
@@ -118,6 +129,7 @@ class GuiActHandlerTest(unittest.TestCase):
         with patch.dict(sys.modules, {'droid': fake}):
             out = self._run({'action': 'tap', 'point': [1500, 250]})
         self.assertIn('[Error]', str(out.data))
+        self.assertIn('1200x2670', str(out.data))      # 报错要能自解释
 
     def test_text_calls_paste(self):
         calls = []
@@ -128,6 +140,19 @@ class GuiActHandlerTest(unittest.TestCase):
             self._run({'action': 'text', 'value': '蓝牙'})
         self.assertEqual(calls, ['蓝牙'])
 
+    def test_text_forwards_gui_paste_hint_for_sensitive_apps(self):
+        """微信等敏感 App: paste 只入剪贴板; 结果必须带 needs_gui_paste+hint,
+        否则模型只看到 hit=false/uncertain, 会误以为输入失败去重复点搜索框。"""
+        fake = types.SimpleNamespace(
+            paste=lambda v: {'hit': False, 'uncertain': True, 'needs_gui_paste': True,
+                             'hint': '文本已放入剪贴板，尚未输入。', 'ime_hint': '粘贴'},
+            wait_stable=lambda **kw: {'stable': True})
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = self._run({'action': 'text', 'value': '元梦之星'})
+        data = str(out.data)
+        self.assertIn('needs_gui_paste', data)
+        self.assertIn('剪贴板', data)
+
     def test_wait_uses_wait_stable(self):
         fake = types.SimpleNamespace(
             wait_stable=lambda **kw: {'stable': kw.get('max_wait') == 3, 'waited_s': 1.0})
@@ -136,52 +161,145 @@ class GuiActHandlerTest(unittest.TestCase):
         self.assertIn('"stable": true', str(out.data))
 
 
-class NormPtTest(unittest.TestCase):
-    """gui_act 坐标换算: 必须同时吃得下归一化值和 dump/look 的像素值。
+class GuiActOrientationTest(unittest.TestCase):
+    """旋转后不要等稳定/取 obs: 动作已使屏幕变横屏, 再截图/OCR 只会白花十几秒。"""
+    def setUp(self):
+        import ga_android
+        self.h = object.__new__(ga_android.GenericAgentHandler)
+        self.h.cwd = '.'
+        self.h.working = {}
+        self.h.history_info = []
+        self.h.code_stop_signal = []
+        self.h.current_turn = 1
+        self.h.parent = types.SimpleNamespace(task_dir=None, verbose=False, _turn_end_hooks={})
+        self.h.print = lambda *a, **k: None
 
-    真机实证: 145 个 tool_result 里 7 次整个轮次废在
-    'point must be 0-1000 normalized, got [752, 2512]' 上——占全部错误的一半,
-    是最大的单一失败源。schema 让模型"point 取自 dump bounds 或 look() box",
-    而那两处给的是像素, 于是照做就必错。"""
+    def _run(self, args):
+        ret = self.h.do_gui_act(args, types.SimpleNamespace(content=''))
+        if isinstance(ret, StepOutcome):
+            return ret
+        try:
+            next(ret)
+        except StopIteration as e:
+            return e.value
 
-    def _norm(self, v):
+    def test_orientation_change_skips_wait_but_keeps_obs(self):
+        waited, dumped = [], []
+        fake = types.SimpleNamespace(
+            screen=lambda: (1200, 2670),
+            tap=lambda x, y: {'diff': 'n/a', 'verified': False, 'uncertain': True,
+                              'orientation_changed': True, 'screen': (2670, 1200), 'rot': 1,
+                              'orientation': 'landscape', 'hint': '屏幕方向已变化'},
+            wait_stable=lambda **kw: waited.append(kw) or {'stable': True},
+            dump=lambda: dumped.append(1) or [{'t': '通行证', 'x': 210, 'y': 561}])
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = json.loads(self._run({'action': 'tap', 'point': [500, 250]}).data)
+        self.assertEqual(out['screen'], [2670, 1200])
+        self.assertEqual(out['rot'], 1)
+        self.assertEqual(out['orientation'], 'landscape')
+        self.assertEqual(waited, [])                  # 旋转时不等稳定
+        self.assertEqual(len(dumped), 1)              # 但仍取新画面观测
+        self.assertEqual(out['obs'][0]['t'], '通行证')
+
+    def test_launch_forwards_screen_and_orientation(self):
+        fake = types.SimpleNamespace(
+            screen=lambda: (1200, 2670),
+            launch=lambda pkg: {'fg': pkg, 'screen': (2670, 1200), 'rot': 1,
+                                'orientation': 'landscape'},
+            wait_stable=lambda **kw: {'stable': True},
+            dump=lambda: [])
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = json.loads(self._run({'action': 'launch', 'value': 'com.tencent.mm'}).data)
+        self.assertEqual(out['screen'], [2670, 1200])
+        self.assertEqual(out['orientation'], 'landscape')
+
+
+class ResolvePointTest(unittest.TestCase):
+    """gui_act 坐标: point=像素, rel=0-1000。两个具名字段二选一, 不猜单位。
+
+    回归来源(真机 1200x2670, 2026-10-27 实测): 旧 _norm_pt 用「任一轴 >1000 就当
+    像素」区分两种单位, 对 y<=1000(屏幕上方 37%)且 x<=1000(宽 83%)的区域恒错且
+    **不报错**——放大镜像素 (996,215) 被当成归一化点成 (1195,574), 偏 199px 右、
+    359px 下; 搜索框 (635,245) → (762,654), 偏 409px 下。模型只看到 diff=0, 于是
+    反复重点。而搜索框/放大镜/标题行全在这片区域, 「点不到搜索框」因此是必然。
+    """
+
+    def _resolve(self, args, key='point', rel_key='rel'):
         import ga_android
         h = object.__new__(ga_android.GenericAgentHandler)
         fake = types.SimpleNamespace(screen=lambda: (1200, 2670))
         with patch.dict(sys.modules, {'droid': fake}):
-            return h._norm_pt(v)
+            return h._resolve_point(args, key, rel_key)
 
-    def test_normalized_coords_scale_to_pixels(self):
-        self.assertEqual(self._norm([500, 250]), (600, 667))
-        self.assertEqual(self._norm([0, 0]), (0, 0))
-        self.assertEqual(self._norm([1000, 1000]), (1200, 2670))
+    def test_pixels_pass_through_unchanged(self):
+        """point 就是像素: 与 look()/dump()/find()/tap() 同一单位, 原样传原样落。"""
+        # (0,0) 是状态栏里的退化点, 由专门的用例覆盖(见 status bar 那条)
+        for px, py in [(996, 215), (635, 245), (1115, 217), (1199, 2669), (600, 2670 - 1)]:
+            self.assertEqual(self._resolve({'point': [px, py]}), (px, py))
 
-    def test_pixel_coords_over_1000_pass_through(self):
-        # >1000 不可能是归一化值(上限就是 1000), 所以只可能是像素, 无歧义
-        self.assertEqual(self._norm([752, 2512]), (752, 2512))
-        self.assertEqual(self._norm([1085, 210]), (1085, 210))
-        self.assertEqual(self._norm([417, 1700]), (417, 1700))
+    def test_real_device_failures_now_land_on_target(self):
+        """这 6 个值是真机上让轮次作废/点偏的实参, 现在必须落在目标像素上。"""
+        self.assertEqual(self._resolve({'point': [996, 215]}), (996, 215))
+        self.assertEqual(self._resolve({'point': [635, 245]}), (635, 245))
+        self.assertEqual(self._resolve({'rel': [831, 81]}), (996, 216))
+        self.assertEqual(self._resolve({'rel': [530, 92]}), (635, 246))
 
-    def test_mixed_pair_takes_the_pixel_reading(self):
-        # 一个超限一个没超: 按像素解释整对(真机出现的 [1085, 210] 形态)
-        self.assertEqual(self._norm([1085, 210]), (1085, 210))
+    def test_rel_is_converted_exactly(self):
+        self.assertEqual(self._resolve({'rel': [0, 0]}), (0, 0))
+        self.assertEqual(self._resolve({'rel': [1000, 1000]}), (1199, 2669))
+        self.assertEqual(self._resolve({'rel': [500, 500]}), (600, 1334))
 
-    def test_real_device_failures_now_resolve(self):
-        """回归: 这 6 个值是真机上让整个轮次作废的实参。"""
-        for bad in ([752, 2512], [1085, 210], [500, 1500], [417, 1700],
-                    [191, 1049], [500, 1800]):
-            x, y = self._norm(bad)
-            self.assertGreater(x, 0)
-            self.assertGreater(y, 0)
+    def test_pixels_outside_the_screen_are_rejected_loudly(self):
+        """越界必须报错而不是夹取: 夹取会把"单位选错"变成一个看似合理的落点,
+        那正是要消掉的静默失败。报错要带上屏幕尺寸和 rel 写法。"""
+        with self.assertRaises(ValueError) as cm:
+            self._resolve({'point': [2512, 752]})
+        msg = str(cm.exception)
+        self.assertIn('1200x2670', msg)
+        self.assertIn('rel', msg)
 
-    def test_negative_and_garbage_still_rejected_with_screen_size(self):
-        for bad in ([-5, 100], [100, -5]):
+    def test_giving_both_units_is_rejected(self):
+        for args in ({'point': [996, 215], 'rel': [830, 81]},):
             with self.assertRaises(ValueError) as cm:
-                self._norm(bad)
-            self.assertIn('1200x2670', str(cm.exception))    # 报错要能自解释
+                self._resolve(args)
+            self.assertIn('only one', str(cm.exception))
+
+    def test_giving_neither_names_both_options(self):
+        with self.assertRaises(ValueError) as cm:
+            self._resolve({})
+        msg = str(cm.exception)
+        self.assertIn('point', msg)
+        self.assertIn('rel', msg)
+        self.assertIn('1200x2670', msg)
+
+    def test_pixel_point_in_the_status_bar_is_rejected_loudly(self):
+        """回归(真机 1200x2670, 17:48): ask_vision 回百分数(85%), 模型乘 10 得 850 又猜
+        y=45, 当 point 传进去 → 实际点 (1020,120) 状态栏, 搜索页从未打开, 而模型只看到
+        diff 29% 以为成功。状态栏没有可点目标, 踩进去几乎只能是"把 0-1000 当成了像素"。"""
+        with self.assertRaises(ValueError) as cm:
+            self._resolve({'point': [850, 45]})
+        msg = str(cm.exception)
+        self.assertIn('status bar', msg)
+        self.assertIn('rel', msg)                    # 告诉它正确写法
+        self.assertIn('droid.tap', msg)              # 以及确需时的逃生门
+
+    def test_real_targets_in_the_title_row_still_pass(self):
+        """同一道门不能误伤真目标: 标题行的放大镜/搜索框都在 status 锚带下方。"""
+        for px, py in [(996, 215), (635, 245), (1115, 217), (602, 212)]:
+            self.assertEqual(self._resolve({'point': [px, py]}), (px, py))
+
+    def test_malformed_values_rejected(self):
         for bad in (['a', 'b'], [None, 5], 'nope', [1, 2, 3]):
             with self.assertRaises(ValueError):
-                self._norm(bad)
+                self._resolve({'point': bad})
+            with self.assertRaises(ValueError):
+                self._resolve({'rel': bad})
+
+    def test_swipe_uses_its_own_key_pairs(self):
+        self.assertEqual(self._resolve({'point1': [100, 200], 'point2': [300, 400]},
+                                       'point1', 'rel1'), (100, 200))
+        self.assertEqual(self._resolve({'rel1': [100, 200], 'rel2': [300, 400]},
+                                       'point1', 'rel1'), (120, 534))
 
 
 class ActProvedChangeTest(unittest.TestCase):
@@ -287,8 +405,8 @@ class GuiActSkipsRedundantWaitTest(unittest.TestCase):
             longpress=lambda x, y, ms: calls.append((x, y, ms)) or {'diff': 'diff: 3.0%'},
             wait_stable=lambda **kw: {'stable': True})
         with patch.dict(sys.modules, {'droid': fake}):
-            out = self._run({'action': 'longpress', 'point': [500, 250], 'ms': 900})
-        self.assertEqual(calls, [(600, 667, 900)])
+            out = self._run({'action': 'longpress', 'point': [635, 245], 'ms': 900})
+        self.assertEqual(calls, [(635, 245, 900)])
         self.assertNotIn('[Error]', str(out.data))
 
     def test_point_actions_observe_before_acting(self):
@@ -381,8 +499,10 @@ class PostActionObsTest(unittest.TestCase):
         self.assertIn('obs', out)
         self.assertTrue(out['obs'])
         first = out['obs'][0]
-        self.assertEqual((first['t'], first['cls'], first['x'], first['y']),
-                         ('搜索', 'EditText', 645, 598))
+        # x/y=像素(与 look/dump/find 同单位, 可直接当 point); rx/ry=0-1000(可直接当 rel)
+        self.assertEqual((first['t'], first['cls']), ('搜索', 'EditText'))
+        self.assertEqual((first['x'], first['y']), (645, 598))
+        self.assertEqual((first['rx'], first['ry']), (538, 224))
 
     def test_obs_drops_textless_items_and_truncates_labels(self):
         out = json.loads(self._run({'action': 'tap', 'point': [500, 250]}).data)

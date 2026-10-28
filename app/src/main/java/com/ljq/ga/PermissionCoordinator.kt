@@ -98,6 +98,9 @@ class PermissionCoordinator(
         webCallbacks.onA11y(activity.isA11yOn())
         // 回推无线调试自连最新状态: 用户可能刚从开发者选项/无线调试页返回; JS 侧自己重读 adbSelfStatus, 单一真值源(无需入参)。
         webCallbacks.onAdb()
+        // 回推 Shizuku 状态: 用户可能在管理器里授权后直接切回 GA, 不会经过 GA 自己的
+        // requestPermission 回调; 不在这里重读, 状态行/红点会一直停在旧值。
+        webCallbacks.onShizuku()
         return true
     }
 }

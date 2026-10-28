@@ -164,11 +164,16 @@ class GuiActObsEndToEndTest(unittest.TestCase):
             data = json.loads(out.data)
         obs = data['obs']
         self.assertTrue(obs)
-        # 模型要能凭 obs 选目标: 标签 + 像素坐标必须在
+        # 模型要能凭 obs 选目标: 标签 + 两种单位的坐标都必须在
+        # (x/y=像素可直接当 point; rx/ry=0-1000 可直接当 rel)
         for item in obs:
             self.assertIn('t', item)
             self.assertIn('x', item)
             self.assertIn('y', item)
+            self.assertIn('rx', item)
+            self.assertIn('ry', item)
+            self.assertTrue(0 <= item['x'] <= 1200 and 0 <= item['y'] <= 2670)
+            self.assertTrue(0 <= item['rx'] <= 1000 and 0 <= item['ry'] <= 1000)
         labels = [i['t'] for i in obs]
         self.assertIn('结果一', labels)             # 下一个目标确实在里面
 

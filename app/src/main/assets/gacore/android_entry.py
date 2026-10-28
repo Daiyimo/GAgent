@@ -22,7 +22,7 @@ agent = None
 _LANG = os.environ.get('GA_LANG', 'zh')   # UI 语言, 由 /lang 设置(写 env); 读 env 使重导入后语言不回退中文
 def _L(zh, en): return en if _LANG == 'en' else zh
 def _new_state():   # t0=本次运行起点(秒, send 时置), 此处先种键使"运行⇒有 t0"契约结构性显式(poll 仍带 running 守卫)
-    return {'running': False, 't0': 0, 'status': _L('待命', 'Idle'), 'gen': 0, 'steps': [], 'final': '', 'prompt': '', 'cmd_error': '', 'tok_in': 0, 'tok_out': 0, 'cache_read': 0, 'cache_write': 0, 'ask': None, 'ask_open': None, 'end': ''}
+    return {'running': False, 't0': 0, 't1': 0, 'status': _L('待命', 'Idle'), 'gen': 0, 'steps': [], 'final': '', 'prompt': '', 'cmd_error': '', 'tok_in': 0, 'tok_out': 0, 'cache_read': 0, 'cache_write': 0, 'ask': None, 'ask_open': None, 'end': ''}
 _lock = threading.RLock()
 _state = _new_state()
 _jobs = {}            # 异步作业(如 /models 网络请求): id -> {'done':bool,'result':str}; 让桥调用立即返回, UI 轮询取结果, 不冻 UI
@@ -2394,7 +2394,7 @@ def _send_for(sess, text):
     for _try in range(2):
         with sess.lock:
             if not sess.retired:
-                sess.state.update(running=True, t0=time.time(), status=_L('思考中', 'Thinking…'), steps=[], final='', prompt=text, gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, ask_open=None, end='')   # t0=本任务起点(秒): 供悬浮窗竖丸按真实运行时长加深颜色(比 FloatService 自计更准, 浮窗中途打开也对)
+                sess.state.update(running=True, t0=time.time(), t1=0, status=_L('思考中', 'Thinking…'), steps=[], final='', prompt=text, gen=_next_gen(), tok_in=0, tok_out=0, cache_read=0, cache_write=0, ask=None, ask_open=None, end='')   # t0=本任务起点(秒): 供悬浮窗竖丸按真实运行时长加深颜色(比 FloatService 自计更准, 浮窗中途打开也对); t1=结束点, 供 UI 冻结真实时长
                 patches._ROUTE['cur'] = None                      # 新任务: 清空上一轮的故障转移路由, 由探针在本轮实际路由时重写
                 mygen = sess.state['gen']                         # 本次任务的代号, 用于作废 /clear 或新任务后的陈旧 drain
                 mycid = _pub_cid(sess.cid)
@@ -2439,7 +2439,7 @@ def _drain_loop(q, mygen, sess, cid=None):
                 with sess.lock:
                     if sess.retired or st['gen'] != mygen: return
                     turn = len(st['steps'])
-                    st.update(running=False, status=_L(f'出错 · {turn}步', f'Error · {turn} steps'), end='error',
+                    st.update(running=False, t1=time.time(), status=_L(f'出错 · {turn}步', f'Error · {turn} steps'), end='error',
                               final=_L('!!!Error: 会话线程已退出, 任务未完成', '!!!Error: session worker exited, task unfinished'), ask=None, ask_open=None)
                 _swallow('_drain', RuntimeError('session worker thread is dead'))
                 return
@@ -2457,7 +2457,7 @@ def _drain_loop(q, mygen, sess, cid=None):
                 end = _end_reason(st.get('end') == 'stopped', final, outs[-1] if outs else '')
                 status = {'stopped': _L(f'已停止 · {turn}步', f'Stopped · {turn} steps'),
                           'error': _L(f'出错 · {turn}步', f'Error · {turn} steps')}.get(end) or _L(f'完成 · {turn}步', f'Done · {turn} steps')
-                st.update(running=False, status=status, final=final, ask=ask, ask_open=ask, end=end)
+                st.update(running=False, t1=time.time(), status=status, final=final, ask=ask, ask_open=ask, end=end)
                 pcid = cid or _pub_cid(sess.cid)
                 with _hist_lock:
                     _hist.append({'prompt': st['prompt'], 'final': final, 'convo': pcid,   # 标记本轮归属的前端会话 id(随 chat.json 持久→跨进程被杀仍在): 冷启对账据此精确补全被后台完成截断的会话步骤(修「UI 显 N 步/实际更多步」)。不再靠 prompt 启发——payload 经 goal/附件/override 变换后与气泡 raw text 必不相等, 长多步任务正是命中此变换者
@@ -2516,6 +2516,8 @@ def _poll_for(sess, since='0', summary=False, legacy=False):
             except Exception: pass
         d['route'] = sess.route or patches._ROUTE['cur']
         d['active_convo'] = _pub_cid(_focus_cid)
+        d['started_at'] = st.get('t0', 0)      # 真实运行起点(秒): UI 重新挂接时用它做计时锚
+        d['ended_at'] = st.get('t1', 0)        # 真实结束点(秒); 运行中为 0
         d['elapsed'] = max(0.0, time.time() - st['t0']) if st.get('running') and st.get('t0') else 0.0
         d['lang'] = _LANG
         if notif is not None:

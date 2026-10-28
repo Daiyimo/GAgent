@@ -5,6 +5,7 @@
 - 恢复阶梯每步有界、以 ABORT 收尾，屏幕一变或换动作即解除；
 - 产出新证据的滚动不计循环（长列表有效扫描豁免，来自 mobile-agent 的教训）。
 """
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -82,6 +83,19 @@ class RepetitionHintTest(unittest.TestCase):
         hint = pl.repetition_hint(rs)
         self.assertIn("文本输入", hint)
 
+    def test_successful_multi_field_inputs_do_not_trigger_type_hint(self):
+        # 评审 M2: 多字段填表时每次输入都成功上屏(evidence_new), "最近都在输入"不是循环。
+        # 原实现只数 kind, 4 个不同字段的 paste 也会误报"输入未生效"。
+        rs = [rec("paste", value=v, point=(600, 2300), evidence_new=True, hit=True)
+              for v in ("张三", "13800138000", "北京市", "100000")] + [rec("tap")]
+        self.assertIsNone(pl.repetition_hint(rs))
+
+    def test_failed_inputs_still_trigger_type_hint(self):
+        # 没有 evidence_new 的连续输入(没确认上屏)仍要提示核对
+        rs = [rec("paste", value=v, point=(600, 2300), hit=False)
+              for v in ("张三", "13800138000", "北京市", "100000")] + [rec("tap")]
+        self.assertIn("文本输入", pl.repetition_hint(rs))
+
     def test_screen_stuck_needs_three_kinds_all_exact_same(self):
         rs = [rec("tap", exact=True), rec("back", exact=True),
               rec("swipe", point=(600, 2000), point2=(600, 800), exact=True), rec("tap", exact=True)]
@@ -153,6 +167,22 @@ class RecoveryLadderTest(unittest.TestCase):
         # 滑不动了(截图逐次一致)重复 5 次 → 提示(这是正确行为: 可能到底)
         rs = [rec("scroll", point=(600, 2000), point2=(600, 800), exact=True) for _ in range(5)]
         self.assertIsNotNone(pl.repetition_hint(rs))
+
+
+class KindCoverageTest(unittest.TestCase):
+    """评审 M3: 账本声称处理的 kind 必须真的有生产者(droid._new_record)。
+
+    集合里留着产不出记录的类型, 会让"已覆盖"看起来比实际宽——例如
+    adb_input_text 从未被任何代码落账, 却出现在输入类集合里。
+    """
+
+    def test_every_ledger_kind_has_a_record_producer(self):
+        src = (CORE / 'droid.py').read_text(encoding='utf-8')
+        produced = set(re.findall(r'_new_record\(\s*"([a-z_]+)"', src))
+        self.assertTrue(pl.INPUT_KINDS <= produced,
+                        "INPUT_KINDS 含无生产者: %s" % (pl.INPUT_KINDS - produced))
+        self.assertTrue(pl._VALUE_KINDS <= produced,
+                        "_VALUE_KINDS 含无生产者: %s" % (pl._VALUE_KINDS - produced))
 
 
 class GuardHintTest(unittest.TestCase):

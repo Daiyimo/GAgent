@@ -142,6 +142,39 @@ class CompressionParamsTest(unittest.TestCase):
         self.assertIn('[Truncated]', msgs[1]['content'])
 
 
+class ToolUseBlockCompressionTest(unittest.TestCase):
+    """真实历史是 content-block 列表(assistant 的 tool_use.input), 不是纯字符串。
+
+    真机回归(2026-10-27): 第 5 轮首次压缩时 `_cut(v)` 漏传 lim 直接
+    `TypeError: _cut() missing 1 required positional argument: 'lim'`, 任务在第 5 轮
+    崩溃。原测试只覆盖 `content` 为 str 的形态, 没走到 tool_use 分支。
+    """
+
+    def setUp(self):
+        compress_history_tags._cd = 0
+        self.addCleanup(lambda: setattr(compress_history_tags, '_cd', 0))
+
+    def _block_msgs(self, script_len=5000):
+        return [{'role': 'user', 'content': _protocol_prompt()},
+                {'role': 'assistant', 'content': [
+                    {'type': 'thinking', 'thinking': 'short'},
+                    {'type': 'tool_use', 'id': 'call_1', 'name': 'code_run',
+                     'input': {'script': 'x' * script_len, 'desc': 'd' * 5000,
+                               'timeout': 30, 'dry_run': False}},
+                ]}]
+
+    def test_tool_use_input_strings_are_truncated_without_crashing(self):
+        msgs = self._block_msgs()
+        compress_history_tags(msgs, keep_recent=0, max_len=600, force=True)
+        inp = msgs[1]['content'][1]['input']
+        self.assertIn('[Truncated]', inp['script'])
+        self.assertLessEqual(len(inp['script']), 600)
+        self.assertLessEqual(len(inp['desc']), 600)
+        # 非字符串参数原样保留(数字/布尔不能被当文本切)
+        self.assertEqual(inp['timeout'], 30)
+        self.assertIs(inp['dry_run'], False)
+
+
 class TrimKeepsProtocolCarrierTest(unittest.TestCase):
     def test_over_cap_trim_never_drops_message_zero(self):
         msgs = [{'role': 'user', 'content': _protocol_prompt()}] + _msgs(20)
