@@ -42,6 +42,7 @@ TEXT_CLASSES = {"Text", "TextButton", "CheckedTextView"}
 # 接受模块级状态: 显著降低每次 detect 的固定开销, 不改变输出(同模型同会话)。
 _SESSIONS = {}
 _PPOCR = None
+LAST_YOLO_ERROR = None   # 最近一次 detect() 的 YOLO 失败原因; None=本次没失败。observe() 据此降级并记 note
 
 
 def _session(path):
@@ -74,15 +75,27 @@ def _letterbox(img):
 
 
 def _yolo(img, conf):
-    """YOLO ONNX(内置NMS, 输出(1,300,6)) → [[x1,y1,x2,y2,conf,cls],...] 还原到原图坐标。"""
-    x, r, left, top = _letterbox(img)
-    import detector_models
-    model = str(detector_models.model_path())
-    if not os.path.isfile(model):
-        return []
-    sess = _session(model)
-    out = sess.run(None, {sess.get_inputs()[0].name: x})[0][0]  # (300,6)
-    return _restore(out, conf, r, left, top, img.shape[1], img.shape[0])
+    """YOLO ONNX(内置NMS, 输出(1,300,6)) → ([[x1,y1,x2,y2,conf,cls],...], err)。
+
+    返回二元组而不是抛: 检测器缺失/损坏时调用方必须能降级到其余通道, 而不是让整条
+    look()/observe() 崩掉把轮次作废(真机 2026-10-28 10:22 那次 22 分钟的根因之一)。
+
+    失败不进 _SESSIONS 缓存: 赋值发生在 InferenceSession 成功返回之后, 于是每次 detect
+    都会重打一次 /onnx/info 再失败一遍 —— 那正好让调用方能持续读到失败原因。"""
+    try:
+        x, r, left, top = _letterbox(img)
+        import detector_models
+        model = str(detector_models.model_path())
+        if not os.path.isfile(model):
+            return [], 'detector model file missing: %s' % model
+        sess = _session(model)
+        out = sess.run(None, {sess.get_inputs()[0].name: x})[0][0]  # (300,6)
+        return _restore(out, conf, r, left, top, img.shape[1], img.shape[0]), None
+    except Exception as exc:
+        # 收窄前先确认被调方真实抛什么: detector_models.model_path() 抛 ValueError(注册表
+        # 指向的文件丢了), _session() 经 APK 总线抛 RuntimeError(model not found), 推理本身
+        # 可能抛任意 ORT 异常。三类都要降级, 故保留宽捕获——这是容错边界, 不是消告警。
+        return [], '%s: %s' % (type(exc).__name__, str(exc)[:160])
 
 
 def _restore(rows, conf, r, left, top, w, h):
@@ -111,14 +124,24 @@ def _containment(a, b):
     return inter / area_b if area_b > 0 else 0
 
 
-def detect(image, conf=0.25, contain_thresh=0.5):
+def detect(image, conf=0.25, contain_thresh=0.5, yolo=True):
     """image: 路径 或 BGR ndarray → 元素列表(YOLO 21类 + 全图OCR 空间匹配)。
     conf: 仅向上过滤(见 NMS_CONF_FLOOR, 低于地板无效)。
-    contain_thresh: OCR 文字框被 YOLO 框包含到此比例即归属该框(取其文本作 label)。"""
+    contain_thresh: OCR 文字框被 YOLO 框包含到此比例即归属该框(取其文本作 label)。
+    yolo=False: 跳过 YOLO 只跑 OCR。**canvas/游戏/自绘页面用这个**——那类画面里 YOLO 的
+      21 个通用 Android 类既认不出游戏语义, 框还会把模型带偏; 语义只能问 VLM。
+
+    降级: YOLO 侧任何失败不外抛, 只把原因记进 LAST_YOLO_ERROR 并照常跑 OCR ——
+    调用方(droid.observe)据此降级到其余通道并告知用户, 不把整轮作废。"""
+    global LAST_YOLO_ERROR
     img = cv2.imread(image) if isinstance(image, str) else image
     assert img is not None, "image load failed"
 
-    yolo_boxes = _yolo(img, conf)
+    LAST_YOLO_ERROR = None
+    if yolo:
+        yolo_boxes, LAST_YOLO_ERROR = _yolo(img, conf)
+    else:
+        yolo_boxes = []
     # 全图 OCR: 4点box → 轴对齐bbox
     ocr_items = []
     for box, text, score in _ocr_engine()(img):
