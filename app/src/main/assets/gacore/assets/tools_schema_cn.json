@@ -85,7 +85,7 @@
     "type": "function",
     "function": {
       "name": "code_run",
-      "description": "代码执行器。优先 python(进程内 exec)。**代码一律放进 script 参数**。仅当没有 script 参数时才会取回复正文里带 python 标签的 ```python 代码块作为兜底, 且这次工具调用仍然必须发——只在回复里写代码而不调用本工具, 代码不会执行(该轮作废)。禁止在代码里硬编码大量数据。 script 是纯 Python，不要包含 </script> 或其他 HTML 标签（会 SyntaxError）。 通道分流(先用 droid.screen_kind() 定一次, 不要两个都试): 'ui'=普通控件树 → 用 look()(YOLO 21 类 + OCR, 本地 31ms~0.9s; 图标/按钮/输入框都回来, x/y 是整屏像素可直接当 point)。'blanked'=敏感 App(微信)树被策略置空但屏幕有大量文字 → 仍用 look()(OCR 有效); 那里 dump() 返回 [] 是设计如此, 不是故障。'canvas'=自绘/游戏/SurfaceView 真空树 → **只走 vision(droid.ask_vision)**: 那类画面 YOLO 的 21 个通用 Android 类认不出游戏语义, 框还会把模型带偏; 并且**不要调 look()**(OCR 找不到东西还白烧 0.5-0.9s)。ask_vision 的总时长预算从 code_run 剩余时间自动推导(默认 60s 脚本约拿到 54s), 所以**一轮只调一次**; 同一轮第二次会因剩余不足直接报错——那是提醒收尾, 不是故障; 改用 look()/ocr() 或 ask_user, 不要重试。",
+      "description": "代码执行器。优先 python(进程内 exec)。**代码一律放进 script 参数**。仅当没有 script 参数时才会取回复正文里带 python 标签的 ```python 代码块作为兜底, 且这次工具调用仍然必须发——只在回复里写代码而不调用本工具, 代码不会执行(该轮作废)。禁止在代码里硬编码大量数据。 script 是纯 Python，不要包含 </script> 或其他 HTML 标签（会 SyntaxError）。 观察屏幕调 droid.observe(): 一次截图一次分类, 返回 {kind, items, channels, notes, needs_vision}; items 每项带 src('tree'|'yolo')、整屏像素 x/y 与 0-1000 rx/ry, 原样传即可。notes 里出现 'detector_unavailable' 表示图标模型缺失或损坏——**已自动降级, 不是故障, 继续做**。当 obs 为空且 needs_vision 为真时, 画面是游戏/自绘 canvas/混淆页, 没有可用控件树: **不要**再反复 look()/ocr() 试图定位(它们的框会把模型带偏, 还白烧 0.5-0.9s)——用 see 工具问模型屏幕上有什么, 或只需读文字时用 droid.ocr(droid.shot())。",
       "parameters": {
         "type": "object",
         "properties": {
