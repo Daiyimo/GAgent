@@ -973,8 +973,8 @@ def observe(roi=None, conf=0.25, cache=True):
     except Exception:
         rot = 0
     c = _OBS_CACHE
-    # 缓存键含 pkg 与 rot: 旧 _LOOK_CACHE 只认缩略图+roi, 于是切个 App 或转个屏都可能
-    # 命中上一帧的结果(SPEC §2.3 记着的缺陷), 而快路径恰恰要靠这个缓存。
+    # 缓存键含 pkg 与 rot: 旧版只认缩略图+roi, 于是切个 App 或转个屏都可能命中上一帧的
+    # 结果(SPEC §2.3 记着的缺陷), 而快路径恰恰要靠这个缓存。
     if cache and c["res"] is not None and c["roi"] == (x1, y1, x2, y2) \
             and c["pkg"] == pkg and c["rot"] == rot and c["thumb"] is not None:
         if float((cv2.absdiff(thumb, c["thumb"]) > 16).mean()) < 0.003:
@@ -1015,7 +1015,7 @@ def observe(roi=None, conf=0.25, cache=True):
     return res
 
 
-def look(conf=0.25, path=None, roi=None, cache=True, *, label=None, yolo=None):
+def look(conf=0.25, path=None, roi=None, cache=True, *, label=None):
     """视觉路径一步到位: observe() 后取 YOLO 项, 返回形状与历史一致。
 
     label: 可选 OCR 文字子串筛选，返回全部匹配项；多命中仍需消歧，不自动选择或点击。
@@ -1023,7 +1023,7 @@ def look(conf=0.25, path=None, roi=None, cache=True, *, label=None, yolo=None):
     cache: 屏幕与上一次 observe 几乎没变(缩略图差异 <0.3%) 且 roi/pkg/rot 相同 → 附 'cached': True.
     path 给出则同时把截图存文件(给用户看/复核).
 
-    yolo 形参保留仅为兼容旧调用, 已无意义 —— 通道选择搬进了 observe 的 _classify。
+    通道选择在 observe 的 _classify 里, 这里不再收 yolo 形参(留着一个不生效的开关比没有更糟)。
     新代码请用 observe(): 它额外带回控件树项、kind 与降级原因。"""
     if label is not None and not isinstance(label, str):
         raise TypeError('look label must be a string or None')
@@ -2064,14 +2064,16 @@ def _bundle():
         sys.path.insert(0, BUNDLE)
 
 
-def ui_detect(img, conf=0.25, yolo=True):
+def ui_detect(img, conf=0.25):
     """img: BGR ndarray 或 路径 → [{'bbox':[x1,y1,x2,y2],'type':'icon'|'text','label','cls','confidence'}]
     检测器=Android专调YOLOv8n(21类语义)+PP-OCR空间匹配。cls给出控件语义(即便纯图标无文字),
     label=框内OCR文字; 无文字时图标/控件回退为cls语义名, 文字类回退None。
-    yolo=False 只跑 OCR: canvas/游戏/自绘页面的正确选择(那类画面 YOLO 认不出游戏语义)。"""
+
+    是否跑 YOLO 由 observe() 按画面类型决定(_classify), 这里不再收 yolo 形参。
+    YOLO 缺失/损坏时自动降级为只跑 OCR 并把原因记进 ui_detect_lite.LAST_YOLO_ERROR, 不外抛。"""
     _bundle()
     import ui_detect_lite
-    return ui_detect_lite.detect(img, conf=conf, yolo=yolo)
+    return ui_detect_lite.detect(img, conf=conf)
 
 
 _ppocr = None
