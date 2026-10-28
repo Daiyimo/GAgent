@@ -201,6 +201,32 @@ def consume_file(dr, file):
         os.remove(os.path.join(dr, file))
         return content
 
+# see() 描述性问句的本地类别闸判据(纯函数, 无设备依赖, 可单测)。
+# 22cae1a 已在 SOP 劝"目标明确先问 point", 但真机 14:49 仍先打全屏描述性 see()
+# ("查看游戏当前画面")再问目标——每次 11-40s 对定位毫无帮助。这里在代码层兜底:
+# 只在问句**纯问画面类别**时用本地 screen_kind() 应答, 不打 VLM。
+_SEE_CLASS_INTENT = ('这是什么', '什么屏幕', '什么页面', '哪个页面', '什么界面', '哪个界面',
+                     '当前画面', '当前屏', '是不是游戏', '是游戏吗', '大厅吗', '主界面吗', 'canvas')
+# 内容/定位词: 命中任一即否决拦截, 放行 VLM(问的是内容或位置, 不是画面类别)。
+_SEE_CONTENT_WORDS = ('在哪', '位置', '坐标', '有什么', '哪些', '写着', '文字', '模块', '按钮',
+                      '入口', '弹窗', '列表', '价格', '名称', '数量', '点哪', '怎么', '多少', '几个')
+_KIND_MEANING = {
+    'tree': '普通控件树(有可点/可读节点)',
+    'blanked': '敏感 App 或未解析前台, 控件树被置空',
+    'canvas': '自绘/游戏/SurfaceView 画面, 无可用控件树',
+}
+
+
+def _looks_like_screen_class_question(q):
+    """问句是否只在问"画面类别"而非内容/定位(see() 本地闸判据, 纯函数)。
+
+    有类别意图词**且无**内容/定位词才拦。任何不确定都返回 False 放行 VLM——
+    宁可多打一次贵的视觉, 不可把合理的内容诉求拦掉让模型多绕一轮。"""
+    s = str(q or '')
+    if not any(w in s for w in _SEE_CLASS_INTENT):
+        return False
+    return not any(w in s for w in _SEE_CONTENT_WORDS)
+
 class GenericAgentHandler(BaseHandler):
     '''Generic Agent 工具库，包含多种工具的实现。工具函数自动加上了 do_ 前缀。实际工具名没有前缀。'''
     def __init__(self, parent, last_history=None, cwd='./temp'):
@@ -314,6 +340,26 @@ class GenericAgentHandler(BaseHandler):
         want = str(args.get('want') or 'text')
         if want not in ('text', 'point'):
             return StepOutcome("[Error] see want must be 'text' or 'point'", next_prompt='\n')
+        if want == 'text' and _looks_like_screen_class_question(q):
+            # 1a: 问句纯问画面类别 → 本地 screen_kind() 应答, 不打 VLM/shot(省 15-40s)。
+            # 判据见 _looks_like_screen_class_question(内容/定位问句一律放行)。本地拿不到
+            # 可靠类别(unknown 或抛异常)就回落 VLM, 不装懂——截图/自称都不是成功证据。
+            t1 = time.time()
+            try:
+                kind = droid.screen_kind()
+            except Exception:
+                kind = 'unknown'
+            if kind != 'unknown':
+                backend = droid.active_backend()
+                out = {'ok': True, 'kind': kind, 'source': 'local',
+                       'answer': '本地判定当前画面 kind=%s(%s)。这只是画面类别、不含内容: '
+                                 '要定位某物请用 want="point" 直接问位置; 要读画面内容请用更具体的问题再 ask。'
+                                 '(本次未调用视觉, 省 15-40s)'
+                                 % (kind, _KIND_MEANING.get(kind, '')),
+                       'model': (droid._backend_id(backend)[:80] if backend else None),
+                       'ms': round((time.time() - t1) * 1000, 1)}
+                return StepOutcome(json.dumps(out, ensure_ascii=False),
+                                   next_prompt=self._get_anchor_prompt(skip=args.get('_index', 0) > 0))
         try:
             box = droid._resolve_roi(args.get('roi')) if args.get('roi') else (0, 0, geom.NORM, geom.NORM)
         except ValueError as e:
@@ -360,6 +406,11 @@ class GenericAgentHandler(BaseHandler):
                 next_prompt='\n')
         out.update({'ms': round((time.time() - t0) * 1000, 1),
                     'model': droid._backend_id(backend)[:80]})
+        if want == 'point' and not args.get('roi'):
+            # 1b: point 未传 roi → 全屏视觉 25-40s; 在执行点复述 roi 代价, 增强模型成本感知。
+            # 只增字段、不改 rx/ry、不改成功路径; 传了 roi 不加。
+            out['hint'] = ('未传 roi: 全屏视觉约 25-40s。若目标大致在顶/底/中, '
+                           '传 roi=title/lower/middle 可降到约 8-15s。')
         return StepOutcome(json.dumps(out, ensure_ascii=False),
                            next_prompt=self._get_anchor_prompt(skip=args.get('_index', 0) > 0))
 
