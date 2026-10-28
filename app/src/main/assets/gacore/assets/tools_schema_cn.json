@@ -1,263 +1,297 @@
 [
- {
-  "type": "function",
-  "function": {
-   "name": "gui_act",
-   "description": "手机 GUI 结构化动作。任何屏幕操作都优先用它——不需要写 Python。动作: tap/longpress {point 或 rel, ms?}; swipe {point1+point2 或 rel1+rel2, ms}; text {value}; key {value:ENTER}; launch {value:pkg}; back; home; wait {seconds}。坐标单位——每个点只能给下面两种写法之一, 不能同时给: `point` = 像素, 与 dump()/look()/find() 的 x/y 以及 obs 的 x/y 同一单位, 照抄即可, 不要做任何换算; `rel` = 0-1000 归一化(左上原点, x 右 y 下), 用于 ask_vision 的返回值和本身就是相对位置的目标。绝不要自己把一种单位换算成另一种, 也不要猜一个数字是哪种单位: 像素被当成归一化时会偏出几百像素, 而且**不报错、没有 hint**, 你只会看到 diff=0 然后反复重点。两种都给或都不给都会被拒, 报错里会列出两种正确写法。像素越界会被拒, 报错带当前屏幕尺寸——这时改用 rel。结果自带 `obs`——当前屏幕上的紧凑清单([{t, cls, x, y, rx, ry}], 最多 12 项; x/y 是像素可直接当 point, rx/ry 是 0-1000 可直接当 rel), 因此通常可以直接从它选下一个目标, 不必再花一轮 code_run 去 dump()/look()。只有在 obs 为空或需要它不带的信息时才用 code_run 观察。一次调用一个动作。用 code_run 来**观察**屏幕(dump()/look())、做多步逻辑或非 GUI 工作——观察不是动作。look/dump 不是 gui_act 动作, 观察请用 code_run。任何搜索框/搜索页: 点框就会拉起输入法, 不要再点一次去\"激活\"(点已聚焦的框可能 diff=0, 这不是失败)。敏感 App(微信等): text/paste 只写剪贴板; 优先点键盘上可见的粘贴/剪贴板建议; 没有就用当前 obs/截图精确定位输入框中心后长按输入框再点粘贴菜单。长按空白处会收起键盘/搜索框; 不要重复 paste。无文字图标按钮(放大镜/+ /返回/菜单): 分两级定位, 绝不要猜。① 在 code_run 里 `look(roi='title')`——装了 Android UI 检测模型时它会额外返回 `type='icon'` 的框(cls 是控件语义, x/y 是整屏像素, 可直接当 `point`)。本机实测: 一次 look() 即给出微信放大镜 (997,216) 与 + (1115,217), 31ms。② 只有 ① 拿不到 icon 框时, 才在 code_run 里用 `droid.ask_point(<要找什么>, roi='title')`——它用固定问句向当前模型要一个 0-1000 数对, 并拒掉带百分号的回答——拿到的数对原样传给 `rel`, 点后核验。不要用状态栏时间/电池文字推位置, 也不要自己写 ask_vision 问坐标(曾经漂移成\"百分比(0-100)\", VLM 回一段散文, 点中了状态栏)。",
-   "parameters": {
-    "type": "object",
-    "properties": {
-     "action": {
-      "type": "string",
-      "enum": [
-       "tap",
-       "swipe",
-       "longpress",
-       "text",
-       "key",
-       "launch",
-       "back",
-       "home",
-       "wait"
-      ]
-     },
-     "point": {
-      "type": "array",
-      "items": {
-       "type": "number"
-      },
-      "description": "[x,y] in PIXELS — same unit as dump()/look()/obs x/y; copy straight through"
-     },
-     "point1": {
-      "type": "array",
-      "items": {
-       "type": "number"
-      },
-      "description": "swipe start, PIXELS (or use rel1)"
-     },
-     "point2": {
-      "type": "array",
-      "items": {
-       "type": "number"
-      },
-      "description": "swipe end, PIXELS (or use rel2)"
-     },
-     "ms": {
-      "type": "integer",
-      "description": "swipe/longpress duration"
-     },
-     "value": {
-      "type": "string",
-      "description": "content to type (text), package name (launch), or IME key name (key); never a coordinate"
-     },
-     "seconds": {
-      "type": "number"
-     },
-     "rel": {
-      "type": "array",
-      "items": {
-       "type": "number"
-      },
-      "description": "[x,y] in 0-1000 normalized (top-left origin) — ask_vision answers, relative targets"
-     },
-     "rel1": {
-      "type": "array",
-      "items": {
-       "type": "number"
-      },
-      "description": "swipe start, 0-1000 normalized"
-     },
-     "rel2": {
-      "type": "array",
-      "items": {
-       "type": "number"
-      },
-      "description": "swipe end, 0-1000 normalized"
-     }
-    },
-    "required": [
-     "action"
-    ]
-   }
-  }
- },
- {
-  "type": "function",
-  "function": {
-   "name": "code_run",
-   "description": "代码执行器。优先 python(进程内 exec)。**代码一律放进 script 参数**。仅当没有 script 参数时才会取回复正文里带 python 标签的 ```python 代码块作为兜底, 且这次工具调用仍然必须发——只在回复里写代码而不调用本工具, 代码不会执行(该轮作废)。禁止在代码里硬编码大量数据。 script 是纯 Python，不要包含 </script> 或其他 HTML 标签（会 SyntaxError）。",
-   "parameters": {
-    "type": "object",
-    "properties": {
-     "script": {
-      "type": "string",
-      "description": "[Optional] 要执行的代码。为免转义建议留空，改用正文代码块（与此参数互斥）"
-     },
-     "type": {
-      "type": "string",
-      "enum": [
-       "python",
-       "sh"
-      ],
-      "description": "代码类型",
-      "default": "python"
-     },
-     "timeout": {
-      "type": "integer",
-      "description": "执行超时时间（秒）",
-      "default": 60
-     },
-     "cwd": {
-      "type": "string",
-      "description": "工作目录，默认为当前工作目录"
-     },
-     "inline_eval": {
-      "type": "boolean",
-      "description": "不允许使用除非明确要求"
-     }
+  {
+    "type": "function",
+    "function": {
+      "name": "gui_act",
+      "description": "手机 GUI 结构化动作。任何屏幕操作都优先用它——不需要写 Python。动作: tap/longpress {point 或 rel, ms?}; swipe {point1+point2 或 rel1+rel2, ms}; text {value}; key {value:ENTER}; launch {value:pkg}; back; home; wait {seconds}。坐标单位——每个点只能给下面两种写法之一, 不能同时给: `point` = 像素, 与 dump()/look()/find() 的 x/y 以及 obs 的 x/y 同一单位, 照抄即可, 不要做任何换算; `rel` = 0-1000 归一化(左上原点, x 右 y 下), 用于 ask_vision 的返回值和本身就是相对位置的目标。绝不要自己把一种单位换算成另一种, 也不要猜一个数字是哪种单位: 像素被当成归一化时会偏出几百像素, 而且**不报错、没有 hint**, 你只会看到 diff=0 然后反复重点。两种都给或都不给都会被拒, 报错里会列出两种正确写法。像素越界会被拒, 报错带当前屏幕尺寸——这时改用 rel。结果自带 `obs`——当前屏幕上的紧凑清单([{t, cls, x, y, rx, ry}], 最多 12 项; x/y 是像素可直接当 point, rx/ry 是 0-1000 可直接当 rel), 因此通常可以直接从它选下一个目标, 不必再花一轮 code_run 去 dump()/look()。只有在 obs 为空或需要它不带的信息时才用 code_run 观察。一次调用一个动作。用 code_run 来**观察**屏幕(dump()/look())、做多步逻辑或非 GUI 工作——观察不是动作。look/dump 不是 gui_act 动作, 观察请用 code_run。任何搜索框/搜索页: 点框就会拉起输入法, 不要再点一次去\"激活\"(点已聚焦的框可能 diff=0, 这不是失败)。敏感 App(微信等): text/paste 只写剪贴板; 优先点键盘上可见的粘贴/剪贴板建议; 没有就用当前 obs/截图精确定位输入框中心后长按输入框再点粘贴菜单。长按空白处会收起键盘/搜索框; 不要重复 paste。无文字图标按钮(放大镜/+ /返回/菜单): 分两级定位, 绝不要猜。① 在 code_run 里 `look(roi='title')`——装了 Android UI 检测模型时它会额外返回 `type='icon'` 的框(cls 是控件语义, x/y 是整屏像素, 可直接当 `point`)。本机实测: 一次 look() 即给出微信放大镜 (997,216) 与 + (1115,217), 31ms。② 只有 ① 拿不到 icon 框时, 才在 code_run 里用 `droid.ask_point(<要找什么>, roi='title')`——它用固定问句向当前模型要一个 0-1000 数对, 并拒掉带百分号的回答——拿到的数对原样传给 `rel`, 点后核验。不要用状态栏时间/电池文字推位置, 也不要自己写 ask_vision 问坐标(曾经漂移成\"百分比(0-100)\", VLM 回一段散文, 点中了状态栏)。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "tap",
+              "swipe",
+              "longpress",
+              "text",
+              "key",
+              "launch",
+              "back",
+              "home",
+              "wait"
+            ]
+          },
+          "point": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "[x,y] in PIXELS — same unit as dump()/look()/obs x/y; copy straight through"
+          },
+          "point1": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "swipe start, PIXELS (or use rel1)"
+          },
+          "point2": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "swipe end, PIXELS (or use rel2)"
+          },
+          "ms": {
+            "type": "integer",
+            "description": "swipe/longpress duration"
+          },
+          "value": {
+            "type": "string",
+            "description": "content to type (text), package name (launch), or IME key name (key); never a coordinate"
+          },
+          "seconds": {
+            "type": "number"
+          },
+          "rel": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "[x,y] in 0-1000 normalized (top-left origin) — ask_vision answers, relative targets"
+          },
+          "rel1": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "swipe start, 0-1000 normalized"
+          },
+          "rel2": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "swipe end, 0-1000 normalized"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
     }
-   }
-  }
- },
- {
-  "type": "function",
-  "function": {
-   "name": "file_read",
-   "description": "读取文件内容。建议在修改文件前先读取，以确保获取最新的上下文和行号。支持分页读取或关键字搜索",
-   "parameters": {
-    "type": "object",
-    "properties": {
-     "path": {
-      "type": "string",
-      "description": "文件相对或绝对路径"
-     },
-     "start": {
-      "type": "integer",
-      "description": "起始行号（从 1 开始）"
-     },
-     "count": {
-      "type": "integer",
-      "description": "读取的行数",
-      "default": 200
-     },
-     "keyword": {
-      "type": "string",
-      "description": "可选搜索关键字。如果提供，将返回第一个匹配项（忽略大小写）及其周边的内容"
-     },
-     "show_linenos": {
-      "type": "boolean",
-      "description": "是否显示行号，建议开启以辅助 file_patch 定位",
-      "default": true
-     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "code_run",
+      "description": "代码执行器。优先 python(进程内 exec)。**代码一律放进 script 参数**。仅当没有 script 参数时才会取回复正文里带 python 标签的 ```python 代码块作为兜底, 且这次工具调用仍然必须发——只在回复里写代码而不调用本工具, 代码不会执行(该轮作废)。禁止在代码里硬编码大量数据。 script 是纯 Python，不要包含 </script> 或其他 HTML 标签（会 SyntaxError）。 通道分流(先用 droid.screen_kind() 定一次, 不要两个都试): 'ui'=普通控件树 → 用 look()(YOLO 21 类 + OCR, 本地 31ms~0.9s; 图标/按钮/输入框都回来, x/y 是整屏像素可直接当 point)。'blanked'=敏感 App(微信)树被策略置空但屏幕有大量文字 → 仍用 look()(OCR 有效); 那里 dump() 返回 [] 是设计如此, 不是故障。'canvas'=自绘/游戏/SurfaceView 真空树 → **只走 vision(droid.ask_vision)**: 那类画面 YOLO 的 21 个通用 Android 类认不出游戏语义, 框还会把模型带偏; 并且**不要调 look()**(OCR 找不到东西还白烧 0.5-0.9s)。ask_vision 的总时长预算从 code_run 剩余时间自动推导(默认 60s 脚本约拿到 54s), 所以**一轮只调一次**; 同一轮第二次会因剩余不足直接报错——那是提醒收尾, 不是故障; 改用 look()/ocr() 或 ask_user, 不要重试。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "script": {
+            "type": "string",
+            "description": "[Optional] 要执行的代码。为免转义建议留空，改用正文代码块（与此参数互斥）"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "python",
+              "sh"
+            ],
+            "description": "代码类型",
+            "default": "python"
+          },
+          "timeout": {
+            "type": "integer",
+            "description": "执行超时时间（秒）",
+            "default": 60
+          },
+          "cwd": {
+            "type": "string",
+            "description": "工作目录，默认为当前工作目录"
+          },
+          "inline_eval": {
+            "type": "boolean",
+            "description": "不允许使用除非明确要求"
+          }
+        }
+      }
     }
-   }
-  }
- },
- {
-  "type": "function",
-  "function": {
-   "name": "file_patch",
-   "description": "精细化局部文件修改。在文件中寻找唯一的 old_content 块并替换为 new_content。要求 old_content 必须在文件中唯一存在，且空格、缩进、换行必须与原文件完全一致。如果匹配失败，请使用 file_read 重新确认文件内容",
-   "parameters": {
-    "type": "object",
-    "properties": {
-     "path": {
-      "type": "string",
-      "description": "文件路径"
-     },
-     "old_content": {
-      "type": "string",
-      "description": "文件中需要被替换的原始文本块（需确保唯一性）"
-     },
-     "new_content": {
-      "type": "string",
-      "description": "替换后的新文本内容。支持 {{file:路径:起始行:结束行}} 语法引用文件内容，写入前自动展开"
-     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "file_read",
+      "description": "读取文件内容。建议在修改文件前先读取，以确保获取最新的上下文和行号。支持分页读取或关键字搜索",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "文件相对或绝对路径"
+          },
+          "start": {
+            "type": "integer",
+            "description": "起始行号（从 1 开始）"
+          },
+          "count": {
+            "type": "integer",
+            "description": "读取的行数",
+            "default": 200
+          },
+          "keyword": {
+            "type": "string",
+            "description": "可选搜索关键字。如果提供，将返回第一个匹配项（忽略大小写）及其周边的内容"
+          },
+          "show_linenos": {
+            "type": "boolean",
+            "description": "是否显示行号，建议开启以辅助 file_patch 定位",
+            "default": true
+          }
+        }
+      }
     }
-   }
-  }
- },
- {
-  "type": "function",
-  "function": {
-   "name": "file_write",
-   "description": "用于文件的新建、全量覆盖或追加写入。对于精细的代码修改，应优先使用 file_patch。写入内容支持 {{file:路径:起始行:结束行}} 语法引用文件片段，写入前自动展开",
-   "parameters": {
-    "type": "object",
-    "properties": {
-     "path": {
-      "type": "string",
-      "description": "文件路径"
-     },
-     "content": {
-      "type": "string"
-     },
-     "mode": {
-      "type": "string",
-      "enum": [
-       "overwrite",
-       "append",
-       "prepend"
-      ],
-      "description": "写入模式覆盖、追加或在开头追加",
-      "default": "overwrite"
-     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "file_patch",
+      "description": "精细化局部文件修改。在文件中寻找唯一的 old_content 块并替换为 new_content。要求 old_content 必须在文件中唯一存在，且空格、缩进、换行必须与原文件完全一致。如果匹配失败，请使用 file_read 重新确认文件内容",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "文件路径"
+          },
+          "old_content": {
+            "type": "string",
+            "description": "文件中需要被替换的原始文本块（需确保唯一性）"
+          },
+          "new_content": {
+            "type": "string",
+            "description": "替换后的新文本内容。支持 {{file:路径:起始行:结束行}} 语法引用文件内容，写入前自动展开"
+          }
+        }
+      }
     }
-   }
-  }
- },
- {
-  "type": "function",
-  "function": {
-   "name": "update_working_checkpoint",
-   "description": "短期工作便签，每轮自动注入上下文，防长任务信息丢失。前中期调用，非结束时。何时调用：(1)任务开始读SOP后，存用户需求和关键约束/参数（简单1-2步任务除外）；(2)子任务切换或上下文即将被冲刷前；(3)多次重试失败后，重读SOP并必须调用存储新发现；(4)切换新任务时更新内容，清旧进度但保留仍有效的约束。\n\n何时不调用：简单任务（1-2步且无严重约束）、任务已完成时（应当用长期结算工具）",
-   "parameters": {
-    "type": "object",
-    "properties": {
-     "key_info": {
-      "type": "string",
-      "description": "替换当前便签（<200 tokens）。增量更新：先回顾现有内容，保留仍有效的，再增删改。存：要避的坑、用户原始需求、关键参数/发现、文件路径、当前进度、下一步计划。不存：马上要用用完即丢的、上下文中显而易见的、用户已换全新任务时的旧任务信息。宁多更新不丢关键"
-     },
-     "related_sop": {
-      "type": "string",
-      "description": "相关sop名称，可以多个，必要时需要再读"
-     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "file_write",
+      "description": "用于文件的新建、全量覆盖或追加写入。对于精细的代码修改，应优先使用 file_patch。写入内容支持 {{file:路径:起始行:结束行}} 语法引用文件片段，写入前自动展开",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "文件路径"
+          },
+          "content": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "overwrite",
+              "append",
+              "prepend"
+            ],
+            "description": "写入模式覆盖、追加或在开头追加",
+            "default": "overwrite"
+          }
+        }
+      }
     }
-   }
-  }
- },
- {
-  "type": "function",
-  "function": {
-   "name": "ask_user",
-   "description": "当需要用户决策、提供额外信息或遇到无法自动解决的阻碍时，调用此工具中断任务并提问",
-   "parameters": {
-    "type": "object",
-    "properties": {
-     "question": {
-      "type": "string",
-      "description": "向用户提出的明确问题"
-     },
-     "candidates": {
-      "type": "array",
-      "items": {
-       "type": "string"
-      },
-      "description": "提供给用户的可选快捷选项列表"
-     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "update_working_checkpoint",
+      "description": "短期工作便签，每轮自动注入上下文，防长任务信息丢失。前中期调用，非结束时。何时调用：(1)任务开始读SOP后，存用户需求和关键约束/参数（简单1-2步任务除外）；(2)子任务切换或上下文即将被冲刷前；(3)多次重试失败后，重读SOP并必须调用存储新发现；(4)切换新任务时更新内容，清旧进度但保留仍有效的约束。\n\n何时不调用：简单任务（1-2步且无严重约束）、任务已完成时（应当用长期结算工具）",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "key_info": {
+            "type": "string",
+            "description": "替换当前便签（<200 tokens）。增量更新：先回顾现有内容，保留仍有效的，再增删改。存：要避的坑、用户原始需求、关键参数/发现、文件路径、当前进度、下一步计划。不存：马上要用用完即丢的、上下文中显而易见的、用户已换全新任务时的旧任务信息。宁多更新不丢关键"
+          },
+          "related_sop": {
+            "type": "string",
+            "description": "相关sop名称，可以多个，必要时需要再读"
+          }
+        }
+      }
     }
-   }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ask_user",
+      "description": "当需要用户决策、提供额外信息或遇到无法自动解决的阻碍时，调用此工具中断任务并提问",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "向用户提出的明确问题"
+          },
+          "candidates": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "提供给用户的可选快捷选项列表"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "start_long_term_update",
+      "description": "准备开始提炼记忆。发现值得长期记忆的信息（环境事实/用户偏好/避坑经验）时调用此工具。已记忆更新或在自主流程内时无需调用。超15轮完成的任务必须调用以沉淀经验",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "see",
+      "description": "问当前模型屏幕上有什么(视觉通道)。只在本地通道答不了的时候用: 画面是游戏/自绘 canvas/混淆页(没有控件树, obs 里没有可用框)、或目标不在 obs 里、或需要理解画面语义。普通控件树上的图标/按钮/输入框已经在 obs 里, 不要为某个图标在哪打 see()——本地 31ms, 视觉 15-46s。want='point' 返回 0-1000 坐标对(原样传给 gui_act 的 rel), 用固定问句且拒答百分号; want='text' 返回自由文本。roi 在送图前裁剪('title'/'status'/'navbar' 或 0-1000 四元组), 可把单次从 25-50s 降到 8-15s。一轮一次就够。失败后绝不重试: 改用 obs 或 droid.ocr() 读屏, 或 ask_user。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "你想知道屏幕上的什么。want='point' 时直接说目标(如「标题行右侧的放大镜图标」)。"
+          },
+          "want": {
+            "type": "string",
+            "enum": [
+              "text",
+              "point"
+            ],
+            "description": "'point' = 定位目标并返回 rx,ry(0-1000); 'text' = 自由回答。默认 'text'。"
+          },
+          "roi": {
+            "description": "送图前裁剪: 'title'|'status'|'navbar'|'top'|'upper'|'middle'|'lower'|'bottom', 或 0-1000 的 [x1,y1,x2,y2]。大致知道目标在哪时就该传。"
+          },
+          "max_pixels": {
+            "type": "integer",
+            "description": "可选, 编码像素的硬上限。图特别大时才需要。"
+          }
+        },
+        "required": [
+          "question"
+        ]
+      }
+    }
   }
- },
- {
-  "type": "function",
-  "function": {
-   "name": "start_long_term_update",
-   "description": "准备开始提炼记忆。发现值得长期记忆的信息（环境事实/用户偏好/避坑经验）时调用此工具。已记忆更新或在自主流程内时无需调用。超15轮完成的任务必须调用以沉淀经验",
-   "parameters": {
-    "type": "object",
-    "properties": {}
-   }
-  }
- }
 ]

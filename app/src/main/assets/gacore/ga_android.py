@@ -286,6 +286,79 @@ class GenericAgentHandler(BaseHandler):
     
     _GUI_ACTIONS = ('tap', 'swipe', 'longpress', 'text', 'key', 'launch', 'back', 'home', 'wait')
 
+    _SEE_BUDGET_S = 90    # see() 自己的墙钟预算。视觉调用实测 15-46s, 而 code_run 默认只有 60s
+                          # —— 旧实现让 ask_vision 在 code_run 里跟脚本抢这 60s, 一轮最多一次,
+                          # 还要靠 4 个常量推导剩余。升为第一级工具后预算独立, 那套全删。
+
+    def do_see(self, args, response):
+        """看图问答(第一级工具, 不走 code_run)。
+
+        什么时候用: 画面是游戏/自绘 canvas/混淆页(没有可用控件树, observe() 的定位通道为空)、
+        或目标不在 obs 里、或需要理解画面语义。普通控件树上的图标/按钮/输入框已经在 obs 里,
+        不要为"某个图标在哪"打 see() —— 本地 31ms, 视觉 15-46s。
+
+        want='point' 拿坐标(固定问句 + 只认 0-1000 + 拒百分号, 可直接传 gui_act 的 rel);
+        want='text' 拿自由文本。roi 送锚带名('title'/'status'/'navbar')或 0-1000 四元组,
+        裁到局部像素量降 3-6 倍, 单次从 25-50s 降到 8-15s。失败永不要求重试。"""
+        import json
+        import time
+        import droid
+        q = str(args.get('question') or '').strip()
+        if not q:
+            return StepOutcome('[Error] see needs question (what you want to know about the screen)',
+                               next_prompt='\n')
+        want = str(args.get('want') or 'text')
+        if want not in ('text', 'point'):
+            return StepOutcome("[Error] see want must be 'text' or 'point'", next_prompt='\n')
+        try:
+            box = droid._resolve_roi(args.get('roi')) if args.get('roi') else (0, 0, geom.NORM, geom.NORM)
+        except ValueError as e:
+            return StepOutcome('[Error] see roi: %s' % e, next_prompt='\n')
+        try:
+            max_pixels = int(args['max_pixels']) if args.get('max_pixels') else None
+        except (TypeError, ValueError):
+            return StepOutcome('[Error] see max_pixels must be an int', next_prompt='\n')
+        backend = droid.active_backend()
+        if backend is None:
+            return StepOutcome(json.dumps({
+                'ok': False, 'reason': 'no_backend',
+                'hint': '当前任务没有可用模型后端, 视觉不可用。改用 obs 里的本地图标框或 droid.ocr() '
+                        '读屏; 确需看图请在任务页选择支持图片的模型。'}, ensure_ascii=False),
+                next_prompt='\n')
+        if droid._vision_cap(backend) == 'no_vision':
+            return StepOutcome(json.dumps({
+                'ok': False, 'reason': 'model_no_vision',
+                'model': droid._backend_id(backend)[:80],
+                'hint': '当前模型不支持图片, 视觉通道已停用。改用 obs 里的本地图标框或 droid.ocr() '
+                        '读屏; 确需看图请换个支持图片的模型(切模型会自动解除)。'}, ensure_ascii=False),
+                next_prompt='\n')
+        t0 = time.time()
+        try:
+            img = droid.shot()
+            if want == 'point':
+                text = droid.ask_vision(img, droid._ASK_POINT_PROMPT % q, roi=box,
+                                        timeout=self._SEE_BUDGET_S, max_pixels=max_pixels)
+                cx, cy = droid._parse_point(text)
+                rx1, ry1, rx2, ry2 = box
+                rx = int(round(rx1 + cx / float(geom.NORM) * (rx2 - rx1)))
+                ry = int(round(ry1 + cy / float(geom.NORM) * (ry2 - ry1)))
+                out = {'ok': True, 'rx': rx, 'ry': ry}
+            else:
+                out = {'ok': True,
+                       'answer': droid.ask_vision(img, q, roi=box, timeout=self._SEE_BUDGET_S,
+                                                  max_pixels=max_pixels)}
+        except Exception as e:
+            return StepOutcome(json.dumps({
+                'ok': False, 'reason': 'call_failed',
+                'error': '%s: %s' % (type(e).__name__, str(e)[:200]),
+                'hint': '不要重试 see。改用 obs 里的本地图标框或 droid.ocr() 读屏; 确需看图检查'
+                        '当前模型是否支持图片, 或 ask_user。'}, ensure_ascii=False),
+                next_prompt='\n')
+        out.update({'ms': round((time.time() - t0) * 1000, 1),
+                    'model': droid._backend_id(backend)[:80]})
+        return StepOutcome(json.dumps(out, ensure_ascii=False),
+                           next_prompt=self._get_anchor_prompt(skip=args.get('_index', 0) > 0))
+
     def _resolve_point(self, args, key, rel_key):
         """gui_act 坐标: `point`=像素, `rel`=0-1000。两个具名字段二选一, 不猜单位。
 

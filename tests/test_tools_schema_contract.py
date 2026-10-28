@@ -120,5 +120,47 @@ class GuiActSchemaContractTest(unittest.TestCase):
             self.assertNotIn('only for multi-step logic or non-GUI work', desc, name)
 
 
+class SeeSchemaContractTest(unittest.TestCase):
+    """tools_schema 的 see 与 do_see 的一致性。
+
+    同类漂移在 gui_act 上出过三次(见本文件 docstring), see 是新加的第一级工具, 照同一套锁:
+    schema 宣传的参数实现必须真的读, 否则要么静默忽略, 要么整轮作废。"""
+
+    def _see(self, name):
+        path = CORE / 'assets' / name
+        for tool in json.loads(path.read_text(encoding='utf-8')):
+            if tool.get('function', {}).get('name') == 'see':
+                return tool['function']
+        raise AssertionError('see not found in %s' % name)
+
+    def test_see_exists_in_both_schemas(self):
+        for name in ('tools_schema.json', 'tools_schema_cn.json'):
+            self.assertIn('see', [t['function']['name'] for t in
+                                  json.loads((CORE / 'assets' / name).read_text(encoding='utf-8'))], name)
+
+    def test_declared_params_are_all_read_by_the_implementation(self):
+        """schema 里宣传的每个参数, do_see 必须真的从 args 里取。"""
+        import inspect
+        import ga_android
+        src = inspect.getsource(ga_android.GenericAgentHandler.do_see)
+        for name in ('tools_schema.json', 'tools_schema_cn.json'):
+            params = self._see(name)['parameters']
+            for prop in params['properties']:
+                self.assertIn("'%s'" % prop, src,
+                              '%s: schema 宣传了 %s 但 do_see 不读它' % (name, prop))
+            self.assertEqual(params['required'], ['question'], name)
+
+    def test_description_states_the_local_channels_come_first(self):
+        """必须讲明"普通页用 obs, 别为图标打 see()"——否则每步都多付一次 15-46s。"""
+        for name in ('tools_schema.json', 'tools_schema_cn.json'):
+            desc = self._see(name)['description']
+            self.assertIn('obs', desc, name)
+
+    def test_description_forbids_retrying_after_failure(self):
+        for name in ('tools_schema.json', 'tools_schema_cn.json'):
+            desc = self._see(name)['description']
+            self.assertIn('retry' if name.endswith('tools_schema.json') else '重试', desc, name)
+
+
 if __name__ == '__main__':
     unittest.main()
