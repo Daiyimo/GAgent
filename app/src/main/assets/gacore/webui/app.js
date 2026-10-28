@@ -3444,7 +3444,8 @@ function delModel(id){if(runLocked())return;
   const fi=favs.indexOf(editing.id+'::'+id);if(fi>=0){favs.splice(fi,1);LS.set('favs',favs)}
   persistEditing();renderModelList()}
 function setDefaultModel(id){if(runLocked())return;editing.model=id;
-  if(editingId&&active&&active.pid===editing.id){active={pid:editing.id,model:id};LS.set('active',active)}
+  if(editingId&&active&&active.pid===editing.id){active={pid:editing.id,model:id};LS.set('active',active);
+    sendLlmSwitch(editing.name,id,{noAbort:true});}   // 只写持久层不够: 不发 /llm 则当前会话 backend 不切, 主对话与 vision 都留旧型号直到下次冷启
   persistEditing();renderModelList();toast(t('t_defaultModel')+id)}
 /* 1M 上下文 = model id 尾缀 [1m](桌面同约定, llmcore 发送时剥后缀+context-1m beta 头)。唯一写入点=此开关; 展示一律 dispModel+徽章。 */
 function is1m(id){return /\[1m\]$/i.test(id||'')}
