@@ -27,21 +27,42 @@
             "items": {
               "type": "number"
             },
-            "description": "[x,y] in PIXELS — same unit as dump()/look()/obs x/y; copy straight through"
+            "description": "[x,y] 设备像素 — 与 dump()/look()/obs 的 x/y 同单位, 直接照抄; 附图上的位置不要填这里, 用 img_point"
+          },
+          "img_point": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "[x,y] 本轮附图上的像素 — 我在内部按 图→屏幕 比例换算成设备像素; 从每轮消息里那张截图量出来的位置填这里"
           },
           "point1": {
             "type": "array",
             "items": {
               "type": "number"
             },
-            "description": "swipe start, PIXELS (or use rel1)"
+            "description": "swipe start, device pixels (or use rel1)"
+          },
+          "img_point1": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "swipe 起点, 附图上的像素(我换算; 也可用 rel1/point1)"
           },
           "point2": {
             "type": "array",
             "items": {
               "type": "number"
             },
-            "description": "swipe end, PIXELS (or use rel2)"
+            "description": "swipe end, device pixels (or use rel2)"
+          },
+          "img_point2": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "swipe 终点, 附图上的像素(我换算; 也可用 rel2/point2)"
           },
           "ms": {
             "type": "integer",

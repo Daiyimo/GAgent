@@ -366,6 +366,35 @@ class GenericAgentHandler(BaseHandler):
                           # 是供应商卡住或整屏大图, 继续等只会把一次失败放大成 40-60s。超时后
                           # 让模型改走本地 observe/ocr, 而不是在同一屏上反复重试。
 
+    def _coord_space_hint(self, args, out):
+        """点了但屏幕没变时, 顺手排除一个高频成因: 坐标是从附图量的, 却填进了 `point`。
+
+        只在 diff≈0 时说话 —— 那种情况"原样再点一次"本来也没有信息增益, 而附图坐标当设备像素
+        用会整体缩到左上(真机 1200x2670 屏 / 647x1440 图 = 缩到 0.539 倍), 表现正是"点了没反应"。
+        不改落点、不猜单位: 只把"你是不是从图上量的"这个问题摆出来, 并给出 img_point 写法。
+        """
+        wh = getattr(self, '_attached_img_wh', None)
+        if not wh:
+            return None
+        pct = self._parse_diff_pct(out)
+        if pct is None or pct >= 0.2:
+            return None
+        pv = args.get('point')
+        if not isinstance(pv, (list, tuple)) or len(pv) != 2:
+            return None
+        try:
+            px, py = float(pv[0]), float(pv[1])
+        except (TypeError, ValueError):
+            return None
+        iw, ih = wh
+        if not (0 <= px <= iw and 0 <= py <= ih):
+            return None
+        sw, sh = getattr(self, '_attached_screen_wh', None) or (0, 0)
+        return ('point=%r 落在本轮附图尺寸 %dx%d 之内, 而屏幕是 %dx%d —— diff≈0 说明这次点没有生效。'
+                '如果这个坐标是从附图(那张缩过的截图)上量的, 改传 img_point=%r, 换算由我做; '
+                '如果它来自 obs/ocr 的 x/y, 那单位没错, 换个目标或先 observe 看清当前页。'
+                % ([px, py], iw, ih, sw, sh, [px, py]))
+
     @staticmethod
     def _parse_diff_pct(out):
         """把动作结果里的 'diff': '83.904%' 解析成 83.904; 解析不了返回 None(宁可不判, 也不猜)。"""
@@ -556,16 +585,19 @@ class GenericAgentHandler(BaseHandler):
         确需点状态栏(极少数)走 code_run 的 droid.tap(x,y), 那条路没有这道门。"""
         import droid
         w, h = droid.screen()
+        img_key = 'img_' + key
         has_px = args.get(key) is not None
         has_rel = args.get(rel_key) is not None
-        if has_px and has_rel:
-            raise ValueError('%s (pixels) and %s (0-1000) are the same coordinate in two '
-                             'units; pass only one' % (key, rel_key))
-        if not has_px and not has_rel:
-            raise ValueError('%s needs point [x,y] in pixels (dump()/look()/obs x,y) or '
-                             '%s [x,y] in 0-1000 (ask_vision); screen is %dx%d'
-                             % (key, rel_key, w, h))
-        name = key if has_px else rel_key
+        has_img = args.get(img_key) is not None
+        if sum(1 for f in (has_px, has_rel, has_img) if f) > 1:
+            raise ValueError('%s/%s/%s are the same coordinate in three units; pass only one'
+                             % (img_key, key, rel_key))
+        if not (has_px or has_rel or has_img):
+            raise ValueError('%s needs %s [x,y] in the attached screenshot pixels, '
+                             'point [x,y] in device pixels (dump()/look()/obs x,y) or '
+                             '%s [x,y] in 0-1000 (see/ask_vision); screen is %dx%d'
+                             % (key, img_key, rel_key, w, h))
+        name = img_key if has_img else (key if has_px else rel_key)
         v = args[name]
         if not isinstance(v, (list, tuple)) or len(v) != 2:
             raise ValueError('%s must be [x, y], got %r' % (name, v))
@@ -573,6 +605,27 @@ class GenericAgentHandler(BaseHandler):
             a, b = float(v[0]), float(v[1])
         except (TypeError, ValueError):
             raise ValueError('%s must be two numbers, got %r' % (name, v))
+        if has_img:
+            # 附图坐标(in-image pixels) → 设备像素。为什么必须有这条路: 每轮附给主模型的
+            # 截图是缩放过的(长边 1440), 而 point/rel 分别是设备像素与 0-1000, 两者都不等于
+            # "这张图上的像素"。真机实证(run 1793267115, 屏幕 1200x2670 / 附图 647x1440):
+            # 模型照着提示"按图的像素给 point"给了 (334,270), 实际落到屏幕上 (334,270),
+            # 偏左/偏上 1.855 倍, y>1440 的下半屏根本点不到 —— 搜索之后每一步都在偏处点,
+            # 也就是"进了自绘页面就漂"。换算由代码做, 单位仍不猜(三选一, 只给一个)。
+            wh = getattr(self, '_attached_img_wh', None)
+            if not wh:
+                raise ValueError('%s needs a screenshot attached to this turn, but none was '
+                                 '(text-only session? vision off?) — use point (device pixels '
+                                 'from obs/ocr) or %s' % (img_key, rel_key))
+            iw, ih = wh
+            if not (0 <= a <= iw and 0 <= b <= ih):
+                raise ValueError('%s %r is outside the attached screenshot (%dx%d); read the '
+                                 'position off the image of this turn, or pass point/rel'
+                                 % (img_key, v, iw, ih))
+            sw, sh = getattr(self, '_attached_screen_wh', None) or (w, h)
+            x = int(round(a * float(sw) / float(max(1, iw))))
+            y = int(round(b * float(sh) / float(max(1, ih))))
+            return (max(0, min(sw - 1, x)), max(0, min(sh - 1, y)))
         if has_rel:
             return geom.to_px(a, b, w, h)
         if not (0 <= a < w and 0 <= b < h):
@@ -817,7 +870,8 @@ class GenericAgentHandler(BaseHandler):
                         # 会把定位失败伪装成一次成功粘贴。
                         return StepOutcome('[Error] gui_act text target failed: %s: %s'
                                            % (type(e).__name__, e), next_prompt='\n')
-                elif args.get('point') is not None or args.get('rel') is not None:
+                elif (args.get('point') is not None or args.get('rel') is not None
+                      or args.get('img_point') is not None):
                     try: anchor = self._resolve_point(args, 'point', 'rel')
                     except Exception: anchor = None
                 ret = droid.paste(val, point=anchor) if anchor is not None else droid.paste(val)
@@ -902,7 +956,8 @@ class GenericAgentHandler(BaseHandler):
                 # 发给主模型了, 再算一遍框是纯重复。留给模型自己看, 需要文字时它会用 look().
                 if self._session_takes_images():
                     out['obs_note'] = ('当前屏幕截图已附在本轮消息里(visual-only 页面, 本地不再出框): '
-                                       '直接按图里的位置给 point; 需要文字内容时用 code_run 的 look()/ocr')
+                                       '按图上的位置给 img_point=[x,y](图坐标, 我换算) 或 rel(0-1000); '
+                                       '图比屏幕小, 别在图坐标上直接填 point。需要文字时用 code_run 的 look()/ocr')
                 else:
                     # 这句以前无条件说"已附": 真机 25 轮里说了 8 次, 实际一帧都没发出去(会话是文本
                     # 协议), 于是模型既不换定位通道也不再质问画面, 只在 see/ocr 之间来回。话术必须与
@@ -958,6 +1013,13 @@ class GenericAgentHandler(BaseHandler):
             self._see_failed_digest = None   # 动作后允许对当前画面重新做一次视觉复核
             self._finish_prompted = False    # 新动作后的停止仍要先问一次 finish_task
             self._no_tool_retries = 0        # 动作推进后重置短回复重试预算
+        if act in ('tap', 'longpress', 'swipe'):
+            try:
+                _ch = self._coord_space_hint(args, out)
+                if _ch:
+                    out['coord_hint'] = _ch
+            except Exception:
+                pass
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         return StepOutcome(json.dumps(out, ensure_ascii=False), next_prompt=next_prompt)
 
@@ -1024,6 +1086,10 @@ class GenericAgentHandler(BaseHandler):
         不是每步多调一次视觉模型。see() 仍留给"这屏是什么意思"这类一次性提问。
         """
         mode = self._vision_mode()
+        # 每轮先清"这一轮的附图尺寸": 它决定 img_point 能不能换算、换算比例是多少。
+        # 留着上一轮的尺寸比不留更糟 —— 会被当成这轮的像素基准。
+        self._attached_img_wh = None
+        self._attached_screen_wh = None
         if mode == 'off' or not self._session_takes_images():
             self._vision_in_turn_attached = False
             return None
@@ -1034,13 +1100,30 @@ class GenericAgentHandler(BaseHandler):
             import droid
             b64, (w, h) = droid.shot_frame_b64(max_side=self._VISION_MAX_SIDE,
                                                quality=self._VISION_QUALITY)
+            try:
+                sw, sh = droid.screen()
+            except Exception:
+                sw, sh = (0, 0)
         except Exception as exc:
             self._vision_in_turn_attached = False
             return [{"type": "text", "text": "[当前屏幕截图不可用: %s]" % type(exc).__name__}]
         self._vision_in_turn_attached = True
+        self._attached_img_wh = (int(w), int(h))
+        self._attached_screen_wh = (int(sw), int(sh)) if sw and sh else None
+        # 提示词必须写清"图"和"屏幕"是两个不同的像素基准: 真机 run 1793267115 的屏幕是
+        # 1200x2670, 附图是 647x1440; 旧文案"坐标按这张图的像素给 point"让模型把图坐标当设备
+        # 像素填进 point, 于是搜索之后每一步都点在偏左/偏上 1.855 倍的位置(y>1440 的下半屏
+        # 根本点不到)。改成三个具名单位, 并明确"图坐标用 img_point, 我来换算"。
+        if sw and sh:
+            note = ('当前屏幕截图（%dx%d，由 %dx%d 设备像素按长边缩放而来）。'
+                    'gui_act 坐标三选一: img_point=[x,y] 用这张图上的像素(我按比例换算); '
+                    'point=[x,y] 用设备像素(obs/ocr 的 x/y); rel=[rx,ry] 用 0-1000(see 的 rx/ry)。'
+                    % (w, h, sw, sh))
+        else:
+            note = ('当前屏幕截图（%dx%d）。像素基准与设备屏幕不同: 图上位置请用 '
+                    'img_point=[x,y](我换算), 设备像素用 point, 0-1000 用 rel。' % (w, h))
         return [
-            {"type": "text", "text": "当前屏幕截图（%dx%d 像素；坐标按这张图的像素给 gui_act 的 point）。"
-                                     % (w, h)},
+            {"type": "text", "text": note},
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
         ]
 

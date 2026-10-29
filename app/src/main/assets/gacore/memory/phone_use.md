@@ -4,10 +4,10 @@
 
 | 你要做什么 | 用什么 | 坐标从哪来 |
 | --- | --- | --- |
-| **操作屏幕**（点/滑/输入/启动/等待） | `gui_act` | 上一条结果的 `obs`：`x/y` 是像素原样传 `point`，`rx/ry` 是 0-1000 原样传 `rel`；有可见文字时优先传 `target`；有明确短文本时可传 `expect` 做正向确认，未命中不算动作失败 |
+| **操作屏幕**（点/滑/输入/启动/等待） | `gui_act` | 上一条结果的 `obs`：`x/y` 是像素原样传 `point`，`rx/ry` 是 0-1000 原样传 `rel`；本轮消息里附了截图时，**图上的位置填 `img_point`**（图是缩放过的，`point` 只吃设备像素）；有可见文字时优先传 `target`；有明确短文本时可传 `expect` 做正向确认，未命中不算动作失败 |
 | **在已登记入口的 App 里搜索**（微信/小程序等） | `gui_act action='search_app' value='要搜的名字'` | 不用给坐标：它自己「拉起 App → 点搜索入口 → 粘贴 → 回读」，返回 `steps` 里每一步的判据（`fg_ok`/`entry diff`/`hit`）。入口路径是固定路径，已固化在代码里；**搜索结果列表仍要你自己定位**（`obs` 或 `see(want='point')`） |
 | **看本地结构/精确文字**（普通页面） | `observe` / `ocr` | `observe` 的 `x/y` 直接当 `point`；`ocr` 的 `x/y` 也可直接当 `point`。不要为已知控件再调 `see` |
-| **看画面语义**（游戏盘面 / 自绘 canvas / 混淆页 / 本地确实没有可用框） | `see(question, want='point'\|'text', roi=?)` | `want='point'` 直接给 `rx,ry`，原样传 `gui_act` 的 `rel`；当前轮已附图时直接读图，不要重复 `see(text)` |
+| **看画面语义**（游戏盘面 / 自绘 canvas / 混淆页 / 本地确实没有可用框） | `see(question, want='point'\|'text', roi=?)` | `want='point'` 直接给 `rx,ry`，原样传 `gui_act` 的 `rel`；当前轮已附图时直接读图（图上的位置填 `img_point`，别填 `point`），不要重复 `see(text)` |
 | **收尾**（做过实际动作） | `finish_task(status, result, evidence)` | 完成或被登录/权限/风控阻塞都用它；计划、下一步、工具 XML 不算完成 |
 | **其它**（多步逻辑、非 GUI 工作） | `code_run` | 观察优先用 `observe`/`ocr`，不要 `print(droid.observe())` 全量 dict |
 
@@ -212,7 +212,7 @@ res = droid.recipe_run({'app': '腾讯新闻'})
 | `shot()` | BGR 像素数组，供视觉函数使用；**`print(shot())` 只会输出数字，模型看不到图片** |
 | `look(conf=0.25, path=None, roi=None, cache=True, *, label=None)` | `observe()` 的薄封装，只返回 `src='yolo'` 的项（形状与历史一致：`label/cls/bbox/x/y/rx/ry`）。`label` 按 OCR 文字子串筛选全部匹配项；不自动点击。新代码用 `observe()`，它还带回控件树项、`kind` 与降级原因 |
 | **`see(question, want='text'\|'point', roi=?, max_pixels=?)`**（第一级工具，见 §0.-1） | 看图问答。默认复用**任务页当前选择的模型**（多模态，切换模型自动跟随），无需单独配置；该模型不支持图片时返回 `ok=false, reason='model_no_vision'` 并告知已转本地通道，**不计熔断不重试**。`want='point'` 返回 `rx,ry`（0-1000，已从裁剪框映射回整屏）；`want='text'` 返回自由文本。`roi` 可传 `'title'/'status'/'navbar'`（实测系统 UI 锚带）或 `'top'/'upper'/'middle'/'lower'/'bottom'`，也可传 0–1000 四点。code_run 内仍可用 `droid.ask_vision(...)`，同一后端同一预算 |
-| **坐标单位（全系统只有两条）** | `x/y` = **像素**：`dump()`/`look()`/`find()`/`obs` 给的 x/y 和 `tap(x,y)` 收的都是它，**照抄即可，不要换算**。`rx/ry` = **0–1000 归一化**（左上原点，x 右 y 下）：`obs`/`look()` 每项都带，`see(want='point')` 也只回答这个。`gui_act` 的 `point` 吃像素、`rel` 吃 0–1000，每个点只能给一个。**绝不要自己把一种换算成另一种**：像素被当成归一化会偏出几百像素且不报错、没有 hint，你只会看到 diff=0 然后反复重点 |
+| **坐标单位（全系统只有三条，每个点只给一个）** | `x/y` = **设备像素**：`dump()`/`look()`/`find()`/`obs` 给的 x/y 和 `tap(x,y)` 收的都是它，**照抄即可**。`rx/ry` = **0–1000 归一化**：`obs`/`look()` 每项都带，`see(want='point')` 也只回答这个。**`img_point` = 本轮附图上的像素**（图按长边 1440 缩过，比屏幕小得多）：从每轮消息里那张截图量出来的位置只能填它，代码按 图→屏幕 比例换算；附图尺寸写在那轮消息的第一行，屏幕尺寸在 `obs` 的 `screen` 里。`gui_act` 的 `point` 吃设备像素、`rel` 吃 0–1000、`img_point` 吃图坐标，三选一。**绝不要自己把一种换算成另一种**：像素被当成归一化、图坐标被当成设备像素，都会偏出几百到上千像素且不报错，你只会看到 diff≈0 然后反复重点（真机 2026-10-29：647×1440 的附图当 1200×2670 用，搜索之后每一步都偏左/偏上 1.86 倍） |
 | `tap(x,y)` / `swipe(x1,y1,x2,y2,dur=300)` | 使用当前屏幕像素坐标；屏幕尺寸/方向改变后重新观察；可能返回 `recovered/rejected/aborted`（循环守卫，见 §0.5-7） |
 | `tap_rel(rx, ry)` | 0–1000 归一化坐标（左上原点，x 右 y 下），按当帧 `screen()` 换算成像素后走 `tap`。仅当目标**本身就是相对区域**（棋盘中心/屏幕四角/比例位）且 `look()`/`dump()` 均无目标时的最后一级；不是给识别不出的按钮猜坐标。与 `gui_act` 的 `rel` 走同一条换算（`geom.to_px`），两种写法落到同一像素 |
 | `scroll_view('down')` / `scroll_view('up')` | 推荐按浏览方向调用：down 看更下方内容，up 看更上方；也支持 left/right。默认 `frac=.35,dur=600`，保留相邻内容重叠 |
@@ -249,7 +249,7 @@ TypeError: missing 1 required positional argument: 'img'**（真机实证中过�
 - 页面上已有目标的历史记录/搜索建议/结果时，优先点该条（确认文字匹配）；点一次无反应就
   改用输入/`paste`，不要连续点历史项或空白搜索框。
 - **本轮带了"当前屏幕截图"时**：说明开启看图模式（`/vision`，微信等视觉型页面默认开）。直接按
-  图里的位置给 `point`（像素以消息里写的尺寸为准）；这类页面 `gui_act` 不再返回 `obs`，只回一句
+  图里的位置给 `img_point`（**这张图自己的像素**；图被按长边缩过，`point` 收的是设备像素，填错会整体偏一半以上，而且 y 大的地方干脆点不到）；这类页面 `gui_act` 不再返回 `obs`，只回一句
   `obs_note`——**不要**为此再去 `look()`/`dump()`，更不要调 `see()`。需要文字内容时才用 `look()`/`ocr`。
 - **敏感 App（微信等）**：`paste`/`gui_act text` 现在**一步做完**——写剪贴板 + 自动点可见的
   粘贴菜单或键盘剪贴板候选 + 回读确认，`hit=True` 才算真的上屏。把输入框中心一并给它

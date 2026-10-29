@@ -7,6 +7,27 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- Coordinates: the screenshot attached to each turn is a *scaled* image (long side
+  1440), but `point` means device pixels. The caption used to say "give `gui_act`
+  `point` in this image's pixels", so the model did exactly that: on a 1200x2670
+  screen with a 647x1440 image every tap landed at 1/1.86 of the intended position
+  (up and left), and anything below image row 1440 — the bottom 46% of the screen —
+  was unreachable. That is why `search_app` worked (no coordinates involved) and the
+  self-drawn page right after the search "drifted badly". There is now a third named
+  unit, `img_point` / `img_point1` / `img_point2` (pixels on the attached image), and
+  the conversion to device pixels happens in `_resolve_point`; `point`, `rel` and
+  `img_point` stay mutually exclusive so nothing is guessed from magnitudes. The
+  per-turn image size is recorded with the turn (and cleared when no image is
+  attached) because it is the conversion basis. A tap that changes nothing now also
+  asks the question out loud (`coord_hint`: those pixels fit inside the attached
+  image — did you measure them on it?), instead of only saying "small change".
+  坐标：每轮附的截图是缩放过的（长边 1440），而 `point` 是设备像素。旧提示词说"按这张
+  图的像素给 point"，模型照做——1200×2670 的屏幕配 647×1440 的图，每次点击都落在目标
+  位置的 1/1.86 处（偏左偏上），图第 1440 行以下（屏幕下 46%）点不到。所以 `search_app`
+  这类不给坐标的步骤很顺，搜索之后的自绘页面"漂得很厉害"。现在有第三个具名单位
+  `img_point`（附图上的像素），换算在 `_resolve_point` 里做；`point`/`rel`/`img_point`
+  三者互斥，仍然不从数值大小猜单位。附图尺寸随那一轮记录，没有附图时清空。"点了没变"时
+  还会多问一句（`coord_hint`：这几个坐标落在附图尺寸内，是不是从图上量的）。
 - Vision: whether a turn may carry a screenshot is now decided by a capability bit
   (`supports_images`) instead of a hard-coded list of class names. The old check
   compared `type(backend).__name__` against three names, which silently skipped

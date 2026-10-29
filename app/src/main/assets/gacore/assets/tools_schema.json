@@ -27,21 +27,42 @@
             "items": {
               "type": "number"
             },
-            "description": "[x,y] in PIXELS — same unit as dump()/look()/obs x/y; copy straight through"
+            "description": "device pixels — same unit as dump()/look()/obs x/y, copy straight through; do NOT put positions read off the attached screenshot here, use img_point"
+          },
+          "img_point": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "pixels on the screenshot attached to this turn — I convert image->screen for you; use this for anything you measure on that image"
           },
           "point1": {
             "type": "array",
             "items": {
               "type": "number"
             },
-            "description": "swipe start, PIXELS (or use rel1)"
+            "description": "swipe start, device pixels (or use rel1)"
+          },
+          "img_point1": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "swipe start, pixels on the attached screenshot (converted; or use rel1/point1)"
           },
           "point2": {
             "type": "array",
             "items": {
               "type": "number"
             },
-            "description": "swipe end, PIXELS (or use rel2)"
+            "description": "swipe end, device pixels (or use rel2)"
+          },
+          "img_point2": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "description": "swipe end, pixels on the attached screenshot (converted; or use rel2/point2)"
           },
           "ms": {
             "type": "integer",
