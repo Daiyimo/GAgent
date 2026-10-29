@@ -159,9 +159,12 @@ class RecipeListTest(_Bus):
         self._store().save(r)
         with patch.object(droid, '_recipe_store', return_value=self._store()):
             lst = droid.recipe_list()
-        self.assertEqual([x["recipe_id"] for x in lst], ["news.read"])
-        self.assertEqual(lst[0]["app"], "腾讯新闻")
-        self.assertEqual(lst[0]["steps"], 1)
+        # 内置 app_search 入口说明总在列表里(不依赖 memory/recipes 目录); 这里只对账存下来的配方
+        stored = [x for x in lst if not x.get('builtin')]
+        self.assertEqual([x["recipe_id"] for x in stored], ["news.read"])
+        self.assertIn("app_search:com.tencent.mm", [x["recipe_id"] for x in lst])
+        self.assertEqual(stored[0]["app"], "腾讯新闻")
+        self.assertEqual(stored[0]["steps"], 1)
 
     def test_unstable_recipes_hidden(self):
         r = recipe.validate_recipe({
@@ -173,4 +176,5 @@ class RecipeListTest(_Bus):
         store.record_escalation("news.read")
         store.record_escalation("news.read")
         with patch.object(droid, '_recipe_store', return_value=store):
-            self.assertEqual(droid.recipe_list(), [])
+            # 不稳定配方必须被隐藏; 内置入口不是配方文件, 不参与稳定性判定
+            self.assertEqual([x for x in droid.recipe_list() if not x.get('builtin')], [])

@@ -7,6 +7,59 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- Vision: whether a turn may carry a screenshot is now decided by a capability bit
+  (`supports_images`) instead of a hard-coded list of class names. The old check
+  compared `type(backend).__name__` against three names, which silently skipped
+  `NativeOAISession` — the class the device actually runs — because its conversion
+  path (`_msgs_claude2oai`) turns image blocks into `image_url` perfectly well; the
+  exemption it was given ("it stringifies every message into the prompt") describes
+  `ToolClient`/`BaseSession.ask`, not it. The cost was invisible: in a real 25-turn
+  session not a single image ever reached the model (0 occurrences of the image
+  caption, 0 image blocks in the transcript) while `obs_note` told the model
+  "screenshot attached" 8 times, so it kept hunting coordinates blind. `obs_note` and
+  `turn_content_blocks` now share one predicate, and the text-protocol case says the
+  truth ("this session cannot receive images") instead of lying.
+  看图与否改由能力位 `supports_images` 决定，不再比对类名白名单：旧判据漏掉了真机
+  实际在跑的 `NativeOAISession`（它的转换路径完全能带图，被排除的理由描述的其实是
+  `ToolClient`/`BaseSession.ask`）。代价是隐形的——真机 25 轮会话一帧图都没发出去，
+  而 `obs_note` 还说了 8 次"截图已附"。现在两处共用一个谓词，文本协议会话如实告知。
+- Search: `gui_act action='search_app'` performs "open the app → tap its search entry
+  → type the keyword → read it back" as one step with a per-step verdict. The entry
+  anchor is a 0-1000 relative coordinate (resolution independent); nothing in the
+  business flow is hard-coded. In the real session the model spent a `see` call
+  (16.3s) to rediscover the magnifier position that `phone_use.md` had already
+  recorded (returned rx=830, ry=79 — the documented value). `recipe_list()` also
+  advertises the builtin entry path now, and tolerates a missing `memory/recipes/`
+  directory instead of always returning an empty list.
+  `gui_act action='search_app'` 把"打开 App→点搜索入口→输入关键词→回读"做成一步，
+  每步都有判据。入口锚点是 0-1000 相对坐标（与分辨率无关），业务页坐标一个都不写死。
+  真机里模型为了让视觉重新发现文档里早写好的放大镜位置，花了一次 16.3s 的 see。
+- Actions: an action now counts as "proved" only by evidence about *that* action.
+  `launch` requires the foreground to be the requested package (it used to accept any
+  non-empty foreground, so a failed launch looked successful and skipped
+  `wait_stable`); the post-action frame is tagged with its package and is never
+  reused across apps; and a large screen change (diff ≥ 30%) re-takes a frame after a
+  short settle instead of reusing the pending one, which is a transition frame.
+  动作核验改成"只认这个动作自己的证据"：launch 要求前台确实是要拉起的包；动作后验帧
+  带包名，跨 App 不复用；大跳变（≥30%）重新截一帧而不是复用过渡帧。
+- Observability: read-only tools (`see`/`ocr`/`observe`) now write to the phone
+  ledger, and repeating the same channel on an unchanged screen raises `[OBS-GUARD]`.
+  The ledger only ever recorded actions, so a session that burned 11 `see` calls
+  (164s) circling the same screen was invisible to both `[LOOP-GUARD]` and the
+  every-7-turns strategy warning. `see` keeps the cheaper gates first (cache hit,
+  once-per-turn) and this one last, so a cached answer is never turned into a refusal.
+  只读工具（see/ocr/observe）开始记入账本，同屏同通道重复会给出 `[OBS-GUARD]`；
+  see 保留"缓存命中→每轮一次"这两档在前，本档在最后，避免把已有答案变成拒绝。
+- Anchor prompt: the original task statement is re-injected every turn as `[GOAL]`,
+  with `[DONE]` milestones and the last `[UNMET]` expectation. A real run drifted from
+  "look at the ladder inside the deck" to "find the ladder" before it had even entered
+  the deck, because `<history>` only keeps the last 30 lines (older lines fold into
+  summaries) and nothing restated the goal. Turns that made GUI actions without a
+  verifiable result also can no longer end silently — the model must call
+  `finish_task` (done/blocked) or `ask_user` instead of stopping with a checkpoint
+  note, which is how a 25-turn run ended with the user receiving nothing.
+  锚点每轮重注原始任务（`[GOAL]`+`[DONE]`+`[UNMET]`）；有 GUI 动作但没有可核验结果的
+  轮次不再允许静默退出，必须 `finish_task`(done/blocked) 或 `ask_user`。
 - Structured actions: `gui_act` now accepts pixel coordinates as well as 0-1000
   normalized ones — any value over 1000 can only be a pixel, since the normalized
   ceiling is exactly 1000, so the reading is unambiguous. A real 46-turn session

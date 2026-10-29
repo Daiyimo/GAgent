@@ -220,14 +220,28 @@ class HandlerVisionTest(unittest.TestCase):
                 patch('agent_settings.vision_in_turn', return_value='off'):
             self.assertFalse(self.h._vision_covers_screen())
 
-    def test_text_protocol_sessions_never_get_image_blocks(self):
-        """NativeOAISession 把消息 str() 进 prompt: 给它图块会把 base64 文本塞满上下文。"""
-        class TextProtocol:
-            pass
-        TextProtocol.__name__ = 'NativeOAISession'
+    def test_capability_bit_decides_instead_of_class_names(self):
+        """口径是能力位, 不是类名拼写。
+
+        曾按类型名白名单猜, 把 NativeOAISession 当成"文本协议"排除 —— 它其实经
+        _msgs_claude2oai 完全能带图; 真机 25 轮因此一帧图都没发出去, 而 obs_note 还说了 8 次
+        "已附图"。现在: 客户端/会话声明 supports_images 就听声明, 声明缺失才退回类名。"""
+        # 文本协议客户端(ToolClient): chat() 压成一整段字符串 → 不能带图
         self.h.parent = types.SimpleNamespace(
-            llmclient=types.SimpleNamespace(backend=TextProtocol()))
+            llmclient=types.SimpleNamespace(backend=object(), supports_images=False))
         self.assertFalse(self.h._session_takes_images())
+
+        # 原生协议客户端(NativeToolClient): 结构化块直发 → 能带图
+        self.h.parent = types.SimpleNamespace(
+            llmclient=types.SimpleNamespace(backend=object(), supports_images=True))
+        self.assertTrue(self.h._session_takes_images())
+
+        # 客户端没有这一位时看会话层: NativeOAISession 能带图(旧实现正是在这里判错)
+        class NativeOAISession:
+            pass
+        self.h.parent = types.SimpleNamespace(
+            llmclient=types.SimpleNamespace(backend=NativeOAISession()))
+        self.assertTrue(self.h._session_takes_images())
 
         class ChatCompletions:
             pass
@@ -236,7 +250,8 @@ class HandlerVisionTest(unittest.TestCase):
             llmclient=types.SimpleNamespace(backend=ChatCompletions()))
         self.assertTrue(self.h._session_takes_images())
 
-        self.h.parent = types.SimpleNamespace()          # 探测不到 → 放行(真机默认就是 LLMSession)
+        # 探测不到会话 → 放行(真机默认就是能带图的客户端)
+        self.h.parent = types.SimpleNamespace()
         self.assertTrue(self.h._session_takes_images())
 
 

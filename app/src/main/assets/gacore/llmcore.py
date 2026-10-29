@@ -633,6 +633,30 @@ def _to_responses_input(messages):
     return result
 
 
+def _image_block_to_url(b):
+    """把 claude 的 image 块转成 OpenAI 的 image_url 块(已是 image_url 原样返回); 非图片返回 None。"""
+    if not isinstance(b, dict):
+        return None
+    if b.get("type") == "image_url":
+        return b
+    if b.get("type") != "image":
+        return None
+    src = b.get("source") or {}
+    if src.get("type") == "base64" and src.get("data"):
+        return {"type": "image_url",
+                "image_url": {"url": "data:%s;base64,%s" % (src.get("media_type", "image/png"), src.get("data", ""))}}
+    if src.get("type") == "url" and src.get("url"):
+        return {"type": "image_url", "image_url": {"url": src["url"]}}
+    return None
+
+
+def _collect_image_blocks(content):
+    """从(可能是 list 的)工具结果内容里挑出图片块, 供上提到 user 消息。"""
+    if not isinstance(content, list):
+        return []
+    return [u for u in (_image_block_to_url(x) for x in content) if u]
+
+
 def _msgs_claude2oai(messages):
     result = []
     for msg in messages:
@@ -668,6 +692,12 @@ def _msgs_claude2oai(messages):
                     if isinstance(tr, list):
                         tr = "\n".join(x.get("text", "") for x in tr if isinstance(x, dict) and x.get("type") == "text")
                     result.append({"role": "tool", "tool_call_id": b.get("tool_use_id") or '', "content": tr if isinstance(tr, str) else str(tr)})
+                    # tool_result 里夹带的图片块不能留在 tool 角色里(多数 OpenAI 兼容端点对
+                    # tool 消息的 content 只收字符串, 直接 400), 上提到紧随其后的 user 消息;
+                    # 文本仍留在 tool 消息内, 语义不变。以前这里只挑 text 块, 图片被静默丢弃。
+                    _imgs = _collect_image_blocks(b.get("content"))
+                    if _imgs:
+                        result.append({"role": "user", "content": list(_imgs)})
                 elif b.get("type") == "image":
                     src = b.get("source") or {}
                     if src.get("type") == "base64" and src.get("data"):
@@ -680,6 +710,10 @@ def _msgs_claude2oai(messages):
 
 
 class BaseSession:
+    # 会话协议能否携带图片块(类属性, 供工具层判"这一轮能不能附图"):
+    # 基类走 ask(prompt: str) —— 整段消息被拼成一个字符串, 图块无处安放, 只能算 False。
+    # 子类按自己的传输协议覆盖: NativeClaudeSession/NativeOAISession 传的是结构化消息列表。
+    supports_images = False
     def __init__(self, cfg):
         self.api_key = cfg['apikey']
         self.api_base = cfg['apibase'].rstrip('/')
@@ -822,6 +856,8 @@ def _fix_messages(messages):
     return merged
 
 class NativeClaudeSession(BaseSession):
+    # 原生协议: raw_ask 收的是结构化消息列表, image 块原样进 payload —— 可以附图。
+    supports_images = True
     native_ua = "claude-cli/2.1.152 (native, cli)"
     def __init__(self, cfg):
         super().__init__(cfg)
@@ -943,6 +979,10 @@ def _keep_content_block(c):
 
 
 class ToolClient:
+    # 文本协议客户端: chat() 把 messages 压成 _build_protocol_prompt(...) 的一整段字符串再
+    # backend.ask(str) —— 图片块进不来（进来也只是一段 Python repr/base64 文本）。工具层据此
+    # 判"这一轮不要附图"。别再按"类型名白名单"猜: 那个口径已经把 NativeOAISession 判错过。
+    supports_images = False
     def __init__(self, backend, auto_save_tokens=True):
         self.backend = backend
         self.auto_save_tokens = auto_save_tokens
@@ -1193,6 +1233,9 @@ The reply body should first include a minimal one-line (<30 words) physical snap
 """.strip()
 
 class NativeToolClient:
+    # 原生协议客户端: chat() 把 messages 里的结构化块原样合并后交给 backend.ask(dict),
+    # 图片块(_keep_content_block 放行)能一路到达 payload —— 可以附图。
+    supports_images = True
     @staticmethod
     def _thinking_prompt(): return THINKING_PROMPT_EN if os.environ.get('GA_LANG') == 'en' else THINKING_PROMPT_ZH
     def __init__(self, backend):

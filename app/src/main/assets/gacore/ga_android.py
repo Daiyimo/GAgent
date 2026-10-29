@@ -289,6 +289,17 @@ class GenericAgentHandler(BaseHandler):
         self._see_failed_digest = None
         self._see_turn = -1
         self._memory_tip_shown = False
+        # 动作核验/目标重注需要的状态位(读的时候全走 getattr 兜底, 旧 session 复用不会崩)
+        self._last_act_ok = True      # 上一个 GUI 动作是否被后验证明生效
+        self._last_expect = None      # 上次没命中的期望 → 下一轮当 [UNMET] 展示
+        self._done_steps = []         # 已被动作验证过的里程碑 → 下一轮当 [DONE] 展示
+        self._silent_exit_warned = False
+        self._goal_text = ''
+        for _line in self.history_info:      # [USER] 行就是原始任务陈述: 每轮重注它, 防止子目标漂移
+            _s = str(_line)
+            if _s.startswith('[USER]'):
+                self._goal_text = _s[len('[USER]'):].strip(' :：')
+                break
 
     def _get_abs_path(self, path):
         if not path: return ""
@@ -348,11 +359,23 @@ class GenericAgentHandler(BaseHandler):
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         return StepOutcome(result, next_prompt=next_prompt)
     
-    _GUI_ACTIONS = ('tap', 'swipe', 'longpress', 'text', 'key', 'launch', 'back', 'home', 'wait')
+    _GUI_ACTIONS = ('tap', 'swipe', 'longpress', 'text', 'key', 'launch', 'back', 'home', 'wait',
+                    'search_app')
 
     _SEE_BUDGET_S = 20    # see() 自己的墙钟预算。视觉调用实测 15-46s; 超过 20s 的调用通常
                           # 是供应商卡住或整屏大图, 继续等只会把一次失败放大成 40-60s。超时后
                           # 让模型改走本地 observe/ocr, 而不是在同一屏上反复重试。
+
+    @staticmethod
+    def _parse_diff_pct(out):
+        """把动作结果里的 'diff': '83.904%' 解析成 83.904; 解析不了返回 None(宁可不判, 也不猜)。"""
+        d = (out or {}).get('diff')
+        if isinstance(d, str) and '%' in d:
+            try:
+                return float(d.split('%', 1)[0].rsplit(' ', 1)[-1])
+            except (TypeError, ValueError):
+                return None
+        return None
 
     _GUI_ACT_BUDGET_S = 120   # gui_act 硬墙钟。code_run 已有 timeout(默认 60s, 模型可传),
                               # see() 有自己的 90s; gui_act 曾是唯一没有上限的工具 —— 真机一次
@@ -461,6 +484,14 @@ class GenericAgentHandler(BaseHandler):
                     'hint': '本轮已经调用过一次 see; 先用已有结果或 observe/ocr 做下一步, '
                             '不要在同一轮再问一次。确需强制复核传 force=true。'
                 }, ensure_ascii=False), next_prompt='\n')
+            # 观察入账(账本以前只记动作): see 是最贵的通道(实测均值 20.8s、最高 66.2s), 而同一屏
+            # 反复问不同问句基本拿不到新信息。真机 25 轮里 11 次 see(合计 164s)一次都没被任何一档
+            # 拦住。放在缓存/同轮闸之后: 那两档是"答案已经在手"(零成本), 这里才是"要再烧一次 20s"。
+            _obs_hint = phone_ledger.ACTIVE.note_observation('see', digest, q)
+            if _obs_hint and not args.get('force'):
+                return StepOutcome(json.dumps({'ok': False, 'reason': 'repeated_observation',
+                                               'hint': _obs_hint}, ensure_ascii=False),
+                                   next_prompt=chr(10))
             self._see_turn = self.current_turn
             if want == 'point':
                 text = droid.ask_vision(img, droid._ASK_POINT_PROMPT % q, roi=box,
@@ -705,6 +736,33 @@ class GenericAgentHandler(BaseHandler):
         if act not in self._GUI_ACTIONS:
             return StepOutcome('[Error] gui_act unknown action %r, choose from: %s'
                                % (act, '/'.join(self._GUI_ACTIONS)), next_prompt='\n')
+        if act == 'search_app':
+            # 确定性搜索入口: 只固化"打开 App → 点搜索入口 → 输入关键词"这段固定路径(入口位置
+            # 是 App 自身标题栏的稳定锚点), 结果列表/详情这些业务页仍然必须当帧观测 ——
+            # geom.py:15-19 的边界没被破。真机实测: 模型为找放大镜花 16.3s 打一次 see()。
+            q = str(args.get('value') or args.get('query') or '').strip()
+            pkg = str(args.get('pkg') or args.get('package') or '').strip()
+            t0 = time.time()
+            try:
+                res = droid.app_search(pkg=pkg, query=q, wait=float(args.get('wait') or 2.0))
+            except Exception as e:
+                return StepOutcome(json.dumps({'ok': False, 'action': 'search_app',
+                                               'error': '%s: %s' % (type(e).__name__, str(e)[:180]),
+                                               'hint': '搜索入口原语失败; 改用 tap/text 手动一步步走。'},
+                                              ensure_ascii=False), next_prompt=chr(10))
+            res['action'] = 'search_app'
+            res['ms'] = int((time.time() - t0) * 1000)
+            self._gui_actions = getattr(self, '_gui_actions', 0) + 1
+            self._finish_prompted = False
+            self._no_tool_retries = 0
+            self._see_failed_digest = None
+            self._last_act_ok = bool(res.get('ok'))
+            if res.get('ok'):
+                self._done_steps = (getattr(self, '_done_steps', []) + ['已把 %r 输入搜索框' % q])[-6:]
+            else:
+                self._last_expect = '搜索入口未确认(%s)' % (res.get('hint') or '')[:40]
+            return StepOutcome(json.dumps(res, ensure_ascii=False),
+                               next_prompt=self._get_anchor_prompt(skip=args.get('_index', 0) > 0))
         if act in ('tap', 'longpress', 'swipe'):
             # 预观测: 动作落账要带「动作前」的观测, 才能从点所在节点推导 recipe locator。
             # 不喂它, gui_act 通道录出的配方 locator 全是 any, 回放第一步就升级(评审实证)。
@@ -781,7 +839,10 @@ class GenericAgentHandler(BaseHandler):
             elif act == 'launch':
                 ret = droid.launch(str(args.get('value') or ''))
                 out = {'action': act, 'fg': ret.get('fg')}
-                for k in ('screen', 'rot', 'orientation', 'fullscreen', 'shell', 'policy', 'hint'):
+                # fg_ok/frame_fresh 也要一起转发: 前者是"拉起是否真的到了目标包"的唯一判据
+                # (没有它, 上层只能拿 fg 的非空与否当成功), 后者说明这一帧是不是拉起后新截的。
+                for k in ('screen', 'rot', 'orientation', 'fullscreen', 'shell', 'policy', 'hint',
+                          'fg_ok', 'frame_fresh'):
                     # fullscreen/shell/hint 必须一起转发: Kotlin 在两条 shell 通道都不可用时**故意**
                     # 回一份自解释的降级载荷(fullscreen:false + 两条通道真值 + 怎么修)。丢掉它,
                     # stepOS 把第三方 uid 的启动改写成小窗, 而 ping() 仍报整屏几何——于是后续所有
@@ -806,7 +867,14 @@ class GenericAgentHandler(BaseHandler):
         # action_sleep 又请回来, 只是从 5s 变成 3s 且换成隐式发生。
         # wait 动作自己就是等待, 不重复等。
         changed = bool(out.get('orientation_changed'))
-        if act != 'wait' and not changed and not self._act_proved_change(act, out):
+        want_pkg = str(args.get('value') or '') if act == 'launch' else None
+        proved = self._act_proved_change(act, out, want_pkg)
+        pct = self._parse_diff_pct(out)
+        # 大跳变(diff ≥ 30%)说明这一下触发了页面切换/转场: 此时"变了"不等于"停稳了"。旧口径只要
+        # diff > 1.5% 就整段跳过等待, 模型拿到的就是过渡帧(真机 t21/t32 的 83.9%/77.6% 之后正是
+        # 这种帧) → 照过渡帧算坐标 → 越点越偏。现在大跳变仍然等, 只是先让它跑完再判稳定。
+        jump = pct is not None and pct >= self._TRANSITION_PCT
+        if act != 'wait' and not changed and not proved:
             try:
                 st = droid.wait_stable()
                 out['stable'] = st.get('stable')
@@ -814,6 +882,14 @@ class GenericAgentHandler(BaseHandler):
                     out['stable_uncertain'] = True
             except Exception:
                 pass
+        if jump:
+            # 不调 wait_stable(那会白睡满 3s, 也是 "skips redundant wait" 那条既有契约),
+            # 但也不再复用 pending 帧: 大跳变说明页面正在切换, 那一刻的帧是过渡帧。等一小段
+            # (截屏最小间隔量级)再重新截一张, 成本 0.35s, 换来模型看到的是到位后的画面。
+            time.sleep(self._SETTLE_AFTER_JUMP_S)
+        self._last_act_ok = bool(out.get('verified') is True or out.get('hit') is True
+                                 or out.get('expect_verified') is True
+                                 or (act == 'launch' and out.get('fg_ok')))
         # 动作后带回一份紧凑观测: 否则模型必须再花一整轮 code_run 去 dump()/look()
         # 才知道屏幕上现在有什么, "观察一轮→动作一轮"把每个动作的成本翻倍。
         # 真机实证: 39 轮任务里约 20 次是纯观察轮; 在供应商 p50 延迟 5~10s 的现状下,
@@ -824,14 +900,27 @@ class GenericAgentHandler(BaseHandler):
             if self._vision_covers_screen():
                 # 视觉型页面(微信等): 本地只剩 YOLO 一条腿, 每步 1.5~2.6s; 而本轮已经把整张图
                 # 发给主模型了, 再算一遍框是纯重复。留给模型自己看, 需要文字时它会用 look().
-                out['obs_note'] = ('当前屏幕截图已附在本轮消息里(visual-only 页面, 本地不再出框): '
-                                   '直接按图里的位置给 point; 需要文字内容时用 code_run 的 look()/ocr')
+                if self._session_takes_images():
+                    out['obs_note'] = ('当前屏幕截图已附在本轮消息里(visual-only 页面, 本地不再出框): '
+                                       '直接按图里的位置给 point; 需要文字内容时用 code_run 的 look()/ocr')
+                else:
+                    # 这句以前无条件说"已附": 真机 25 轮里说了 8 次, 实际一帧都没发出去(会话是文本
+                    # 协议), 于是模型既不换定位通道也不再质问画面, 只在 see/ocr 之间来回。话术必须与
+                    # 事实同源 —— 由 _session_takes_images() 决定说不说。
+                    out['obs_note'] = ('本会话收不到图片(文本协议), 这一屏没有图可看 —— 不要假设"已附图": '
+                                       '定位用 see(want="point", roi=...) 或 gui_act 的 rel/obs; '
+                                       '精确文字用 ocr; 中文输入用 text(必要时按 hint 补一次粘贴)。')
             else:
                 try:
                     # 动作后验已经截过一帧: 交给 observe 复用。再截一次不但多 ~0.16s,
                     # 还会撞 Android 的截屏最小间隔(code=3)再白等 0.35s。
                     pending = getattr(droid, 'take_pending_frame', None)
-                    out['obs'] = self._compact_obs(pending() if pending else None)
+                    if jump:
+                        # 大跳变=页面正在切换: 复用的 pending 帧极可能是过渡帧 → 重新截一张
+                        out['obs'] = self._compact_obs(droid.shot())
+                        out['frame_after_jump'] = True
+                    else:
+                        out['obs'] = self._compact_obs(pending() if pending else None)
                 except Exception:
                     pass
         # 通用动作后验: expect 只做正向确认, 未命中是软提示, 不是动作失败。
@@ -853,6 +942,17 @@ class GenericAgentHandler(BaseHandler):
                                '先看当前截图/obs 再决定, 不要只因此重试。' % (expect,))
                 if prev:
                     out['hint'] = prev + ' | ' + out['hint']
+        # 里程碑记账(必须在 expect 判完之后): 兑现的期望进 [DONE], 没兑现的进 [UNMET]。
+        # 这是"每轮重注目标"的原料 —— 以前锚点里只有折叠过的历史, 没有"到底完成了哪几步"。
+        if out.get('expect') and act != 'wait':
+            # expect 的确认发生在动作之后: 它也是证据, 补进"这个动作生效了"的口径里
+            if out.get('expect_verified') is True:
+                self._last_act_ok = True
+                self._done_steps = (getattr(self, '_done_steps', [])
+                                    + [str(out['expect'])[:40]])[-6:]
+                self._last_expect = None
+            elif out.get('expect_verified') is False:
+                self._last_expect = str(out['expect'])[:60]
         if act != 'wait':
             self._gui_actions = getattr(self, '_gui_actions', 0) + 1
             self._see_failed_digest = None   # 动作后允许对当前画面重新做一次视觉复核
@@ -865,6 +965,8 @@ class GenericAgentHandler(BaseHandler):
     # 全量 look() 常常 2~5K 字符, 这里封顶后约 800)
     _OBS_ITEMS = 12
     _OBS_LABEL = 24
+    _TRANSITION_PCT = 30.0        # diff ≥ 这个值 = 触发了页面切换/转场: "变了"不等于"停稳了"
+    _SETTLE_AFTER_JUMP_S = 0.35   # 大跳变后到重截一张的等待(转场动画量级; 不调 wait_stable)
     _OBS_RESULT_ITEMS = 16
 
     # 每轮附图: 长边 1440 + q70 ≈ 1.4k image token(真机 1200x2670 原图直发太贵)
@@ -892,14 +994,26 @@ class GenericAgentHandler(BaseHandler):
     def _session_takes_images(self):
         """当前 LLM 会话能不能吃图块。
 
-        文本协议会话(NativeOAISession, 把每条消息 str() 进 prompt)拿到图块会把它变成
-        几十万字符的 base64 文本——比不给图还糟。所以只对"消息就是结构化块"的会话放行;
-        探测不到会话时放行(真机默认就是 LLMSession)。"""
-        try:
-            backend = self.parent.llmclient.backend
-        except Exception:
-            return True
-        return type(backend).__name__ in ('LLMSession', 'ClaudeSession', 'NativeClaudeSession')
+        口径来自能力位, 不来自类名拼写: 会话来声明 supports_images(BaseSession=False,
+        NativeClaudeSession/NativeOAISession=True), 客户端来声明(NativeToolClient=True,
+        ToolClient=False)。旧实现按类型名白名单猜, 把 NativeOAISession 误判成"文本协议"
+        排除了 —— 它其实经 _msgs_claude2oai 能带图, 真机 25 轮里因此一帧图都没发出去。"""
+        parent = getattr(self, 'parent', None)
+        cli = getattr(parent, 'llmclient', None) if parent is not None else None
+        backend = getattr(cli, 'backend', None) if cli is not None else None
+        # 能力位优先: 客户端/会话自己声明能不能携带图片块(llmcore 的 supports_images)。
+        # 上一版按类型名白名单猜, 把 NativeOAISession 当成"文本协议"排除了 —— 它其实经
+        # _msgs_claude2oai 完全能带图。真机 25 轮因此一帧图都没发出去, 而 obs_note 还说了 8 次
+        # "截图已附"。判定口径必须来自声明, 不能来自类名拼写。
+        if cli is None:
+            return True       # 探测不到会话: 放行(真机默认就是能带图的客户端), 别把"不知道"当"不能"
+        cap = getattr(cli, 'supports_images', None)
+        if cap is None:
+            cap = getattr(backend, 'supports_images', None)
+        if cap is None:   # 老对象/测试替身没有这一位: 退回类型名, 但补上 NativeOAISession
+            return type(backend).__name__ in ('LLMSession', 'ClaudeSession', 'NativeClaudeSession',
+                                              'NativeOAISession')
+        return bool(cap)
 
     def turn_content_blocks(self):
         """给主模型这一轮消息附上"当前屏幕"图片块; 不需要时返回 None。
@@ -948,22 +1062,21 @@ class GenericAgentHandler(BaseHandler):
                 for i in res['items'][:self._OBS_ITEMS]]
 
     @staticmethod
-    def _act_proved_change(act, out):
+    def _act_proved_change(act, out, want_pkg=None):
         """动作自带后验是否已证明页面变了(此时再等页面稳定是纯浪费)。
         阈值用 phone_ledger.EVIDENCE_PCT(与账本同一口径): diff 超过它=产出新证据。
         ⚠️ tap/swipe 的 fg 只是"当前前台包名", 恒有——它不是变化证据。
         只有 launch 的 fg(目标包已在前台)才是。"""
-        if act == 'launch' and out.get('fg'):
-            return True
+        if act == 'launch':
+            fg = out.get('fg') or ''
+            # 只认"前台就是目标包": _wait_fg 超时返回的是最后一次前台(可能是桌面), 旧口径只判
+            # fg 非空 → 拉起失败也算"已到位" → 跳过等待 → 拿拉起之前那一帧算坐标。这正是
+            # "有时在拉起微信前就确定了位置"的来源。
+            return (fg == want_pkg) if want_pkg else bool(fg)
         if out.get('hit') is True:
             return True
-        d = out.get('diff')
-        if isinstance(d, str) and '%' in d:
-            try:
-                return float(d.split('%', 1)[0].rsplit(' ', 1)[-1]) > phone_ledger.EVIDENCE_PCT
-            except (TypeError, ValueError):
-                return False
-        return False
+        pct = GenericAgentHandler._parse_diff_pct(out)
+        return pct is not None and pct > phone_ledger.EVIDENCE_PCT
 
     def do_ask_user(self, args, response):
         question = args.get("question", "请提供输入：")
@@ -1039,6 +1152,15 @@ class GenericAgentHandler(BaseHandler):
                'items': items, 'notes': list(res.get('notes') or []),
                'needs_vision': bool(res.get('needs_vision')),
                'ms': res.get('ms')}
+        # 只读观察入账(以前账本只记动作): 同一屏反复 observe 也是空转, 而且 observe 是这三条
+        # 观察通道里最便宜的一条, 连着问两遍通常说明模型不知道该干什么了。
+        try:
+            _dg = hash(tuple((i.get('x'), i.get('y'), str(i.get('t') or '')[:16]) for i in items))
+        except Exception:
+            _dg = None
+        _obs_hint = phone_ledger.ACTIVE.note_observation('observe', _dg, 'observe(%d 项)' % len(items))
+        if _obs_hint:
+            out['obs_guard'] = _obs_hint
         if not items:
             out['hint'] = ('本地没有可用框; 只有需要定位/理解画面时才用 '
                            'see(want="point"/"text", roi=...), 不要反复 observe。')
@@ -1064,6 +1186,18 @@ class GenericAgentHandler(BaseHandler):
         try:
             img = droid.shot()
             H, W = img.shape[:2]
+            # 同屏去重 + 入账: do_ocr 以前既无缓存也无次数上限(see 有四道闸), 于是"该看图"时
+            # 模型会在 ocr 里反复兜圈子, 而且只读观察不进账本 → 循环守卫看不见。
+            try:
+                _dg = (hash(img[int(H * 0.04):, :].tobytes()), str(args.get('roi') or ''),
+                       str(args.get('min_conf') or ''))
+            except Exception:
+                _dg = None
+            _ocr_hint = phone_ledger.ACTIVE.note_observation('ocr', _dg, str(args.get('roi') or '全屏'))
+            if _ocr_hint and not args.get('force'):
+                return StepOutcome(json.dumps({'ok': False, 'reason': 'repeated_observation',
+                                               'hint': _ocr_hint}, ensure_ascii=False),
+                                   next_prompt=chr(10))
             roi = args.get('roi')
             if roi:
                 box = droid._resolve_roi(roi)
@@ -1241,6 +1375,20 @@ class GenericAgentHandler(BaseHandler):
                 "[System] 你已经做过 GUI 动作, 但本轮没有调用 finish_task。"
                 "若任务已完成, 调用 finish_task(status='done', result=<完整最终答案>, evidence=[...]); "
                 "若被登录/权限/风控阻塞, 用 status='blocked' 并写清原因; 否则继续执行。"))
+        # 最后一层兜底: 有 GUI 动作、没 finish_task、上一个动作也没被后验证明生效 —— 这时任何
+        # "看起来说完了"的文本都不是交付。真机 t33 只发了一段"多次点击套牌按钮失败"的 checkpoint
+        # 文本, agent_loop 见 next_prompt 为空就 CURRENT_TASK_DONE, 用户什么都没收到。只强制问一轮。
+        if self._needs_explicit_finish():
+            self._silent_exit_warned = True
+            yield "[Warn] Refusing silent exit: finish_task or ask_user first." + chr(10)
+            _why = ("上一步 GUI 动作没有被验证生效(没有 hit / expect_verified / fg_ok)"
+                    if not getattr(self, '_last_act_ok', True) else
+                    "你这一轮只写了文字, 没有把结果交付出去")
+            return StepOutcome({}, next_prompt=(
+                "[System] " + _why + ", 而你正准备结束 —— 用户会收到空结果。"
+                "二选一: (a) 已经拿到答案 → finish_task(status='done', result=<完整最终答案>, "
+                "evidence=[...]); (b) 还没拿到 → finish_task(status='blocked', "
+                "result=<做到哪一步、卡在哪>, evidence=[...]) 或 ask_user 说明需要什么。"))
         if getattr(self, '_gui_actions', 0) and _INCOMPLETE_RE.search(visible):
             self._no_tool_retries = getattr(self, '_no_tool_retries', 0) + 1
             yield "[Warn] Detected progress/plan text, not a finished task.\n"
@@ -1326,12 +1474,43 @@ class GenericAgentHandler(BaseHandler):
         flush()
         return "\n".join(parts[-70:])
 
+    def _needs_explicit_finish(self):
+        """有 GUI 动作却没调过 finish_task: 不许静默退出。
+
+        真机 t33 只输出了一段 checkpoint 文本("多次点击套牌按钮失败"), agent_loop 见 next_prompt
+        为空就判 CURRENT_TASK_DONE —— 用户那边什么都没有。命中条件刻意收窄到"最后一个动作没有
+        被验证": 干净的收尾仍走既有的"给一次 finish_task 机会"契约(test_agent_protocol_v2 锁着
+        "第二次允许结束"防死循环), 这里只补上它管不到的那一半 —— 动作没生效却当成做完了。
+        只强制问一次(_silent_exit_warned)。"""
+        return (bool(getattr(self, '_gui_actions', 0))
+                and not getattr(self, '_task_finished', False)
+                and not getattr(self, '_last_act_ok', True)
+                and not getattr(self, '_silent_exit_warned', False))
+
+    def _goal_block(self):
+        """每轮把"原始目标 / 已验证的里程碑 / 上次没兑现的期望"重注一遍(屏幕最前面)。
+
+        以前锚点里的历史是折叠过的(<earlier_context> 每组只留一行), 一旦 working memory 里写下
+        "去排行榜看", 原始目标"先点进牌组"就不再出现在上下文里 —— 子目标漂移是这么来的。
+        [UNMET] 那一行是软提示: 只提醒别假设它已经发生, 不强制重试动作。"""
+        goal = (getattr(self, '_goal_text', '') or '').replace(chr(10), ' ').strip()[:240]
+        done = '; '.join(str(x) for x in getattr(self, '_done_steps', [])[-4:])
+        unmet = getattr(self, '_last_expect', None)
+        out = ''
+        if goal:
+            out += chr(10) + '### [GOAL] ' + goal + chr(10)
+        if done:
+            out += '[DONE] ' + done[:240] + chr(10)
+        if unmet:
+            out += ('[UNMET] 上次期望的 %r 没有出现: 不要当成已经发生, 先核实现画面。' % (unmet,)) + chr(10)
+        return out
+
     def _get_anchor_prompt(self, skip=False):
         if skip: return "\n"
         h = self.history_info; W = 30
         earlier = f'<earlier_context>\n{self._fold_earlier(h[:-W])}\n</earlier_context>\n' if len(h) > W else ""
         h_str = "\n".join(h[-W:])
-        prompt = f"\n### [WORKING MEMORY]\n{earlier}<history>\n{h_str}\n</history>"
+        prompt = self._goal_block() + f"\n### [WORKING MEMORY]\n{earlier}<history>\n{h_str}\n</history>"
         prompt += f"\nCurrent turn: {self.current_turn}\n"
         if self.working.get('key_info'): prompt += f"\n<key_info>{self.working.get('key_info')}</key_info>"
         if self.working.get('related_sop'): prompt += f"\n有不清晰的地方请再次读取{self.working.get('related_sop')}"

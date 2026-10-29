@@ -24,6 +24,7 @@ class GuiActSchemaContractTest(unittest.TestCase):
         'tap': 'tap', 'longpress': 'longpress', 'swipe': 'swipe', 'text': 'paste',
         'key': 'key', 'launch': 'launch', 'back': 'back', 'home': 'home',
         'wait': 'wait_stable',
+        'search_app': 'search_app',
     }
 
     def _schema(self, name):

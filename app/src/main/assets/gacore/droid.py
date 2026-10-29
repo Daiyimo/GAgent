@@ -602,7 +602,7 @@ def _apply_guard(rec, guard, label):
 
 
 _LAST_TOUCH = {"x": None, "y": None, "ts": 0.0}
-_PENDING_FRAME = {"img": None, "ts": 0.0}
+_PENDING_FRAME = {"img": None, "ts": 0.0, "pkg": ""}   # pkg=截这帧时的前台包名(跨 App 不许复用)
 
 # Android 对同一窗口的 takeScreenshot 有最小间隔: 抢跑必回 code=3, shot() 只能 sleep(.35) 重截。
 # 动作后取帧的最早时刻按这个常数排, 不靠猜。
@@ -623,15 +623,21 @@ def last_touch(max_age=120.0):
 
 def _stash_frame(img):
     """把动作后已经截好的帧交给 _compact_obs 复用: 一次动作只该截一次后验帧。"""
-    _PENDING_FRAME.update(img=img, ts=time.time())
+    _PENDING_FRAME.update(img=img, ts=time.time(), pkg=_fg())   # 打包时前台是谁, 这帧就是谁的画面
 
 
 def take_pending_frame(max_age=2.0):
     """取走动作后暂存的帧(一次性)。过期返回 None —— 旧帧会喂给模型一份过期画面。"""
     img, ts = _PENDING_FRAME["img"], _PENDING_FRAME["ts"]
+    pkg = _PENDING_FRAME.get("pkg") or ""
     _PENDING_FRAME["img"] = None
     if img is None or time.time() - ts > max_age:
         return None
+    if pkg:                             # 只在有归属时才去问前台(省一次 ping)
+        now = _fg()
+        if now and now != pkg:          # 前台已经换了 App: 这帧不属于当前屏, 复用=错画面
+            _track("droid_frame_cross_app", {"from": pkg[:40], "to": now[:40]})
+            return None
     return img
 
 
@@ -2114,6 +2120,12 @@ def launch(pkg, wait=1.0):
     # 免adb启动app。敏感 App(nofloat 策略)不起 GA 悬浮窗并收起已有悬浮窗: overlay 是 App 可观测的"自动化工具在场"信号(见 SENSITIVE_APPS 注释)
     nofloat = bool(SENSITIVE_APPS.get(pkg, {}).get("nofloat"))
     ret = _act(op="launch", pkg=pkg, nofloat=nofloat); ret["fg"] = _wait_fg(pkg, wait)
+    # 只认"前台真的是目标包名": _wait_fg 超时返回的是**最后一次**前台(可能是桌面 com.miui.home),
+    # 旧代码只判 fg 非空就把拉起当成功, 接着跳过 wait_stable 并用拉起前的帧算坐标。
+    ret["fg_ok"] = bool(ret["fg"] and ret["fg"] == pkg)
+    if not ret["fg_ok"]:
+        ret["hint"] = ("拉起未确认: 前台是 %r, 不是目标包 %r。不要在这一屏上算坐标 —— 先 "
+                       "gui_act action='wait' 或重新 launch, 再重新观察。" % (ret["fg"], pkg))
     try:
         p = ping()
         w, h, rot = int(p.get('w') or 0), int(p.get('h') or 0), int(p.get('rot') or 0)
@@ -2122,8 +2134,105 @@ def launch(pkg, wait=1.0):
         pass
     if nofloat:
         ret["policy"] = "sensitive: visual-only; overlay follows user preference" + (", act=locked(零注入, 见 droid.sensitive_status())" if SENSITIVE_APPS[pkg].get("act") == "locked" else "")
+    # 拉起后必须重生一帧: launch 自己不产生后验帧, _PENDING_FRAME 里可能还躺着"拉起之前"那一屏,
+    # 谁复用它谁就在照旧画面算坐标(真机 t2 launch 之后 obs 给的就是旧帧)。
+    try:
+        time.sleep(_SHOT_MIN_GAP_S)     # 跨过截屏最小间隔, 否则必撞 code=3 再等 .35s
+        _stash_frame(shot())
+        ret["frame_fresh"] = True
+    except Exception:
+        ret["frame_fresh"] = False      # 截不到就明确说没有, 让上层重新 shot(), 不装成有帧
     _trace("launch", args={"pkg": pkg}, result={"pkg": ret.get("fg") or pkg})
     return ret
+# ---------------- App 入口原语: 固化"入口路径", 不固化业务页 ----------------
+# 只固化入口路径(打开 App → 点搜索入口 → 输入关键词并回读), 业务页坐标仍必须当帧观测。
+# 为什么这些可以写死: 它们是 App 自己标题栏的稳定锚点(用 0-1000 相对坐标, 与分辨率无关),
+# 属于高频任务入口; 实测值来自 memory/phone_use.md §0.4 的真机记录。
+# 这不撞 geom.py:15-19 的红线 —— 那条禁止的是"把 App 特有位置塞进通用几何层", 而这里是
+# App 自己的入口表, 仍在 App 这一层; 通用接口缺陷仍然只能靠当帧观测兜。
+APP_ENTRY = {
+    # search_rel: 标题栏搜索入口中心的 0-1000 相对坐标(微信主页实测 996,215 @1200x2670 → 830,79)
+    "com.tencent.mm": {"label": "微信", "search_rel": (830, 79)},
+}
+
+
+def entry_hint(pkg=""):
+    """该 App 有没有固定入口路径(供 observe/提示用); 没有返回 {}。"""
+    return dict(APP_ENTRY.get(pkg or (_fg() or ""), {}) or {})
+
+
+def app_search(pkg="com.tencent.mm", query="", wait=2.0):
+    """确定性"打开 App → 搜关键词": 一步替掉 模型 see(均值 20.8s)→tap→text 的 3~5 轮。
+
+    每一步都有判据, 任一步不成立就带着原因停下(不做"看起来成功了"的静默降级):
+      1) launch 后前台必须 == 目标包名(只判"非空"会把拉起失败当成功);
+      2) 等首帧稳定(启动动画期间点下去会落到别的元素上);
+      3) 点入口锚点, 用 diff 判它是否真的换了屏(没换=点空);
+      4) paste 关键词并按 hit 回读确认真的上屏。
+    不点搜索结果: 结果列表布局随查询而变, 那部分必须当帧观测。
+    返回 {ok, pkg, query, steps:[每步判据], search_entry, fg, hint?}。"""
+    pkg = str(pkg or "").strip()
+    if not pkg:                         # 没指定才推断; 明确指定了未登记的包就直说没有(别偷换成微信)
+        _cur = _fg()
+        pkg = _cur if _cur in APP_ENTRY else (sorted(APP_ENTRY)[0] if len(APP_ENTRY) == 1 else "")
+    query = str(query or "").strip()
+    steps = []                                  # 每一步的判据都记下来, 失败时直接指出是哪一步
+    out = {"ok": False, "pkg": pkg, "query": query, "steps": steps}
+    if not query:
+        out["hint"] = "search_app 需要 value(要搜的关键词)"
+        return out
+    entry = APP_ENTRY.get(pkg)
+    if not entry:
+        out["hint"] = ("没有该 App 的固定入口路径(已知: %s)。用 gui_act 的 tap/text 自己走一次; "
+                       "走通后可 droid.recipe_record() 记成配方。" % ", ".join(sorted(APP_ENTRY)))
+        return out
+    lr = launch(pkg, wait=wait)                    # 1) 拉起 + 严格确认前台
+    steps.append({"step": "launch", "fg": lr.get("fg"), "fg_ok": lr.get("fg_ok")})
+    if not lr.get("fg_ok"):
+        out["hint"] = ("拉起未确认(前台 %r ≠ %r): 先解决前台, 别在别的画面上点来点去。"
+                       % (lr.get("fg"), pkg))
+        return out
+    try:
+        p = ping() or {}
+    except Exception:
+        p = {}
+    w, h = int(p.get("w") or 0), int(p.get("h") or 0)
+    if not w or not h:
+        out["hint"] = "拿不到屏幕尺寸, 无法把入口相对坐标换算成像素。"
+        return out
+    st = wait_stable(max_wait=max(1.0, float(wait)))        # 2) 等首页稳定
+    steps.append({"step": "settle", "stable": st.get("stable"), "waited_s": st.get("waited_s")})
+    rx, ry = entry["search_rel"]
+    ex, ey = int(round(rx / 1000.0 * w)), int(round(ry / 1000.0 * h))   # 3) 点入口
+    tr = tap(ex, ey)
+    diff_s = str(tr.get("diff") or "")
+    try:
+        entry_pct = float(diff_s.split("%", 1)[0].split()[-1])
+    except Exception:
+        entry_pct = None
+    steps.append({"step": "entry_tap", "point": [ex, ey], "diff": diff_s, "fg": tr.get("fg")})
+    if entry_pct is not None and entry_pct < 1.0:
+        out["hint"] = ("点了入口(%d,%d)但屏幕几乎没变(%.3f%%): 入口位置可能不适用于当前版本/页面, "
+                       "改为看当帧画面(obs/see)再点, 不要重复 search_app。"
+                       % (ex, ey, entry_pct))
+        out["search_entry"] = {"point": [ex, ey], "rel": [rx, ry]}
+        return out
+    pr = paste(query, point=(ex, ey))                                # 4) 输入并回读
+    steps.append({"step": "paste", "hit": pr.get("hit"), "uncertain": pr.get("uncertain"),
+                  "needs_gui_paste": pr.get("needs_gui_paste")})
+    out["search_entry"] = {"point": [ex, ey], "rel": [rx, ry]}
+    out["fg"] = _fg()
+    if pr.get("hit"):
+        out["ok"] = True
+        out["hint"] = ("关键词已上屏。别再点搜索框或重复 paste: 直接用 obs 或 "
+                       "see(want='point') 定位第一条结果再 tap。")
+    else:
+        out["hint"] = pr.get("hint") or ("输入未确认上屏(needs_gui_paste): 按提示手动补一次粘贴, "
+                                         "不要重复 search_app。")
+    return out
+
+
+def search_app(pkg="com.tencent.mm", query="", wait=2.0): return app_search(pkg=pkg, query=query, wait=wait)   # schema 的 action 名就是 search_app, 契约测试按名对账
 def pkgs(filter=""): return _act(op="pkgs", filter=filter)["apps"]  # 列可启动app[{pkg,label}], filter模糊匹配包名/应用名如'美团'
 def back():
     r = _act(op="back")
@@ -2701,7 +2810,17 @@ def recipe_list():
     """可用配方清单(agent 开局发现用): [{recipe_id, app, package, scene, steps, fragile}]。unstable 不列出。"""
     store = _recipe_store()
     out = []
-    for r in store.list():
+    # 内置入口配方先入列: 仓库里 memory/recipes/ 目录整个不存在, 只靠落盘配方时 recipe_list()
+    # 恒空, 而 phone_use.md 早就让模型"去调它" —— 于是模型从来没拿到过任何配方。
+    for _pkg, _e in sorted(APP_ENTRY.items()):
+        out.append({"recipe_id": "app_search:" + _pkg, "app": _e.get("label", ""),
+                    "package": _pkg, "scene": "app_search", "steps": 4, "fragile": False,
+                    "builtin": True, "via": "gui_act action=search_app value=<关键词>"})
+    try:
+        _stored = store.list()
+    except Exception:            # 目录缺失/损坏: 内置入口仍然可用, 不让"发现入口"整体失效
+        _stored = []
+    for r in _stored:
         if store.is_unstable(r.recipe_id):
             continue
         ah = r.app_hint or {}

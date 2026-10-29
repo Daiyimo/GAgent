@@ -30,6 +30,9 @@ CLICK_THRESHOLD = 3           # 恢复阶梯起点: 连续等价无效点击
 TYPE_RECOVERY_THRESHOLD = 2   # 连续等价无效输入
 CLICK_LADDER = ("WAIT", "BACK", "HOME", "ABORT")
 TYPE_LADDER = ("REFOCUS", "RETRY", "ABORT")
+OBS_WINDOW = 4                # 只读观察的连续窗口(see/ocr/observe 都算)
+OBS_REPEAT_THRESHOLD = 2      # 同屏 + 同通道连续 N 次 → 提示换通道/换动作
+OBS_KINDS = frozenset({"see", "ocr", "observe", "look"})
 _POINT_KINDS = frozenset({"tap", "longpress"})
 _PATH_KINDS = frozenset({"swipe"})
 _VALUE_KINDS = frozenset({"paste", "scroll"})   # scroll 比方向(value), 端点由安全滚动自算
@@ -53,6 +56,18 @@ class ActionRecord:
     @property
     def exact_same(self):
         return bool(self.outcome.get("screenshot_exactly_same"))
+
+
+@dataclass
+class Observation:
+    """一次只读观察(see/ocr/observe/look)。
+
+    账本以前只记动作, 于是"在 OCR/视觉之间来回打转"对 [LOOP-GUARD] 和 turn%7 的 [DANGER]
+    完全不可见 —— 真机 25 轮里 11 次 see(合计 164s)一次都没被拦。
+    digest=屏幕摘要: 相同即画面没动, 再问一遍不会得到新信息。"""
+    kind: str
+    digest: object = None
+    detail: str = ""
 
 
 def _norm(point, screen):
@@ -214,6 +229,26 @@ def type_recovery(records, pending=None):
     return _ladder(records, "paste", TYPE_RECOVERY_THRESHOLD, TYPE_LADDER, pending)
 
 
+def observation_hint(observations, window=OBS_WINDOW):
+    """同屏同通道反复只读观察 → 提示文案; 无信号返回 None(digest 未知时不猜)。"""
+    if not observations:
+        return None
+    tail = list(observations)[-window:]
+    last = tail[-1]
+    if last.digest is None:
+        return None
+    same = 1
+    for o in reversed(tail[:-1]):
+        if o.digest != last.digest or o.kind != last.kind:
+            break
+        same += 1
+    if same < OBS_REPEAT_THRESHOLD:
+        return None
+    return ("[OBS-GUARD] 同一屏已经用 %s 观察了 %d 次(%s), 画面没有变化: 再问一次不会得到新信息。"
+            "要么换通道(定位→obs/rel, 精确文字→ocr), 要么用动作推进; 已有答案就直接 finish_task。确需再敲一次同一屏, 传 force=true。"
+            % (last.kind, same, (last.detail or "")[:40]))
+
+
 def guard_hint(records):
     """喂给 anchor prompt 的循环守卫文案(提示级); 无信号 None。"""
     hint = repetition_hint(records)
@@ -225,8 +260,9 @@ def guard_hint(records):
 class Ledger:
     """进程内动作账本(有界环形)。droid 落账, guard_hint/reject/recovery 读取; 不落盘、不做 I/O。"""
 
-    def __init__(self, limit=64):
+    def __init__(self, limit=64, obs_limit=16):
         self.records = deque(maxlen=limit)
+        self.observations = deque(maxlen=obs_limit)   # 只读观察(see/ocr/observe)另一本账
 
     def append(self, record):
         self.records.append(record)
@@ -237,9 +273,19 @@ class Ledger:
 
     def clear(self):
         self.records.clear()
+        self.observations.clear()   # 任务边界: 上个任务的观察不能算进本任务的空转判定
 
     def hint(self):
-        return guard_hint(list(self.records))
+        parts = [h for h in (guard_hint(list(self.records)),
+                             observation_hint(list(self.observations))) if h]
+        return chr(10).join(parts) if parts else None
+
+    def note_observation(self, kind, digest=None, detail=""):
+        """只读观察落账(see/ocr/observe/look)。返回提示文案(该换通道时), 无信号 None。"""
+        if str(kind) not in OBS_KINDS:
+            return None
+        self.observations.append(Observation(kind=str(kind), digest=digest, detail=str(detail or "")))
+        return observation_hint(list(self.observations))
 
 
 # 进程级共享账本: droid(执行边界落账/守卫)与 ga_android(每轮提示注入)共用同一实例,
