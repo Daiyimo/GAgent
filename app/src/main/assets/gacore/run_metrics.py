@@ -58,8 +58,10 @@ def _is_success(verdict: dict) -> bool:
 
 
 def _is_negative(verdict: dict) -> bool:
+    # expect_verified=False 只是"本地没读到期望文字"的软提示, 不是动作失败:
+    # 长句期望几乎必然读不到。它只有在同时带有 verified=False 时才由后者计负。
     return (verdict.get('hit') is False or verdict.get('verified') is False
-            or verdict.get('scrolled') is False or verdict.get('expect_verified') is False
+            or verdict.get('scrolled') is False
             or verdict.get('evidence') == 'none')
 
 

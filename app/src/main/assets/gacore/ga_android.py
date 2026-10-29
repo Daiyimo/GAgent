@@ -485,8 +485,9 @@ class GenericAgentHandler(BaseHandler):
             return StepOutcome(json.dumps({
                 'ok': False, 'reason': 'call_failed',
                 'error': '%s: %s' % (type(e).__name__, str(e)[:200]),
-                'hint': '不要重试 see。改用 obs 里的本地图标框或 droid.ocr() 读屏; 确需看图检查'
-                        '当前模型是否支持图片, 或 ask_user。'}, ensure_ascii=False),
+                'hint': '不要重试 see。直接调用 observe 工具(不是 code_run print(droid.observe())); '
+                        '需要精确文字用 ocr 工具。确需看图检查当前模型是否支持图片, 或 ask_user。'},
+                ensure_ascii=False),
                 next_prompt='\n')
         out.update({'ms': round((time.time() - t0) * 1000, 1),
                     'model': droid._backend_id(backend)[:80]})
@@ -656,8 +657,11 @@ class GenericAgentHandler(BaseHandler):
 
     def _expect_seen(self, expect, out):
         """动作后核验 expect 文本。返回 (True|False|None, 证据列表)。
-        None = 当前通道读不到文字, 不伪造失败; False = 读到了文字但 expect 不在其中。"""
-        import droid
+        None = 当前通道读不到文字, 不伪造失败; False = 读到了文字但 expect 不在其中。
+
+        只复用本次动作已带回的紧凑 obs, 不再额外截图/OCR。expect 是软确认, 不是动作
+        成功判据: 每个动作都为它多付 1-3s 会直接拖慢任务, 而长句期望几乎必然误判。
+        """
         if isinstance(expect, (list, tuple)):
             expect = '|'.join(str(x) for x in expect)
         parts = [p.strip() for p in re.split(r'\s*\|\s*', str(expect or '')) if p.strip()]
@@ -668,19 +672,10 @@ class GenericAgentHandler(BaseHandler):
             for k in ('t', 'label', 'desc'):
                 if it.get(k):
                     hay.append(str(it[k]))
-        joined = ' '.join(hay)
+        joined = ' '.join(hay).strip()
+        if not joined:
+            return None, []
         ok = any(p in joined for p in parts)
-        # obs 只保留前 12 项; expect 可能在后面, 不能因为"前 12 项没有"就判失败。
-        # 未命中时再 OCR 一次当前画面; OCR 读不到文字才返回 None(不伪造失败)。
-        if not ok:
-            try:
-                extra = [str(t) for _b, t, _s in (droid.ocr(droid.shot()) or [])]
-            except Exception:
-                return None, []
-            if not extra:
-                return None, []
-            joined = (joined + ' ' + ' '.join(extra)).strip()
-            ok = any(p in joined for p in parts)
         return ok, [p for p in parts if p in joined]
 
     def do_gui_act(self, args, response):
@@ -839,23 +834,23 @@ class GenericAgentHandler(BaseHandler):
                     out['obs'] = self._compact_obs(pending() if pending else None)
                 except Exception:
                     pass
-        # 通用动作后验: 只信"动作返回成功"不够, 模型必须说明期望看到什么。
-        # expect 命中才算 verified; 读不到文字时保留 None, 不伪造失败。
+        # 通用动作后验: expect 只做正向确认, 未命中是软提示, 不是动作失败。
+        # 把 expect 当硬判据会让"进入某页面"这类长句期望永远 false, 模型于是反复重试;
+        # 每步还会多截一帧+OCR, 真机实测每个动作多 1.9-3.6s。
         expect = args.get('expect')
         if expect and act != 'wait':
             ok, seen = self._expect_seen(expect, out)
             out['expect'] = expect if isinstance(expect, str) else list(expect)
             out['expect_verified'] = ok
+            out['expect_state'] = 'seen' if ok is True else ('unreadable' if ok is None else 'not_seen')
             if ok is True:
                 out['verified'] = True
             elif ok is False:
-                out['verified'] = False
-                # 不能让 paste 的 hit=True 盖过 expect 未命中: 指标里 uncertain 优先于 verified,
-                # 这里把"期望页面没出现"归为未确认, 而不是成功。
-                out['uncertain'] = True
+                # 只提示，不覆盖 verified/uncertain：diff 和动作返回仍是一等证据。
                 prev = out.get('hint')
-                out['hint'] = ('动作后画面未出现 expect=%r; 不要把 diff/点击成功当成任务推进, '
-                               '先观察当前页面再决定下一步。' % (expect,))
+                out['expect_soft'] = True
+                out['hint'] = ('expect=%r 未在当前可读文字里命中 (软提示, 不是动作失败); '
+                               '先看当前截图/obs 再决定, 不要只因此重试。' % (expect,))
                 if prev:
                     out['hint'] = prev + ' | ' + out['hint']
         if act != 'wait':

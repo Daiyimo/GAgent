@@ -67,8 +67,11 @@ class TestExtractVerdict:
     def test_expect_verified_is_a_first_class_verdict(self):
         assert run_metrics.extract_verdict({'expect_verified': True}) == {'expect_verified': True}
         assert run_metrics.classify_verdict({'expect_verified': True}) == 'verified'
-        assert run_metrics.classify_verdict({'expect_verified': False}) == 'negative'
-        # 动作后读不到期望文本时调用方会同时给 uncertain; 不确定必须优先于失败。
+        # 未命中是软提示, 不是动作失败: 长句期望读不到不能计入 negative。
+        assert run_metrics.classify_verdict({'expect_verified': False}) == 'none'
+        assert run_metrics.classify_verdict({'expect_verified': False, 'diff_pct': 12.0}) == 'pixel'
+        # 真正的动作失败仍然由 verified=False 计负。
+        assert run_metrics.classify_verdict({'expect_verified': False, 'verified': False}) == 'negative'
         assert run_metrics.classify_verdict({'expect_verified': False, 'uncertain': True}) == 'uncertain'
 
 

@@ -219,6 +219,27 @@ class SemanticActionTest(unittest.TestCase):
         self.assertEqual(data['target']['matches'], 1)
         self.assertTrue(data['expect_verified'])
 
+    def test_expect_miss_is_soft_not_action_failure(self):
+        h = _handler()
+        fake, taps = self._fake_droid(
+            [{'x': 600, 'y': 300, 't': '搜索', 'd': ''}],
+            [{'src': 'tree', 't': '其他结果', 'desc': '', 'cls': 'Text',
+              'x': 600, 'y': 900, 'rx': 500, 'ry': 337, 'click': True}])
+        # expect 未命中绝不能再截图/OCR: 每个动作多 1-3s 是被真机证实的退化。
+        fake.ocr = lambda *a, **k: (_ for _ in ()).throw(AssertionError('expect must not OCR'))
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = h.do_gui_act({'action': 'tap', 'point': [600, 300],
+                                'expect': '进入搜索结果页面'},
+                               types.SimpleNamespace(content=''))
+        data = json.loads(out.data)
+        self.assertEqual(taps, [(600, 300)])
+        self.assertFalse(data['expect_verified'])
+        self.assertEqual(data['expect_state'], 'not_seen')
+        self.assertTrue(data['expect_soft'])
+        self.assertNotIn('verified', data)
+        self.assertNotIn('uncertain', data)
+        self.assertIn('不是动作失败', data['hint'])
+
     def test_ambiguous_target_returns_candidates_without_tapping(self):
         h = _handler()
         fake, taps = self._fake_droid(
