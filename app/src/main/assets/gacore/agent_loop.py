@@ -101,7 +101,15 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
             next_prompts.add(handler._done_hooks.pop(0))
         next_prompt = handler.turn_end_callback(response, tool_calls, tool_results, turn, '\n'.join(next_prompts), exit_reason)
         _hook('turn_after', locals())
-        messages = [{"role": "user", "content": next_prompt, "tool_results": tool_results}]   # just new message, history is kept in *Session
+        content = next_prompt
+        # 可选: handler 给这一轮附上"当前屏幕"图片块(视觉型 App 的看图模式, 见 agent_settings)。
+        # 放在发请求前一刻取帧, 拿到的是最新画面; handler 没有这个方法时行为完全不变。
+        attach = getattr(handler, 'turn_content_blocks', None)
+        if callable(attach):
+            try: blocks = attach()
+            except Exception: blocks = None
+            if blocks: content = [{"type": "text", "text": str(next_prompt)}] + list(blocks)
+        messages = [{"role": "user", "content": content, "tool_results": tool_results}]   # just new message, history is kept in *Session
     if exit_reason: handler.turn_end_callback(response, tool_calls, tool_results, turn, '', exit_reason)
     _hook('agent_after', locals())
     return exit_reason or {'result': 'MAX_TURNS_EXCEEDED'}

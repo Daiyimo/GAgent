@@ -601,6 +601,98 @@ def _apply_guard(rec, guard, label):
             "hint": "循环守卫: 最近多步动作互为等价且前后截图逐次完全一致, 本次未下发。请比较前后截图, 更换目标或策略。"}
 
 
+_LAST_TOUCH = {"x": None, "y": None, "ts": 0.0}
+_PENDING_FRAME = {"img": None, "ts": 0.0}
+
+# Android 对同一窗口的 takeScreenshot 有最小间隔: 抢跑必回 code=3, shot() 只能 sleep(.35) 重截。
+# 动作后取帧的最早时刻按这个常数排, 不靠猜。
+_SHOT_MIN_GAP_S = 0.34
+
+
+def _remember_touch(x, y):
+    """记最近一次手势落点: 视觉型 App 的 GUI 粘贴要以输入框为锚点, 模型常常刚点过它。"""
+    _LAST_TOUCH.update(x=int(x), y=int(y), ts=time.time())
+
+
+def last_touch(max_age=120.0):
+    """最近一次手势落点 (x, y); 过期或从没点过返回 None。"""
+    if _LAST_TOUCH["x"] is None or time.time() - _LAST_TOUCH["ts"] > max_age:
+        return None
+    return (_LAST_TOUCH["x"], _LAST_TOUCH["y"])
+
+
+def _stash_frame(img):
+    """把动作后已经截好的帧交给 _compact_obs 复用: 一次动作只该截一次后验帧。"""
+    _PENDING_FRAME.update(img=img, ts=time.time())
+
+
+def take_pending_frame(max_age=2.0):
+    """取走动作后暂存的帧(一次性)。过期返回 None —— 旧帧会喂给模型一份过期画面。"""
+    img, ts = _PENDING_FRAME["img"], _PENDING_FRAME["ts"]
+    _PENDING_FRAME["img"] = None
+    if img is None or time.time() - ts > max_age:
+        return None
+    return img
+
+
+def frame_jpeg_b64(img, max_side=1440, quality=70):
+    """把帧压成"主模型看得动"的 JPEG base64: 长边 ≤ max_side, 质量默认 70。
+
+    为每轮附图服务(见 agent_settings). 真机 1200x2670 原图 PNG ~160ms/几百 KB;
+    缩到长边 1440 且 JPEG q70 后通常 ~50-80 KB, 模型侧约 1.4k image token。
+    返回 (b64, (w, h)) —— 尺寸一并回传, 便于调用侧写进提示词(模型据此换算像素坐标)。"""
+    import base64
+    import cv2
+    h, w = img.shape[:2]
+    scale = min(1.0, float(max_side) / float(max(h, w) or 1))
+    if scale < 1.0:
+        img = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
+                         interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
+    if not ok:
+        raise RuntimeError('jpeg encode failed')
+    return base64.b64encode(buf.tobytes()).decode('ascii'), (int(img.shape[1]), int(img.shape[0]))
+
+
+def shot_frame_b64(max_side=1440, quality=70, reuse_pending=True):
+    """取一帧给主模型: 优先复用动作后刚截的帧(2s 内), 否则现截一张。返回 (b64, (w, h))。"""
+    img = take_pending_frame() if reuse_pending else None
+    if img is None:
+        img = shot()
+    return frame_jpeg_b64(img, max_side=max_side, quality=quality)
+
+
+def _diff_pct(before, after):
+    try:
+        return float(_img_diff_str(before, after).split("%", 1)[0].split()[-1])
+    except Exception:
+        return 0.0
+
+
+def _wait_change(before, max_s=1.0, poll=0.18, min_pct=0.5, sleep_first=True):
+    """动作后等首帧变化(替代固定 sleep): 变了立即返回该帧, 没变才等满 max_s。
+
+    为什么不是固定 sleep: 真机 75 次 gui_act 的 verify 段平均 3.5s, 其中固定 1s 是纯白等——
+    动作 0.3s 就生效的页面也要陪跑到 1s。第一帧不早于 _SHOT_MIN_GAP_S, 否则必然撞 code=3。
+    min_pct 取 0.5%: 光标闪烁/一次按压高亮只有零点几个百分点, 认成"变了"会让 diff 被低估成 miss;
+    真正的换页/弹窗都在 1% 以上。
+    sleep_first=False: 调用方已经等过 _SHOT_MIN_GAP_S(例如刚做过旋转检测), 直接取帧。
+    返回 (img, pct); 截屏失败返回 (None, 0.0), 由调用方按 uncertain 处理。"""
+    start = time.time()
+    if sleep_first:
+        time.sleep(max(0.0, min(_SHOT_MIN_GAP_S, float(max_s))))
+    deadline = start + max(0.0, float(max_s))
+    while True:
+        try:
+            cur = shot()
+        except Exception:
+            return None, 0.0
+        pct = _diff_pct(before, cur)
+        if pct >= min_pct or time.time() >= deadline:
+            return cur, pct
+        time.sleep(poll)
+
+
 def tap(x, y, verify=True, wait=1.0, human=False, *, screen=None):
     """human=True only adds small motor-tolerance jitter; it is not an anti-abuse bypass.
     Sensitive apps must use state-driven waits and stop on security checks."""
@@ -611,8 +703,9 @@ def tap(x, y, verify=True, wait=1.0, human=False, *, screen=None):
         return _apply_guard(rec, guard, "点击")
     before = shot() if verify else None
     ret = _act(op="tap", x=int(x), y=int(y), human=bool(human), expected_screen=geometry); ret.pop("ok", None)
+    _remember_touch(x, y)
     if not verify: return ret
-    time.sleep(wait)
+    time.sleep(min(_SHOT_MIN_GAP_S, float(wait)))   # 跨过截屏最小间隔, 顺便给旋转/动画留出时间
     post = _post_geom(geometry)
     if post and post['changed']:
         ret.update(verified=False, uncertain=True, orientation_changed=True, diff='n/a',
@@ -622,9 +715,11 @@ def tap(x, y, verify=True, wait=1.0, human=False, *, screen=None):
                    fg=_fg(), screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
         _settle(rec, verdict="uncertain", diff_pct=100.0)
         return ret
-    after = shot()
+    after, _ = _wait_change(before, max(0.0, float(wait) - _SHOT_MIN_GAP_S), sleep_first=False)
     diff = _img_diff_str(before, after); ret["diff"] = diff
+    _stash_frame(after)          # 动作后帧留给 _compact_obs 复用, 不必再截一次(会撞 code=3 再等 .35s)
     if _shape_changed(before, after):
+        post = _post_geom(geometry) or post      # 旋转可能发生在取帧之后: 补一次几何, 别把横屏说成竖屏
         ret.update(verified=False, uncertain=True, hint='屏幕尺寸变化；重新截图定位，不复用旧坐标。', fg=_fg())
         if post: ret.update(screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
         _settle(rec, verdict="uncertain", diff_pct=100.0)
@@ -659,8 +754,9 @@ def longpress(x, y, ms=800, verify=True, wait=1.0, *, screen=None):
         return _apply_guard(rec, guard, "长按")
     before = shot() if verify else None
     ret = _act(op="swipe", x1=int(x), y1=int(y), x2=int(x), y2=int(y), dur=ms, expected_screen=geometry); ret.pop("ok", None)
+    _remember_touch(x, y)
     if not verify: return ret
-    time.sleep(wait)
+    time.sleep(min(_SHOT_MIN_GAP_S, float(wait)))   # 跨过截屏最小间隔, 顺便给旋转/动画留出时间
     post = _post_geom(geometry)
     if post and post['changed']:
         ret.update(verified=False, uncertain=True, orientation_changed=True, diff='n/a',
@@ -670,9 +766,11 @@ def longpress(x, y, ms=800, verify=True, wait=1.0, *, screen=None):
                    fg=_fg(), screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
         _settle(rec, verdict="uncertain", diff_pct=100.0)
         return ret
-    after = shot()
+    after, _ = _wait_change(before, max(0.0, float(wait) - _SHOT_MIN_GAP_S), sleep_first=False)
     diff = _img_diff_str(before, after); ret["diff"] = diff
+    _stash_frame(after)          # 动作后帧留给 _compact_obs 复用, 不必再截一次(会撞 code=3 再等 .35s)
     if _shape_changed(before, after):
+        post = _post_geom(geometry) or post      # 旋转可能发生在取帧之后: 补一次几何, 别把横屏说成竖屏
         ret.update(verified=False, uncertain=True, hint='屏幕尺寸变化；重新截图定位，不复用旧坐标。', fg=_fg())
         if post: ret.update(screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
         _settle(rec, verdict="uncertain", diff_pct=100.0)
@@ -730,7 +828,7 @@ def swipe(x1, y1, x2, y2, dur=300, verify=True, wait=0.6, *, screen=None):
     before = shot() if verify else None
     ret = _act(op="swipe", x1=int(x1), y1=int(y1), x2=int(x2), y2=int(y2), dur=int(dur), expected_screen=geometry); ret.pop("ok", None)
     if not verify: return ret
-    time.sleep(wait)
+    time.sleep(min(_SHOT_MIN_GAP_S, float(wait)))   # 跨过截屏最小间隔, 顺便给旋转/动画留出时间
     post = _post_geom(geometry)
     if post and post['changed']:
         ret.update(verified=False, uncertain=True, orientation_changed=True, diff='n/a',
@@ -740,9 +838,11 @@ def swipe(x1, y1, x2, y2, dur=300, verify=True, wait=0.6, *, screen=None):
                    fg=_fg(), screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
         _settle(rec, verdict="uncertain", diff_pct=100.0)
         return ret
-    after = shot()
+    after, _ = _wait_change(before, max(0.0, float(wait) - _SHOT_MIN_GAP_S), sleep_first=False)
     diff = _img_diff_str(before, after); ret["diff"] = diff
+    _stash_frame(after)          # 动作后帧留给 _compact_obs 复用, 不必再截一次(会撞 code=3 再等 .35s)
     if _shape_changed(before, after):
+        post = _post_geom(geometry) or post      # 旋转可能发生在取帧之后: 补一次几何, 别把横屏说成竖屏
         ret.update(verified=False, uncertain=True, hint='屏幕尺寸变化；重新截图定位，不复用旧坐标。', fg=_fg())
         if post: ret.update(screen=post['screen'], rot=post['rot'], orientation=post['orientation'])
         _settle(rec, verdict="uncertain", diff_pct=100.0)
@@ -931,8 +1031,10 @@ def _obs_item_from_det(d, x1, y1, W, H):
             'conf': d.get('confidence'), 'type': str(d.get('type') or '')}
 
 
-def observe(roi=None, conf=0.25, cache=True):
+def observe(roi=None, conf=0.25, cache=True, img=None):
     """本地定位通道一步到位: 一次截图 + 一次分类 + 按类选通道。
+
+    img 给出则不再截图(动作已经截过后验帧, 再截一次只会撞截屏最小间隔再多等 0.35s)。
 
     返回 {'kind', 'items', 'channels', 'notes', 'needs_vision', 'ms', 'cached'?}:
     - kind: _classify 的产物('tree'|'blanked'|'canvas'|'unknown')
@@ -952,7 +1054,7 @@ def observe(roi=None, conf=0.25, cache=True):
     任务就是败在"模型缺失 → look() 抛异常 → 整轮作废"上。"""
     t0 = time.time()
     import cv2
-    img = shot()
+    img = shot() if img is None else img     # img 由调用方给: 动作后帧直接复用, 不重复截图(截屏有最小间隔)
     H, W = img.shape[:2]
     if isinstance(roi, str):
         if roi not in _ROI_NAMES:
@@ -1691,14 +1793,15 @@ def _paste_unavailable(ret, errors, hint=None):
     warning = "验证不可用，无法确认文本是否上屏；请核对当前帧输入框，或由用户接管。"
     ret["hint"] = (hint + " " + warning) if hint else warning
     return ret
-def paste(text, verify=True, replace=False):
+def paste(text, verify=True, replace=False, point=None):
     """剪贴板注入后立即验证：单次 dump → 编辑框识别 → 必要时区域检测。
     replace=False(默认)=在光标处追加; replace=True=先全选框内旧文本再粘贴=覆盖(预填昵称/旧搜索词/改地址一律用它, 没有退格键可用),
     此时 dump 验证按「框内文本 == text」判 hit(追加模式是包含匹配)。框不支持选区时 a11y 侧抛错(不会静默变成追加)。
     hit=True=已确认上屏; hit=False, uncertain=True=验证不可用/结论不确定, 禁止重复输入或盲目降级。
     ime_label 仅为元数据; 只有 ime_hint 可点击。
-    敏感 App 或前台未解析时只设置剪贴板，不调用节点输入；返回 needs_gui_paste=True 并输出提示。
-    调用方须通过可见GUI粘贴，再用截图验证上屏；不能把剪贴板已设置当成输入成功。
+    point=输入框中心像素(可选): 敏感 App 走 GUI 粘贴时用它当长按锚点; 不给则用最近一次手势落点。
+    敏感 App 或前台未解析时只设置剪贴板 + 自动完成可见 GUI 粘贴(长按→点菜单/点键盘候选)并回读验证,
+    仍不成才返回 needs_gui_paste=True; 绝不能把"剪贴板已设置"当成输入成功。
     循环守卫(SPEC W3): 连续等价无效输入第 2 次起 REFOCUS(请先重聚焦再重试)→RETRY(最后一次自动放行)→ABORT;
     落账: hit=新证据(断尾), uncertain=断尾, 明确未上屏=可证明无效果(进阶梯)。"""
     text = str(text)
@@ -1720,7 +1823,8 @@ def paste(text, verify=True, replace=False):
             _settle(rec, verdict="aborted", screenshot_exactly_same=True)
             return {"ok": 0, "aborted": True, "hit": False,
                     "hint": "循环守卫: 同一输入连续无可观察变化且恢复手段已用尽, 本次未执行。请重新观察当前屏幕, 更换目标或策略, 或 ask_user 说明阻塞。"}
-    ret = _paste_impl(text, verify=verify, replace=replace)
+    ret = _paste_impl(text, verify=verify, replace=replace,
+                      anchor=point if point is not None else last_touch())
     if "hit" not in ret:
         return ret                      # 未验证/未产出判定: 无证据不落账(铁律)
     if ret.get("hit"):
@@ -1731,18 +1835,134 @@ def paste(text, verify=True, replace=False):
         _settle(rec, verdict="settled", screenshot_exactly_same=True, diff_pct=0.0, hit=False)  # 明确未上屏=可证明无效果
     return ret
 
-def _paste_impl(text, verify=True, replace=False):
+_PASTE_LABELS = {"粘贴", "粘貼", "paste"}
+
+
+def _is_paste_label(text):
+    """'粘贴' 菜单项判定: 去空白/尾冒号后全等, 不做子串(避免把 '粘贴板设置' 当菜单)。"""
+    return "".join(str(text).split()).casefold().rstrip(":：") in _PASTE_LABELS
+
+
+def _pick_paste_target(text, rows, screen_h, anchor=None):
+    """从 OCR 行里挑出"真正能完成 GUI 粘贴"的那一下点击。纯函数, 无设备副作用。
+
+    返回 (kind, box, label) 或 None:
+      'menu' —— 长按浮出的「粘贴」菜单; 位置随输入法/App 变, 只按画面找, 不写死坐标。
+                 给了锚点时只认锚点下方 600px 内的(菜单就浮在长按处下方), 取最近的;
+      'chip' —— 输入法剪贴板候选(Android 10+ 键盘顶栏, 文本即剪贴板内容), 只在下半屏找,
+                 避免把搜索结果里同样的文字当成候选。
+    优先级: 已经开着的菜单 > 键盘候选(菜单在当帧可见, 不需要再长按一次)。"""
+    if not rows:
+        return None
+    best = None
+    for box, label, _score in rows:
+        if not _is_paste_label(label):
+            continue
+        cy = sum(p[1] for p in box) / len(box)
+        if anchor is not None:
+            dy = cy - float(anchor[1])
+            if dy < -40 or dy > 600:
+                continue
+            dist = abs(dy)
+        else:
+            dist = cy
+        if best is None or dist < best[0]:
+            best = (dist, "menu", box, label)
+    if best is not None:
+        return best[1:]
+    band = float(screen_h) * 0.5
+    chip = None
+    for box, label, _score in rows:
+        if _is_paste_label(label) or not _match(text, label):
+            continue
+        cy = sum(p[1] for p in box) / len(box)
+        if cy < band:
+            continue
+        if chip is None or cy < chip[0]:
+            chip = (cy, "chip", box, label)
+    if chip is not None:
+        return chip[1:]
+    return None
+
+
+def _gui_paste(text, anchor=None, replace=False):
+    """视觉型 App 的唯一输入通道: 剪贴板 + 可见 GUI 粘贴, 一次调用做完并验证上屏。
+
+    为什么必须原子: 敏感 App 禁 setText、禁读节点树, 旧实现只把文本塞进剪贴板就把
+    "长按输入框→点粘贴"甩回给模型, 每输入一次多花 2 轮(真机 5 个任务里 4 个踩到, 约 19s/次)。
+    这里把「一次 OCR 定位 + 一次手势 + 一次视觉确认」收进一次工具调用。
+    红线不变: 只读屏幕像素、只发手势, 不碰节点树, 不注入文本。
+    """
+    _act(op="clipboard", text=text)
+    steps = ["clipboard"]
+    try:
+        img = shot()
+        h = int(img.shape[0])
+        rows = _ocr_region(img, 0, 0, int(img.shape[1]), h)
+    except Exception as exc:
+        return _paste_needs_gui(text, steps, "读屏失败(%s)" % type(exc).__name__)
+    target = _pick_paste_target(text, rows, h, anchor)
+    if target is None and anchor is not None:
+        # 当帧没有粘贴入口: 长按锚点唤出菜单再看一眼。用 _act 而不是 longpress(), 免得重复落账。
+        try:
+            _act(op="swipe", x1=int(anchor[0]), y1=int(anchor[1]),
+                 x2=int(anchor[0]), y2=int(anchor[1]), dur=800)
+            steps.append("longpress")
+            time.sleep(0.45)
+            img = shot()
+            h = int(img.shape[0])
+            rows = _ocr_region(img, 0, 0, int(img.shape[1]), h)
+            target = _pick_paste_target(text, rows, h, anchor)
+        except Exception:
+            target = None
+    if target is None:
+        return _paste_needs_gui(
+            text, steps,
+            "未在屏幕上找到可点的『粘贴』菜单或键盘剪贴板候选")
+    kind, box, label = target
+    cx = int(sum(p[0] for p in box) / len(box))
+    cy = int(sum(p[1] for p in box) / len(box))
+    _act(op="tap", x=cx, y=cy)
+    steps.append("tap:%s" % kind)
+    time.sleep(0.6)
+    try:
+        img = shot()
+        h = int(img.shape[0])
+        top = anchor[1] + 160 if anchor is not None else int(h * 0.32)
+        rows = _ocr_region(img, 0, max(0, int(anchor[1]) - 160) if anchor is not None else 0,
+                           int(img.shape[1]), min(h, int(top)))
+    except Exception:
+        return {"hit": False, "uncertain": True, "verify": "gui_paste", "steps": steps,
+                "hint": "已点击『%s』但读屏确认失败; 不要重复点击, 先观察当前画面。" % label}
+    observed = next((s for _b, s, _sc in rows if _match(text, s)), "")
+    if observed:
+        out = {"hit": True, "verify": "gui_paste", "text": observed, "steps": steps,
+               "paste_via": kind}
+        if replace:
+            out["replace_unverified"] = True
+        return out
+    return {"hit": False, "uncertain": True, "verify": "gui_paste", "steps": steps,
+            "hint": ("已点『%s』但框内未看到文本(可能焦点不在输入框)。先 tap 输入框聚焦再重试, "
+                     "或交用户处理; 文本仍在剪贴板, 不会丢。" % label)}
+
+
+def _paste_needs_gui(text, steps, cause):
+    """GUI 粘贴没做成时的统一出口: 契约与旧行为一致(hit=False/uncertain/needs_gui_paste)。"""
+    hint = ("%s。文本仍在剪贴板: 用当前截图定位输入框中心, 长按输入框后点可见的粘贴菜单, "
+            "或点键盘顶栏的剪贴板候选; 长按空白处会收起键盘。替换时先通过 GUI 清空。"
+            "已试步骤: %s" % (cause, '/'.join(steps)))
+    print("[GUI input] " + hint)
+    return {"hit": False, "uncertain": True, "needs_gui_paste": True, "steps": steps, "hint": hint}
+
+
+def _paste_impl(text, verify=True, replace=False, anchor=None):
     """paste 的实现体(契约见 paste docstring); 内部专用——直接调用会绕过守卫与落账。"""
     text = str(text)
     if not text:
         raise ValueError("paste text must not be empty")
     if _sensitive_fg():
-        _act(op="clipboard", text=text)
-        hint = ("文本已放入剪贴板，尚未输入。用当前截图/obs 精确定位输入框中心，长按输入框后点击"
-                "可见的粘贴菜单或键盘剪贴板提示；长按空白处会收起键盘/让搜索框消失。"
-                "替换时先通过GUI清空/全选。")
-        print("[GUI input] " + hint)
-        return {"hit": False, "uncertain": True, "needs_gui_paste": True, "hint": hint}
+        # 视觉型 App: 唯一合法的输入通道是"剪贴板 + 可见 GUI 粘贴", 且必须一次做完。
+        return _gui_paste(text, anchor=anchor, replace=bool(replace))
     ret = _act(op="paste", text=text, replace=bool(replace)); ret.pop("ok", None)
     if not verify:
         return ret

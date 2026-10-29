@@ -531,11 +531,19 @@ class GenericAgentHandler(BaseHandler):
                 val = str(args.get('value') or '')
                 if not val:
                     return StepOutcome('[Error] text needs value (the content to type)', next_prompt='\n')
-                ret = droid.paste(val)
+                # point/rel = 输入框中心(可选): 敏感 App 的 GUI 粘贴要长按输入框唤出菜单,
+                # 由模型直接给比让它猜"最近点过哪儿"稳。给了就传, 没给交给 droid 用手势落点兜底。
+                anchor = None
+                if args.get('point') is not None or args.get('rel') is not None:
+                    try: anchor = self._resolve_point(args, 'point', 'rel')
+                    except Exception: anchor = None
+                ret = droid.paste(val, point=anchor) if anchor is not None else droid.paste(val)
                 out = {'action': act, 'hit': ret.get('hit'), 'uncertain': ret.get('uncertain')}
-                # 敏感 App(微信等): paste 只入剪贴板; 不把 needs_gui_paste/hint 带回去,
-                # 模型只看到 hit=false/uncertain, 会误判“输入失败”并重复点搜索框。
-                for k in ('needs_gui_paste', 'hint', 'ime_hint', 'ime_label'):
+                # 敏感 App(微信等): 文本经剪贴板 + 自动 GUI 粘贴落屏。hit=true 才是真上屏;
+                # needs_gui_paste/hint 必须原样带回, 否则模型只看到 hit=false/uncertain,
+                # 会误判“输入失败”并重复点搜索框。
+                for k in ('needs_gui_paste', 'hint', 'ime_hint', 'ime_label',
+                          'verify', 'paste_via', 'text', 'steps', 'replace_unverified'):
                     if ret.get(k) is not None:
                         out[k] = ret[k]
             elif act == 'key':
@@ -584,10 +592,19 @@ class GenericAgentHandler(BaseHandler):
         # 旋转/折叠时 wait_stable 仍跳过(那是 16.3s/15.6s 后验的主要来源), 但必须给新画面的
         # 紧凑观测: 只给 screen/rot 不足以让弱模型继续——真机 3.7flash 看到横屏后直接放弃。
         if act in ('tap', 'swipe', 'longpress', 'back', 'home', 'key', 'launch'):
-            try:
-                out['obs'] = self._compact_obs()
-            except Exception:
-                pass
+            if self._vision_covers_screen():
+                # 视觉型页面(微信等): 本地只剩 YOLO 一条腿, 每步 1.5~2.6s; 而本轮已经把整张图
+                # 发给主模型了, 再算一遍框是纯重复。留给模型自己看, 需要文字时它会用 look().
+                out['obs_note'] = ('当前屏幕截图已附在本轮消息里(visual-only 页面, 本地不再出框): '
+                                   '直接按图里的位置给 point; 需要文字内容时用 code_run 的 look()/ocr')
+            else:
+                try:
+                    # 动作后验已经截过一帧: 交给 observe 复用。再截一次不但多 ~0.16s,
+                    # 还会撞 Android 的截屏最小间隔(code=3)再白等 0.35s。
+                    pending = getattr(droid, 'take_pending_frame', None)
+                    out['obs'] = self._compact_obs(pending() if pending else None)
+                except Exception:
+                    pass
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         return StepOutcome(json.dumps(out, ensure_ascii=False), next_prompt=next_prompt)
 
@@ -596,15 +613,77 @@ class GenericAgentHandler(BaseHandler):
     _OBS_ITEMS = 12
     _OBS_LABEL = 24
 
-    def _compact_obs(self):
+    # 每轮附图: 长边 1440 + q70 ≈ 1.4k image token(真机 1200x2670 原图直发太贵)
+    _VISION_MAX_SIDE = 1440
+    _VISION_QUALITY = 70
+
+    def _vision_mode(self):
+        """off/auto/always —— 每轮现读 kv, 用户改完立刻生效。"""
+        try:
+            import agent_settings
+            return agent_settings.vision_in_turn()
+        except Exception:
+            return 'auto'
+
+    def _vision_covers_screen(self):
+        """这一屏的本地通道是不是"看不到结构"(视觉型 App / 前台未解析) → 交给图。"""
+        if self._vision_mode() == 'off':
+            return False
+        try:
+            import droid
+            return bool(droid._sensitive_fg())
+        except Exception:
+            return False
+
+    def _session_takes_images(self):
+        """当前 LLM 会话能不能吃图块。
+
+        文本协议会话(NativeOAISession, 把每条消息 str() 进 prompt)拿到图块会把它变成
+        几十万字符的 base64 文本——比不给图还糟。所以只对"消息就是结构化块"的会话放行;
+        探测不到会话时放行(真机默认就是 LLMSession)。"""
+        try:
+            backend = self.parent.llmclient.backend
+        except Exception:
+            return True
+        return type(backend).__name__ in ('LLMSession', 'ClaudeSession', 'NativeClaudeSession')
+
+    def turn_content_blocks(self):
+        """给主模型这一轮消息附上"当前屏幕"图片块; 不需要时返回 None。
+
+        为什么不每步调 see(): see() 是**独立请求**——实测均值 20.8s、最高 66.2s(今天 7 次),
+        因为它要重付一次 prefill+TTFT。而主循环这一轮本来就要发, 多一张图只增加约 1.4k
+        token 的 prefill(约 0.3~0.5s)。所以"全量看视觉"的正确形态是**把图放进这一轮**,
+        不是每步多调一次视觉模型。see() 仍留给"这屏是什么意思"这类一次性提问。
+        """
+        mode = self._vision_mode()
+        if mode == 'off' or not self._session_takes_images():
+            return None
+        if mode == 'auto' and not self._vision_covers_screen():
+            return None
+        try:
+            import droid
+            b64, (w, h) = droid.shot_frame_b64(max_side=self._VISION_MAX_SIDE,
+                                               quality=self._VISION_QUALITY)
+        except Exception as exc:
+            return [{"type": "text", "text": "[当前屏幕截图不可用: %s]" % type(exc).__name__}]
+        return [
+            {"type": "text", "text": "当前屏幕截图（%dx%d 像素；坐标按这张图的像素给 gui_act 的 point）。"
+                                     % (w, h)},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+        ]
+
+    def _compact_obs(self, frame=None):
         """动作后的紧凑观测: [{t, src, label, cls, x, y, rx, ry, click}], 只留选目标必需的字段。
 
         路由在 droid.observe() 里(_classify 决定跑哪些通道), 这里只负责截断成模型看得动的
         条数。旧实现在这里分 dump/look 两路 + canvas 特判, 还要额外付一次 screen_kind() 的
-        dump_state 往返; canvas 页现在直接由 observe 返回空, 不再白跑一次全屏 look。"""
+        dump_state 往返; canvas 页现在直接由 observe 返回空, 不再白跑一次全屏 look。
+        frame 给出则直接用它(动作后验帧), 不再截图。"""
         import droid
         try:
-            res = droid.observe()
+            res = droid.observe(img=frame) if frame is not None else droid.observe()
+        except TypeError:
+            res = droid.observe()          # 旧 droid 没有 img= 形参时的降级
         except Exception:
             return []
         items = []

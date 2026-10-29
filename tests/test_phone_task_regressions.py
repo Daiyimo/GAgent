@@ -308,12 +308,15 @@ class TaskBudgetTest(unittest.TestCase):
         with self.assertRaises(RuntimeError): droid._gate_injection('tap', 'com.tencent.mm')
 
     def test_visual_only_paste_never_calls_node_paste(self):
+        """视觉型 App 只能走"剪贴板 + 可见 GUI 粘贴": 无论自动那一步成不成, 都不许下发节点输入,
+        而且必须如实说明文本仍在剪贴板(不能把"已设剪贴板"当成已输入)。"""
         output = io.StringIO()
         with patch.object(droid, '_sensitive_fg', return_value=True), patch.object(droid, '_act', return_value={'ok': True}) as act, redirect_stdout(output):
             result = droid.paste('search query')
-        self.assertIn('尚未输入', output.getvalue())
+        self.assertIn('剪贴板', output.getvalue())
         self.assertNotIn('search query', output.getvalue())
-        self.assertEqual(act.call_args.kwargs['op'], 'clipboard')
+        self.assertNotIn('paste', [c.kwargs.get('op') for c in act.call_args_list])
+        self.assertEqual(act.call_args_list[0].kwargs['op'], 'clipboard')
         self.assertFalse(result['hit'])
         self.assertTrue(result['needs_gui_paste'])
 

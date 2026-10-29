@@ -134,10 +134,54 @@ def _drop_oldest_turn(history):
         history[1] = _sanitize_leading_user_msg(history[1])
 
 
+IMAGE_PLACEHOLDER = '[earlier screenshot omitted to save context]'
+
+
+def age_image_blocks(history, keep=1):
+    """只留最近 keep 张图, 更早的换成一行占位文字。返回被替换的张数。
+
+    图在历史里是 base64(一张缩略后的截图 ~80KB): 20 条历史就是 1.6MB 的重发体积,
+    足以把上下文窗口和每轮 prefill 一起顶爆。所以"每轮附图"必须配这条老化规则——
+    模型只需要看当前这一屏, 上一屏的像素对下一步没有增益(位置信息走 obs/文字)。"""
+    seen = 0
+    replaced = 0
+    for msg in reversed(history or []):
+        content = msg.get('content')
+        if not isinstance(content, list):
+            continue
+        for i in range(len(content) - 1, -1, -1):
+            block = content[i]
+            if not isinstance(block, dict) or block.get('type') not in ('image', 'image_url'):
+                continue
+            seen += 1
+            if seen <= keep:
+                continue
+            content[i] = {"type": "text", "text": IMAGE_PLACEHOLDER}
+            replaced += 1
+    return replaced
+
+
+def _history_cost(history):
+    """上下文体积估算: 图片按固定 2k 字符计, 不让 base64 长度决定裁剪策略。"""
+    total = 0
+    for m in history or []:
+        content = m.get('content')
+        if isinstance(content, list):
+            for b in content:
+                if isinstance(b, dict) and b.get('type') in ('image', 'image_url'):
+                    total += 2000
+                else:
+                    total += len(json.dumps(b, ensure_ascii=False))
+        else:
+            total += len(json.dumps(content, ensure_ascii=False))
+    return total
+
+
 def trim_messages_history(history, sess):
     cap = sess.context_win * 3
     target = int(cap * getattr(sess, 'trim_keep_rate', 0.6))
-    def cost(): return sum(len(json.dumps(m, ensure_ascii=False)) for m in history)
+    def cost(): return _history_cost(history)
+    age_image_blocks(history, keep=1)      # 先老化图片: 否则一条图就能顶到 cap, 触发无谓的历史裁剪
     compress_history_tags(history, interval=getattr(sess, 'cut_msg_interval', 5))
     print(f'[Debug] Current context: {cost()} chars, {len(history)} messages.')
     # 条数上限必须排在体积上限前面: 每轮重发全部历史, 条数不封顶时单轮成本随轮数
@@ -889,6 +933,15 @@ class MockResponse:
     def __repr__(self):    
         return f"<MockResponse thinking={bool(self.thinking)}, content='{self.content}', tools={bool(self.tool_calls)}>"
 
+def _keep_content_block(c):
+    """图片块没有 text 字段: 用"去空白块"过滤时必须单独放行, 否则附图会被静默删掉。"""
+    if not isinstance(c, dict):
+        return False
+    if c.get("type") in ("image", "image_url"):
+        return True
+    return bool(str(c.get("text", "")).strip())
+
+
 class ToolClient:
     def __init__(self, backend, auto_save_tokens=True):
         self.backend = backend
@@ -1173,7 +1226,7 @@ class NativeToolClient:
             if tid not in tr_id_set: tool_result_blocks.append({"type": "tool_result", "tool_use_id": tid, "content": ""})
         self._pending_tool_ids = []
         # Filter whitespace-only text blocks that cause 400 on strict API proxies
-        filtered_content = [c for c in combined_content if c.get("text", "").strip()]
+        filtered_content = [c for c in combined_content if _keep_content_block(c)]
         final_content = tool_result_blocks + filtered_content
         if not final_content: final_content = [{"type": "text", "text": "."}]
         merged = {"role": "user", "content": final_content}

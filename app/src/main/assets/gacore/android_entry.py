@@ -12,6 +12,7 @@ from provider_config import (
 )
 # Android端GA入口: Kotlin壳只调 init/send/poll/abort, 维护升级都改这里(随assets热更新)
 import os, sys, json, re, shutil, threading, traceback, time
+import agent_settings   # 运行期开关(kv): 读的是 GA_DIR/kv/*.json, 与 /kv.* 桥同一份存储
 import ast, py_compile, secrets, zipfile, queue
 from collections import deque
 from xml.etree import ElementTree as ET
@@ -2093,6 +2094,13 @@ def _cmd_kv_del(text):
         with _kv_lock: os.remove(_kv_path(text[8:].strip()))
     except Exception as e: _swallow('_cmd_kv_del', e)
     return 'ok'
+def _cmd_vision(text):                                        # 看图模式开关: /vision off|auto|always(空=查询)
+    mode, msg = agent_settings.parse_vision_cmd(text)
+    if mode:
+        try: agent_settings.kv_set(agent_settings.KEY_VISION_IN_TURN, mode, root=GA_DIR)
+        except Exception as e: return json.dumps({'ok': False, 'error': str(e)[:120]}, ensure_ascii=False)
+    return json.dumps({'ok': bool(mode) or not msg.startswith('unknown'),
+                       'mode': msg}, ensure_ascii=False)
 def _cmd_detectproxy(text): return json.dumps({'proxy': _detect_proxy()})  # 一键识别本机代理: 探常见本地代理端口
 def _cmd_storageinfo(text): return json.dumps(_storage_info())             # 存储路径 + 占用 + 可用
 def _cmd_cleartemp(text): return json.dumps({'removed': _clear_temp()})    # 一键清理临时文件
@@ -2295,6 +2303,7 @@ _CMDS = [                        # 斜杠命令注册表: (matcher, handler); ma
     (lambda text: text.startswith('/kv.set '), _cmd_kv_set),
     (lambda text: text.startswith('/kv.get '), _cmd_kv_get),
     (lambda text: text.startswith('/kv.del '), _cmd_kv_del),
+    (lambda text: text.startswith('/vision'), _cmd_vision),   # 看图模式: /vision off|auto|always
     (lambda text: text == '/detectproxy', _cmd_detectproxy),
     (lambda text: text == '/storageinfo', _cmd_storageinfo),
     (lambda text: text == '/cleartemp', _cmd_cleartemp),
