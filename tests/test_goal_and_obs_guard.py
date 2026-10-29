@@ -223,3 +223,37 @@ class SilentExitRefusedTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SearchAppKeywordAliasTest(unittest.TestCase):
+    """search_app 的关键词别名。
+
+    真机 2026-10-29 18:04:22: 模型给了 `{"action": "search_app", "target": "元梦之星"}`,
+    旧实现只认 value/query, 回了一句"需要 value", 白烧一轮(5.6s)才重发。它的直觉没错 ——
+    "target 就是要搜的东西"在 tap 里正是这个意思, 没必要在 search_app 上惩罚它。
+    """
+
+    def _run(self, args):
+        h = _handler()
+        h.working = {}
+        seen = {}
+
+        def fake_search(pkg='', query='', wait=2.0):
+            seen['query'] = query
+            seen['pkg'] = pkg
+            return {'ok': True, 'pkg': pkg, 'query': query, 'steps': []}
+
+        fake = types.SimpleNamespace(app_search=fake_search)
+        with patch.dict(sys.modules, {'droid': fake}):
+            h.do_gui_act(args, types.SimpleNamespace(content=''))
+        return seen
+
+    def test_target_is_accepted_as_the_keyword(self):
+        self.assertEqual(self._run({'action': 'search_app', 'target': '元梦之星'})['query'], '元梦之星')
+
+    def test_text_is_accepted_as_the_keyword(self):
+        self.assertEqual(self._run({'action': 'search_app', 'text': '炉石传说'})['query'], '炉石传说')
+
+    def test_value_still_wins(self):
+        seen = self._run({'action': 'search_app', 'value': 'a', 'target': 'b'})
+        self.assertEqual(seen['query'], 'a')

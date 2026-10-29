@@ -713,13 +713,59 @@ class GenericAgentHandler(BaseHandler):
             out.append(c)
         return out
 
+    @staticmethod
+    def _rank_target_candidates(target, cands):
+        """候选排序: 完全相等 > 前缀就是目标 > 只是包含 > 其它, 同一档按屏幕从上到下、从左到右。
+
+        真机实证(2026-10-29, 微信搜"元梦之星"后的结果页): 8 个候选里既有搜索框回显 `Q元梦之星`
+        @(292,245), 也有真正的结果行 `元梦之星` @(306,527)。旧实现直接抛错让模型重来一轮
+        (5.6s/轮), 而按"完全相等 + y 最小"排, 选中的正好是那条结果行。
+        """
+        t0 = str(target or '')
+
+        def key(c):
+            t = str(c.get('t') or '')
+            cls = 0 if t == t0 else (1 if t.startswith(t0) else (2 if t0 in t else 3))
+            return (cls, int(c.get('y') or 0), int(c.get('x') or 0))
+
+        return sorted(cands, key=key)
+
+    @staticmethod
+    def _target_view(info):
+        """target 命中结果的统一呈现: 哪个候选、还有哪些候选、怎么改。
+
+        "点了但没反应"最常见的成因之一就是同名多解选错了行; 把落选清单直接塞进结果,
+        模型在同一轮就能改 target_index, 不必多跑一轮(真机 5.6s/轮)。
+        """
+        view = {'text': str(info.get('t') or '')[:60], 'src': info.get('src'),
+                'point': [int(info.get('x') or 0), int(info.get('y') or 0)],
+                'matches': info.get('_matches', 1)}
+        alts = info.get('_alternatives') or []
+        if int(view['matches']) > 1:
+            view['index'] = info.get('_index', 0)
+            view['chosen_by'] = 'auto'
+            if alts:
+                view['alternatives'] = alts
+            view['hint'] = ('同名 %d 个, 我按"完全相等 + 从上到下"选了第 %d 个; 不对就传 '
+                            'target_index=<alternatives 里的 index>' % (view['matches'], view['index']))
+        return view
+
     def _resolve_action_target(self, args):
-        """gui_act 的 target → 像素点。多个候选时不替模型猜, 返回可选索引。"""
+        """gui_act 的 target → 像素点。
+
+        两个真机教训写在这里:
+          · 模型经常同时给 target 和 point(它把 target 当成"我要点的是这个"), 旧实现直接
+            ValueError 拒掉 —— 一轮 5.6s 白烧, 4 次/会话。现在 point/rel 优先, target 只当标注;
+            真正会出错的是"给了 target 不给位置"那种, 那种仍然走解析。
+          · 同名多解时不抛错, 按 _rank_target_candidates 选一个并**把落选清单一起带回去**,
+            模型在同一轮内就能用 target_index 纠正, 不必多跑一轮。
+        """
         target = str(args.get('target') or '').strip()
         if not target:
             return None
-        if args.get('point') is not None or args.get('rel') is not None:
-            raise ValueError('target is an alternative to point/rel; pass only one location')
+        if (args.get('point') is not None or args.get('rel') is not None
+                or args.get('img_point') is not None):
+            return None                     # 显式坐标优先; target 退化成"这一下点的是什么"的标注
         try:
             idx = int(args.get('target_index')) if args.get('target_index') is not None else None
         except (TypeError, ValueError):
@@ -728,15 +774,16 @@ class GenericAgentHandler(BaseHandler):
         if not cands:
             raise LookupError('target %r was not found in the current tree/observe/OCR; '
                               'take a fresh observe first, or use see(want="point") only for canvas' % target)
-        if idx is None and len(cands) > 1:
-            brief = '; '.join('[%d] %r @(%d,%d)' % (i, c['t'][:30], c['x'], c['y'])
-                              for i, c in enumerate(cands[:8]))
-            raise ValueError('target %r has %d matches: %s -> pass target_index or a unique exact target'
-                             % (target, len(cands), brief))
+        cands = self._rank_target_candidates(target, cands)
         if idx is not None and not (0 <= idx < len(cands)):
             raise ValueError('target_index %r out of range 0..%d' % (idx, len(cands) - 1))
-        c = dict(cands[idx or 0])
+        use = 0 if idx is None else idx
+        c = dict(cands[use])
         c['_matches'] = len(cands)
+        c['_index'] = use
+        c['_alternatives'] = [{'index': i, 't': str(x.get('t') or '')[:30],
+                               'point': [int(x['x']), int(x['y'])]}
+                              for i, x in enumerate(cands[:6]) if i != use]
         return int(c['x']), int(c['y']), c
 
     def _expect_seen(self, expect, out):
@@ -793,7 +840,9 @@ class GenericAgentHandler(BaseHandler):
             # 确定性搜索入口: 只固化"打开 App → 点搜索入口 → 输入关键词"这段固定路径(入口位置
             # 是 App 自身标题栏的稳定锚点), 结果列表/详情这些业务页仍然必须当帧观测 ——
             # geom.py:15-19 的边界没被破。真机实测: 模型为找放大镜花 16.3s 打一次 see()。
-            q = str(args.get('value') or args.get('query') or '').strip()
+            # 关键词别名: 模型经常把关键词塞进 target/text(它以为 action=search_app 的"目标"就是词)
+            q = str(args.get('value') or args.get('query')
+                    or args.get('target') or args.get('text') or '').strip()
             pkg = str(args.get('pkg') or args.get('package') or '').strip()
             t0 = time.time()
             try:
@@ -827,8 +876,9 @@ class GenericAgentHandler(BaseHandler):
         try:
             if act in ('tap', 'longpress'):
                 target_info = None
-                if args.get('target'):
-                    x, y, target_info = self._resolve_action_target(args)
+                info = self._resolve_action_target(args) if args.get('target') else None
+                if info:                       # 只有"给了 target 没给位置"才真的走解析
+                    x, y, target_info = info
                 else:
                     x, y = self._resolve_point(args, 'point', 'rel')
                 if act == 'tap':
@@ -839,9 +889,7 @@ class GenericAgentHandler(BaseHandler):
                 # 验证不可用在模型眼里要能区分。只给 diff 会把"没变化"当成"点到了但没反应"反复重发。
                 out = {'action': act, 'point': [x, y], 'diff': ret.get('diff')}
                 if target_info:
-                    out['target'] = {'text': target_info.get('t', '')[:60],
-                                     'src': target_info.get('src'),
-                                     'matches': target_info.get('_matches', 1)}
+                    out['target'] = self._target_view(target_info)
                 for k in ('verified', 'uncertain', 'hint', 'fg', 'screen', 'rot', 'orientation', 'orientation_changed'):
                     if ret.get(k) is not None:
                         out[k] = ret[k]
@@ -863,8 +911,12 @@ class GenericAgentHandler(BaseHandler):
                 target_info = None
                 if args.get('target'):
                     try:
-                        ax, ay, target_info = self._resolve_action_target(args)
-                        anchor = (ax, ay)
+                        info = self._resolve_action_target(args)
+                        if info:
+                            ax, ay, target_info = info
+                            anchor = (ax, ay)
+                        else:              # 同时给了位置: 位置优先, target 只当标注
+                            anchor = self._resolve_point(args, 'point', 'rel')
                     except Exception as e:
                         # 显式给了 target 就说明模型认为这个输入框位置很关键; 静默换成"最近落点"
                         # 会把定位失败伪装成一次成功粘贴。
@@ -877,9 +929,7 @@ class GenericAgentHandler(BaseHandler):
                 ret = droid.paste(val, point=anchor) if anchor is not None else droid.paste(val)
                 out = {'action': act, 'hit': ret.get('hit'), 'uncertain': ret.get('uncertain')}
                 if target_info:
-                    out['target'] = {'text': target_info.get('t', '')[:60],
-                                     'src': target_info.get('src'),
-                                     'matches': target_info.get('_matches', 1)}
+                    out['target'] = self._target_view(target_info)
                 # 敏感 App(微信等): 文本经剪贴板 + 自动 GUI 粘贴落屏。hit=true 才是真上屏;
                 # needs_gui_paste/hint 必须原样带回, 否则模型只看到 hit=false/uncertain,
                 # 会误判“输入失败”并重复点搜索框。
@@ -955,9 +1005,12 @@ class GenericAgentHandler(BaseHandler):
                 # 视觉型页面(微信等): 本地只剩 YOLO 一条腿, 每步 1.5~2.6s; 而本轮已经把整张图
                 # 发给主模型了, 再算一遍框是纯重复。留给模型自己看, 需要文字时它会用 look().
                 if self._session_takes_images():
-                    out['obs_note'] = ('当前屏幕截图已附在本轮消息里(visual-only 页面, 本地不再出框): '
-                                       '按图上的位置给 img_point=[x,y](图坐标, 我换算) 或 rel(0-1000); '
-                                       '图比屏幕小, 别在图坐标上直接填 point。需要文字时用 code_run 的 look()/ocr')
+                    out['obs_note'] = ('当前屏幕截图已附在本轮消息里(visual-only 页面, 本地不再出框)。'
+                                       '定位优先级: ① target="屏上看得见的文字" —— 我拿全分辨率截图做 '
+                                       'OCR 定位, 你不用换算也不会偏; ② img_point=[x,y] —— 图上量的像素, '
+                                       '我按 图→屏幕 比例换算; ③ rel(0-1000)。**别把图坐标填进 point**(那是'
+                                       '设备像素, 填错会整体偏一半以上)。需要文字内容时用 code_run 的 '
+                                       'look()/ocr')
                 else:
                     # 这句以前无条件说"已附": 真机 25 轮里说了 8 次, 实际一帧都没发出去(会话是文本
                     # 协议), 于是模型既不换定位通道也不再质问画面, 只在 see/ocr 之间来回。话术必须与

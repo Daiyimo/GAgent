@@ -2161,6 +2161,42 @@ def entry_hint(pkg=""):
     return dict(APP_ENTRY.get(pkg or (_fg() or ""), {}) or {})
 
 
+def _search_rows(limit=6):
+    """当帧搜索框下方的前几行(设备像素), 给 search_app 一步带回结果列表的位置。
+
+    结果列表的布局随查询而变, 所以这里**不写死**任何位置: 每一行都是这一帧 OCR 出来的。
+    OCR 会把一条结果切成 2~3 段(标题/来源/热度), 这里按纵向邻近合并成一"行"。
+    失败一律返回 [] —— 拿不到行不该让已经成功的"关键词上屏"变成失败。
+    """
+    try:
+        import numpy as np
+        img = shot()
+        H = int(np.asarray(img).shape[0])
+        raw = []
+        for box, text, score in ocr(img) or []:
+            t = str(text or '').strip()
+            if not t:
+                continue
+            pts = np.asarray(box, dtype='float32').reshape(-1, 2)   # 4 角点或 [x1,y1,x2,y2] 都吃
+            cy = int((pts[:, 1].min() + pts[:, 1].max()) / 2)
+            if not (int(H * 0.06) <= cy <= int(H * 0.92)):
+                continue
+            raw.append({'t': t[:40], 'x': int((pts[:, 0].min() + pts[:, 0].max()) / 2),
+                        'y': cy, 'conf': round(float(score or 0), 2)})
+        raw.sort(key=lambda r: r['y'])
+        # 同一行会被 OCR 切成几段(标题/来源/热度), 段间纵向差在真机约 1.5%~2% 屏高;
+        # 而相邻两条结果行至少差 10% 屏高(2026-10-29 实测 244/527/874px @2670), 取 2% 安全。
+        rows, row_tol = [], max(12, int(H * 0.02))
+        for r in raw:
+            if rows and abs(r['y'] - rows[-1]['y']) <= row_tol:
+                if len(rows[-1]['t']) < 60:
+                    rows[-1]['t'] = (rows[-1]['t'] + ' ' + r['t'])[:60]
+                continue
+            rows.append(dict(r))
+        return rows[:limit]
+    except Exception:
+        return []
+
 def app_search(pkg="com.tencent.mm", query="", wait=2.0):
     """确定性"打开 App → 搜关键词": 一步替掉 模型 see(均值 20.8s)→tap→text 的 3~5 轮。
 
@@ -2224,8 +2260,15 @@ def app_search(pkg="com.tencent.mm", query="", wait=2.0):
     out["fg"] = _fg()
     if pr.get("hit"):
         out["ok"] = True
-        out["hint"] = ("关键词已上屏。别再点搜索框或重复 paste: 直接用 obs 或 "
-                       "see(want='point') 定位第一条结果再 tap。")
+        rows = _search_rows()
+        if rows:
+            out["results"] = rows
+            out["hint"] = ("关键词已上屏。results 是这一帧 OCR 到的结果行(设备像素, 按 y 排序): "
+                           "要哪一行就 gui_act action=tap point=[x,y], 或 target=<那一行的文字>; "
+                           "别再点搜索框、别重复 paste、别把附图上的像素填进 point。")
+        else:
+            out["hint"] = ("关键词已上屏。别再点搜索框或重复 paste: 直接用 obs 或 "
+                           "see(want='point') 定位第一条结果再 tap。")
     else:
         out["hint"] = pr.get("hint") or ("输入未确认上屏(needs_gui_paste): 按提示手动补一次粘贴, "
                                          "不要重复 search_app。")

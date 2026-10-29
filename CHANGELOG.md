@@ -7,6 +7,24 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- Search results and target ambiguity: `gui_act action=search_app` now returns the
+  rows it can read on this frame (`results: [{t,x,y}]`, device pixels) with the
+  keyword, so "where is the first result" is an observation instead of a guess.
+  Measured on device: the fast sessions typed the keyword, tapped a text target, and
+  finished in 8 turns; the slow ones spent up to 24 turns re-guessing pixel positions
+  with `diff` 0.010%/0.000% because they only had a 647x1440 image to measure on.
+  Text targets also stop failing on ambiguity: same-name candidates are ranked
+  (exact match first, then topmost) and one is used, with the rejected candidates and
+  their `index` returned in the same result so `target_index` can correct it without
+  another round trip; `target` alongside `point`/`rel` is now a label instead of a
+  `ValueError`; and `search_app` accepts `value` / `query` / `target` / `text`.
+  搜索结果与 target 歧义：`gui_act action=search_app` 现在把这一帧能读到的结果行
+  （`results: [{t,x,y}]`，设备像素）随关键词一起带回——"第一条结果在哪"从猜变成读。真机
+  实测：快的会话输入关键词、点文字目标，8 轮收工；慢的会话花 24 轮反复猜像素位置，
+  `diff` 0.010%/0.000%，因为它手里只有一张 647×1440 的图可量。文字目标也不再因同名多解
+  报错：候选按「完全相等 → 从上到下」排序后选一个，落选清单连同 `index` 在同一份结果里
+  返回，`target_index` 不必多跑一轮；`target` 与 `point`/`rel` 同时给时当标注而不是
+  `ValueError`；`search_app` 接受 `value` / `query` / `target` / `text` 四种写法。
 - Coordinates: the screenshot attached to each turn is a *scaled* image (long side
   1440), but `point` means device pixels. The caption used to say "give `gui_act`
   `point` in this image's pixels", so the model did exactly that: on a 1200x2670

@@ -240,7 +240,11 @@ class SemanticActionTest(unittest.TestCase):
         self.assertNotIn('uncertain', data)
         self.assertIn('不是动作失败', data['hint'])
 
-    def test_ambiguous_target_returns_candidates_without_tapping(self):
+    def test_ambiguous_target_picks_topmost_and_returns_alternatives(self):
+        # 旧契约是"同名多解就报错让模型重来一轮"。真机实证这条契约在烧轮次: 2026-10-29 的
+        # 四个会话里它触发了 4 次, 每次白付一轮(5.6s); 而候选排序"完全相等 + 从上到下"选中的
+        # 正是真正的结果行(微信搜索页 8 个候选中的 `元梦之星` @(306,527))。
+        # 新契约: 选一个 + 把落选清单带回同一轮, 模型用 target_index 就地纠正。
         h = _handler()
         fake, taps = self._fake_droid(
             [{'x': 600, 'y': 300, 't': '搜索', 'd': ''},
@@ -248,9 +252,25 @@ class SemanticActionTest(unittest.TestCase):
         with patch.dict(sys.modules, {'droid': fake}):
             out = h.do_gui_act({'action': 'tap', 'target': '搜索'},
                                types.SimpleNamespace(content=''))
-        self.assertIn('2 matches', out.data)
-        self.assertIn('target_index', out.data)
-        self.assertEqual(taps, [])
+        data = json.loads(out.data)
+        self.assertEqual(taps, [(600, 300)])
+        self.assertEqual(data['target']['matches'], 2)
+        self.assertEqual(data['target']['chosen_by'], 'auto')
+        self.assertEqual([a['point'] for a in data['target']['alternatives']], [[700, 500]])
+        self.assertIn('target_index', data['target']['hint'])
+
+    def test_target_alongside_point_is_a_label_not_an_error(self):
+        # 模型反复同时给 target 和 point("我要点的是这个 + 大致位置"), 旧实现直接 ValueError。
+        h = _handler()
+        fake, taps = self._fake_droid(
+            [{'x': 600, 'y': 300, 't': '搜索', 'd': ''}], [])
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = h.do_gui_act({'action': 'tap', 'target': '搜索', 'point': [640, 320]},
+                               types.SimpleNamespace(content=''))
+        data = json.loads(out.data)
+        self.assertEqual(taps, [(640, 320)])
+        self.assertEqual(data['point'], [640, 320])
+        self.assertNotIn('target', data)
 
 
 class SeeRoutingTest(unittest.TestCase):

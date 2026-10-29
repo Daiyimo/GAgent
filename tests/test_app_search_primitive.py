@@ -31,7 +31,10 @@ class _NoBus(unittest.TestCase):
                     wait_stable=lambda **k: {'stable': True},
                     ping=lambda: {'w': 1200, 'h': 2670, 'pkg': 'com.tencent.mm'},
                     tap=lambda x, y: {'diff': 'diff: 28.0%'},
-                    paste=lambda text, **k: {'hit': True})
+                    paste=lambda text, **k: {'hit': True},
+                    # 结果行是"当帧 OCR"的: 默认给空, 免得单测去打真机总线。
+                    shot=lambda **k: (_ for _ in ()).throw(RuntimeError('no device')),
+                    ocr=lambda *a, **k: [])
         base.update(kw)
         return patch.multiple(droid, **base)
 
@@ -120,3 +123,57 @@ class EntryTableTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SearchRowsTest(_NoBus):
+    """search_app 之后直接给出结果行的位置。
+
+    真机 2026-10-29 的第 4/5/6 个会话: 关键词上屏后, 模型手里只有一张 647x1440 的图,
+    于是把图上量到的坐标填进 point(设备像素), 结果每一下都偏到 1/1.86 处, diff 反复
+    0.010%/0.000%(turns 见 temp/logpull/new3/narr_slow_210s.txt)。结果行的设备像素只有
+    这一帧 OCR 知道, 让原语顺手带回去, 比让模型自己换算更可靠。
+    """
+
+    @staticmethod
+    def _ocr(boxes):
+        return [(b, t, 0.9) for b, t in boxes]
+
+    def test_rows_are_read_from_this_frame_and_merged_per_line(self):
+        img = [[0] * 1200 for _ in range(2670)]
+        boxes = [
+            ([40, 560, 300, 600], '元梦之星'),        # 结果行 1 的标题
+            ([40, 610, 240, 640], '游戏'),            # 同一行的第二段(会被合并)
+            ([40, 900, 300, 940], '元梦之星游戏小程序'),  # 结果行 2
+            ([40, 60, 300, 100], 'Q元梦之星'),         # 搜索框回显: 在 0.06H 之上, 必须被过滤
+            ([40, 2600, 300, 2640], '导航栏'),          # 0.92H 之下, 必须被过滤
+        ]
+        with self._patch(shot=lambda **k: img, ocr=lambda *a, **k: self._ocr(boxes)):
+            rows = droid._search_rows()
+        self.assertEqual([r['t'] for r in rows], ['元梦之星 游戏', '元梦之星游戏小程序'])
+        self.assertEqual([r['y'] for r in rows], [580, 920])
+        self.assertTrue(all(r['y'] <= 2670 and r['x'] >= 0 for r in rows))
+
+    def test_ocr_failure_never_turns_a_successful_paste_into_a_failure(self):
+        with self._patch(shot=lambda **k: (_ for _ in ()).throw(RuntimeError('takeScreenshot failed')),
+                         ocr=lambda *a, **k: []):
+            out = droid.app_search(pkg='com.tencent.mm', query='元梦之星')
+        self.assertTrue(out['ok'])
+        self.assertNotIn('results', out)
+        self.assertIn('关键词已上屏', out['hint'])
+
+    def test_rows_ride_along_with_the_keyword(self):
+        img = [[0] * 1200 for _ in range(2670)]
+        boxes = [([40, 560, 300, 600], '元梦之星'), ([40, 900, 300, 940], '梦幻西游')]
+        with self._patch(shot=lambda **k: img, ocr=lambda *a, **k: self._ocr(boxes)):
+            out = droid.app_search(pkg='com.tencent.mm', query='元梦之星')
+        self.assertTrue(out['ok'])
+        self.assertEqual([r['t'] for r in out['results']], ['元梦之星', '梦幻西游'])
+        self.assertIn('point=[x,y]', out['hint'])
+        self.assertIn('别把附图上的像素填进 point', out['hint'])
+
+    def test_rows_are_capped(self):
+        img = [[0] * 1200 for _ in range(2670)]
+        boxes = [([40, 400 + 80 * i, 300, 440 + 80 * i], '结果%d' % i) for i in range(12)]
+        with self._patch(shot=lambda **k: img, ocr=lambda *a, **k: self._ocr(boxes)):
+            rows = droid._search_rows(limit=6)
+        self.assertEqual(len(rows), 6)

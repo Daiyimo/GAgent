@@ -5,7 +5,7 @@
 | 你要做什么 | 用什么 | 坐标从哪来 |
 | --- | --- | --- |
 | **操作屏幕**（点/滑/输入/启动/等待） | `gui_act` | 上一条结果的 `obs`：`x/y` 是像素原样传 `point`，`rx/ry` 是 0-1000 原样传 `rel`；本轮消息里附了截图时，**图上的位置填 `img_point`**（图是缩放过的，`point` 只吃设备像素）；有可见文字时优先传 `target`；有明确短文本时可传 `expect` 做正向确认，未命中不算动作失败 |
-| **在已登记入口的 App 里搜索**（微信/小程序等） | `gui_act action='search_app' value='要搜的名字'` | 不用给坐标：它自己「拉起 App → 点搜索入口 → 粘贴 → 回读」，返回 `steps` 里每一步的判据（`fg_ok`/`entry diff`/`hit`）。入口路径是固定路径，已固化在代码里；**搜索结果列表仍要你自己定位**（`obs` 或 `see(want='point')`） |
+| **在已登记入口的 App 里搜索**（微信/小程序等） | `gui_act action='search_app' value='要搜的名字'` | 不用给坐标：它自己「拉起 App → 点搜索入口 → 粘贴 → 回读」，返回 `steps` 里每一步的判据（`fg_ok`/`entry diff`/`hit`）。入口路径是固定路径，已固化在代码里；**搜索结果列表仍要你自己定位**（`obs` 或 `see(want='point')`）——关键词上屏后 `search_app` 会把这一帧 OCR 到的结果行放进 `results`（`{t,x,y}`，**设备像素**）：要哪一行就直接 `gui_act action=tap point=[x,y]`，或 `target=<那一行的文字>`；**不要拿附图上的像素当 `point`**（图比屏幕小，会整体偏到 1/1.86 处） |
 | **看本地结构/精确文字**（普通页面） | `observe` / `ocr` | `observe` 的 `x/y` 直接当 `point`；`ocr` 的 `x/y` 也可直接当 `point`。不要为已知控件再调 `see` |
 | **看画面语义**（游戏盘面 / 自绘 canvas / 混淆页 / 本地确实没有可用框） | `see(question, want='point'\|'text', roi=?)` | `want='point'` 直接给 `rx,ry`，原样传 `gui_act` 的 `rel`；当前轮已附图时直接读图（图上的位置填 `img_point`，别填 `point`），不要重复 `see(text)` |
 | **收尾**（做过实际动作） | `finish_task(status, result, evidence)` | 完成或被登录/权限/风控阻塞都用它；计划、下一步、工具 XML 不算完成 |
@@ -100,7 +100,7 @@ Python 适合无手机 UI 依赖的计算或文件处理，不得用底层输入
 （`tap`/`swipe`/`longpress`/`text`/`key`/`launch`/`back`/`home`/`wait`）。
 
 动作落地优先用语义目标而不是猜坐标：`tap/longpress/text` 可传 `target='可见文字'`，代码会从
-控件树/observe/OCR 里找唯一命中；多个命中会返回候选，用 `target_index` 选择。可传 `expect='短文本'`（多个用 `|`）做正向确认，返回 `expect_verified`；它只是软提示，
+控件树/observe/OCR 里找唯一命中；多个命中我会按「完全相等 + 从上到下」替你选一个，并把落选清单放在结果的 `target.alternatives` 里——选错了在**同一轮**用 `target_index=<index>` 纠正，不用多跑一轮。`target` 和坐标可以同时给（坐标优先，`target` 只当标注）。视觉型页面（没有 `obs` 的）**优先给 `target`**：我拿全分辨率截图做 OCR 定位，不需要你换算，也不会偏。可传 `expect='短文本'`（多个用 `|`）做正向确认，返回 `expect_verified`；它只是软提示，
 false 只表示本地可读文字里没命中，**不是动作失败**，不要因此重试——先看当前截图/`obs`。
 `diff` 只证明画面变了。当前轮已经附图时，先直接读图；重复的 `see(text)` 会被
 拒绝并提示改用 `ocr`/`observe`。
