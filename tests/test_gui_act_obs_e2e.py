@@ -144,7 +144,8 @@ class GuiActObsEndToEndTest(unittest.TestCase):
             script.append(('gui_act', dict(act)))
             if not observe_first:
                 observed = True               # gui_act 结果自带 obs → 继续有观测
-        script.append((None, {}))             # 收尾: 不再调工具
+        script.append(('finish_task', {'status': 'done', 'result': 'synthetic task done',
+                                       'evidence': ['synthetic actions completed']}))  # 显式收尾
 
         backend = _Backend()
         client = _ScriptedModel(script, backend)

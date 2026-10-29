@@ -33,7 +33,8 @@ LAYER_TODAY = 'L4'                      # 当前只有通用 ReAct 一层; Phase
 # 值为布尔或短枚举, 可安全落盘; 其余工具结果一律不记录。
 # 今天手机动作都在 code_run 的 stdout 里, 工具结果不带这些键 → 记入 tools_no_verdict;
 # 结构化动作空间落地后同一段代码直接开始产出判定与判定来源。
-VERDICT_KEYS = ('verified', 'uncertain', 'scrolled', 'evidence', 'performed', 'hit')
+VERDICT_KEYS = ('verified', 'uncertain', 'scrolled', 'evidence', 'performed', 'hit',
+                'expect_verified')
 
 # 判定函数归因表: (工具名, 见到的白名单键) → 既有判定函数名。归不出返回 None, 不猜。
 # gui_act 是多路复用器: 它按 action 分别调 droid.tap/swipe/paste, 判定仍由那些既有函数产出,
@@ -51,12 +52,15 @@ _VERIFIER_TABLE = (
 
 
 def _is_success(verdict: dict) -> bool:
-    return bool(verdict.get('hit') or verdict.get('scrolled') or verdict.get('verified') is True)
+    return bool(verdict.get('hit') or verdict.get('scrolled')
+                or verdict.get('verified') is True
+                or verdict.get('expect_verified') is True)
 
 
 def _is_negative(verdict: dict) -> bool:
     return (verdict.get('hit') is False or verdict.get('verified') is False
-            or verdict.get('scrolled') is False or verdict.get('evidence') == 'none')
+            or verdict.get('scrolled') is False or verdict.get('expect_verified') is False
+            or verdict.get('evidence') == 'none')
 
 
 def _has_pixel_evidence(verdict: dict) -> bool:

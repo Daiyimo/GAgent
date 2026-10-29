@@ -221,7 +221,8 @@ def _migrate_old_convos():
 _SUM = re.compile(r'<summary>(.*?)</summary>', re.S)
 _STRIP = [re.compile(p, re.S) for p in (
     r'<thinking>.*?</thinking>', r'<summary>.*?</summary>',
-    r'<tool_use>.*?</tool_use>', r'<file_content>.*?</file_content>')]
+    r'<tool_use>.*?</tool_use>', r'<tool_call>.*?</tool_call>',
+    r'<file_content>.*?</file_content>', r'<update_working_checkpoint>.*?</update_working_checkpoint>')]
 
 def _proxy_path():
     return os.path.join(GA_DIR, 'proxy.txt')

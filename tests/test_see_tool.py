@@ -156,7 +156,7 @@ class TestSeeTool(unittest.TestCase):
         self.assertIn('want', str(out.data))
 
     def test_see_uses_its_own_budget_not_code_runs(self):
-        """预算独立: see() 传 90s, 不从 code_run 剩余里扣。"""
+        """预算独立: see() 使用自己的上限, 不从 code_run 剩余里扣。"""
         h = _Handler()
         seen = {}
         with patch.object(droid, 'shot', lambda *a, **k: _IMG), \

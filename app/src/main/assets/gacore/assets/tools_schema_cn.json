@@ -3,7 +3,7 @@
     "type": "function",
     "function": {
       "name": "gui_act",
-      "description": "手机 GUI 结构化动作。任何屏幕操作都优先用它——不需要写 Python。动作: tap/longpress {point 或 rel, ms?}; swipe {point1+point2 或 rel1+rel2, ms}; text {value, 可带 point 或 rel 指输入框中心}; key {value:ENTER}; launch {value:pkg}; back; home; wait {seconds}。坐标单位——每个点只能给下面两种写法之一, 不能同时给: `point` = 像素, 与 dump()/look()/find() 的 x/y 以及 obs 的 x/y 同一单位, 照抄即可, 不要做任何换算; `rel` = 0-1000 归一化(左上原点, x 右 y 下), 用于 ask_vision 的返回值和本身就是相对位置的目标。绝不要自己把一种单位换算成另一种, 也不要猜一个数字是哪种单位: 像素被当成归一化时会偏出几百像素, 而且**不报错、没有 hint**, 你只会看到 diff=0 然后反复重点。两种都给或都不给都会被拒, 报错里会列出两种正确写法。像素越界会被拒, 报错带当前屏幕尺寸——这时改用 rel。结果自带 `obs`——当前屏幕上的紧凑清单([{t, cls, x, y, rx, ry}], 最多 12 项; x/y 是像素可直接当 point, rx/ry 是 0-1000 可直接当 rel), 因此通常可以直接从它选下一个目标, 不必再花一轮 code_run 去 dump()/look()。只有在 obs 为空或需要它不带的信息时才用 code_run 观察。一次调用一个动作。用 code_run 来**观察**屏幕(dump()/look())、做多步逻辑或非 GUI 工作——观察不是动作。look/dump 不是 gui_act 动作, 观察请用 code_run。任何搜索框/搜索页: 点框就会拉起输入法, 不要再点一次去\"激活\"(点已聚焦的框可能 diff=0, 这不是失败)。敏感 App(微信等): text 一步做完——写剪贴板 + 自动点可见的『粘贴』菜单或键盘剪贴板候选 + 回读确认, hit=true 才算真的上屏; 带上输入框中心的 point(或 rel)命中率最高, 不给则用最近一次点击落点当锚点。返回 needs_gui_paste 说明自动那一下没成, 按 hint 手动补一次, 不要重复 paste。长按空白处会收起键盘/搜索框。无文字图标按钮(放大镜/+ /返回/菜单): 分两级定位, 绝不要猜。① 在 code_run 里 `look(roi='title')`——装了 Android UI 检测模型时它会额外返回 `type='icon'` 的框(cls 是控件语义, x/y 是整屏像素, 可直接当 `point`)。本机实测: 一次 look() 即给出微信放大镜 (997,216) 与 + (1115,217), 31ms。② 只有 ① 拿不到 icon 框时, 才在 code_run 里用 `droid.ask_point(<要找什么>, roi='title')`——它用固定问句向当前模型要一个 0-1000 数对, 并拒掉带百分号的回答——拿到的数对原样传给 `rel`, 点后核验。不要用状态栏时间/电池文字推位置, 也不要自己写 ask_vision 问坐标(曾经漂移成\"百分比(0-100)\", VLM 回一段散文, 点中了状态栏)。",
+      "description": "手机 GUI 结构化动作。任何屏幕操作都优先用它——不需要写 Python。动作: tap/longpress {point 或 rel, ms?}; swipe {point1+point2 或 rel1+rel2, ms}; text {value, 可带 point 或 rel 指输入框中心}; key {value:ENTER}; launch {value:pkg}; back; home; wait {seconds}。坐标单位——每个点只能给下面两种写法之一, 不能同时给: `point` = 像素, 与 dump()/look()/find() 的 x/y 以及 obs 的 x/y 同一单位, 照抄即可, 不要做任何换算; `rel` = 0-1000 归一化(左上原点, x 右 y 下), 用于 ask_vision 的返回值和本身就是相对位置的目标。绝不要自己把一种单位换算成另一种, 也不要猜一个数字是哪种单位: 像素被当成归一化时会偏出几百像素, 而且**不报错、没有 hint**, 你只会看到 diff=0 然后反复重点。两种都给或都不给都会被拒, 报错里会列出两种正确写法。像素越界会被拒, 报错带当前屏幕尺寸——这时改用 rel。结果自带 `obs`——当前屏幕上的紧凑清单([{t, cls, x, y, rx, ry}], 最多 12 项; x/y 是像素可直接当 point, rx/ry 是 0-1000 可直接当 rel), 因此通常可以直接从它选下一个目标, 不必再花一轮 code_run 去 dump()/look()。只有在 obs 为空或需要它不带的信息时才用 code_run 观察。一次调用一个动作。用 code_run 来**观察**屏幕(dump()/look())、做多步逻辑或非 GUI 工作——观察不是动作。look/dump 不是 gui_act 动作, 观察请用 code_run。任何搜索框/搜索页: 点框就会拉起输入法, 不要再点一次去\"激活\"(点已聚焦的框可能 diff=0, 这不是失败)。敏感 App(微信等): text 一步做完——写剪贴板 + 自动点可见的『粘贴』菜单或键盘剪贴板候选 + 回读确认, hit=true 才算真的上屏; 带上输入框中心的 point(或 rel)命中率最高, 不给则用最近一次点击落点当锚点。返回 needs_gui_paste 说明自动那一下没成, 按 hint 手动补一次, 不要重复 paste。长按空白处会收起键盘/搜索框。无文字图标按钮(放大镜/+ /返回/菜单): 分两级定位, 绝不要猜。① 在 code_run 里 `look(roi='title')`——装了 Android UI 检测模型时它会额外返回 `type='icon'` 的框(cls 是控件语义, x/y 是整屏像素, 可直接当 `point`)。本机实测: 一次 look() 即给出微信放大镜 (997,216) 与 + (1115,217), 31ms。② 只有 ① 拿不到 icon 框时, 才在 code_run 里用 `droid.ask_point(<要找什么>, roi='title')`——它用固定问句向当前模型要一个 0-1000 数对, 并拒掉带百分号的回答——拿到的数对原样传给 `rel`, 点后核验。不要用状态栏时间/电池文字推位置, 也不要自己写 ask_vision 问坐标(曾经漂移成\"百分比(0-100)\", VLM 回一段散文, 点中了状态栏)。 也可以不猜坐标: tap/longpress/text 用 `target` 指定可见文字/描述, 代码会从控件树、observe 的 YOLO/OCR 或 OCR 中解析唯一命中; 多个命中会返回候选, 用 `target_index` 选择。 传 `expect` 指定动作后画面上应出现的文字(多个用 | 分隔), gui_act 会核验并回 expect_verified; 未命中时不要用 diff/点击成功冒充推进。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -73,6 +73,22 @@
               "type": "number"
             },
             "description": "swipe end, 0-1000 normalized"
+          },
+          "target": {
+            "type": "string",
+            "description": "可见文字/描述(如按钮文案、输入框提示词); 与 point/rel 二选一。"
+          },
+          "target_index": {
+            "type": "integer",
+            "description": "target 命中多个时的候选下标(错误信息会列出候选)。"
+          },
+          "exact": {
+            "type": "boolean",
+            "description": "target 是否要求全等匹配, 默认子串匹配。"
+          },
+          "expect": {
+            "type": "string",
+            "description": "动作后应出现的画面文字; 多个用 | 分隔。代码会核验并返回 expect_verified。"
           }
         },
         "required": [
@@ -114,6 +130,83 @@
           "inline_eval": {
             "type": "boolean",
             "description": "不允许使用除非明确要求"
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "ocr",
+      "description": "本地 OCR: 返回文字及其 x/y/rx/ry/conf。精确文字优先用它, 需理解画面语义才用 see。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "roi": {
+            "description": "Optional ROI name or 0-1000 box."
+          },
+          "limit": {
+            "type": "integer",
+            "default": 24,
+            "description": ""
+          },
+          "min_conf": {
+            "type": "number",
+            "default": 0
+          }
+        }
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "finish_task",
+      "description": "显式结束任务并交付最终结果。做过实际动作后, 完成或被阻塞都用它; 不要用计划/下一步/工具XML结束。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "done",
+              "blocked",
+              "needs_user"
+            ]
+          },
+          "result": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "status",
+          "result"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "observe",
+      "description": "本地观测屏幕: 一次截图+控件树/YOLO, 返回紧凑目标。x/y 当 point, rx/ry 当 rel。普通页面先用它; canvas 或 items 为空才用 see。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "roi": {
+            "description": "Optional ROI."
+          },
+          "limit": {
+            "type": "integer",
+            "default": 16,
+            "description": ""
           }
         }
       }
@@ -264,7 +357,7 @@
     "type": "function",
     "function": {
       "name": "see",
-      "description": "问当前模型屏幕上有什么(视觉通道)。只在本地通道答不了的时候用: 画面是游戏/自绘 canvas/混淆页(没有控件树, obs 里没有可用框)、或目标不在 obs 里、或需要理解画面语义。普通控件树上的图标/按钮/输入框已经在 obs 里, 不要为某个图标在哪打 see()——本地 31ms, 视觉 15-46s。want='point' 返回 0-1000 坐标对(原样传给 gui_act 的 rel), 用固定问句且拒答百分号; want='text' 返回自由文本。roi 在送图前裁剪('title'/'status'/'navbar' 或 0-1000 四元组), 可把单次从 25-50s 降到 8-15s。一轮一次就够。失败后绝不重试: 改用 obs 或 droid.ocr() 读屏, 或 ask_user。",
+      "description": "问当前模型屏幕上有什么(视觉通道)。只在本地通道答不了的时候用: 画面是游戏/自绘 canvas/混淆页(没有控件树, obs 里没有可用框)、或目标不在 obs 里、或需要理解画面语义。普通控件树上的图标/按钮/输入框已经在 obs 里, 不要为某个图标在哪打 see()——本地 31ms, 视觉 15-46s。want='point' 返回 0-1000 坐标对(原样传给 gui_act 的 rel), 用固定问句且拒答百分号; want='text' 返回自由文本。roi 在送图前裁剪('title'/'status'/'navbar' 或 0-1000 四元组), 可把单次从 25-50s 降到 8-15s。一轮一次就够。失败后绝不重试: 改用 obs 或 droid.ocr() 读屏, 或 ask_user。 当前轮消息已附截图时, want='text' 会被拒绝并提示直接读图/改用 ocr; 同一屏同一问会命中缓存。 see 单次最多等 20s, 超时后改走本地 observe/ocr。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -286,6 +379,10 @@
           "max_pixels": {
             "type": "integer",
             "description": "可选, 编码像素的硬上限。图特别大时才需要。"
+          },
+          "force": {
+            "type": "boolean",
+            "description": "仅在本轮已附图但确实需要单独视觉语义复核时设 true; 默认 false。"
           }
         },
         "required": [

@@ -4,9 +4,11 @@
 
 | 你要做什么 | 用什么 | 坐标从哪来 |
 | --- | --- | --- |
-| **操作屏幕**（点/滑/输入/启动/等待） | `gui_act` | 上一条结果的 `obs`：`x/y` 是像素原样传 `point`，`rx/ry` 是 0-1000 原样传 `rel`。`obs` 为空或没有你要的目标才另想办法 |
-| **看画面**（游戏盘面 / 自绘 canvas / 混淆页 / 目标不在 obs 里 / 要理解语义） | `see(question, want='point'\|'text', roi=?)` | `want='point'` 直接给 `rx,ry`，原样传 `gui_act` 的 `rel` |
-| **其它**（读画面文字、多步逻辑、非 GUI 工作） | `code_run` | `droid.ocr(droid.shot())` 读文字；`droid.observe()` 重新取一次本地定位 |
+| **操作屏幕**（点/滑/输入/启动/等待） | `gui_act` | 上一条结果的 `obs`：`x/y` 是像素原样传 `point`，`rx/ry` 是 0-1000 原样传 `rel`；有可见文字时优先传 `target`，并传 `expect` 让代码核验动作后的画面 |
+| **看本地结构/精确文字**（普通页面） | `observe` / `ocr` | `observe` 的 `x/y` 直接当 `point`；`ocr` 的 `x/y` 也可直接当 `point`。不要为已知控件再调 `see` |
+| **看画面语义**（游戏盘面 / 自绘 canvas / 混淆页 / 本地确实没有可用框） | `see(question, want='point'\|'text', roi=?)` | `want='point'` 直接给 `rx,ry`，原样传 `gui_act` 的 `rel`；当前轮已附图时直接读图，不要重复 `see(text)` |
+| **收尾**（做过实际动作） | `finish_task(status, result, evidence)` | 完成或被登录/权限/风控阻塞都用它；计划、下一步、工具 XML 不算完成 |
+| **其它**（多步逻辑、非 GUI 工作） | `code_run` | 观察优先用 `observe`/`ocr`，不要 `print(droid.observe())` 全量 dict |
 
 **普通控件树上的图标/按钮/输入框已经在 `obs` 里了**（本地 31ms），不要为"某个图标在哪"打
 `see()`（15-46s）。反过来说：`obs` 里没有可用框、或画面是游戏/自绘/混淆页时，**不要**反复
@@ -88,6 +90,12 @@ Python 适合无手机 UI 依赖的计算或文件处理，不得用底层输入
 
 任何屏幕操作**优先用 `gui_act` 工具**，不要写 Python：9 个动作
 （`tap`/`swipe`/`longpress`/`text`/`key`/`launch`/`back`/`home`/`wait`）。
+
+动作落地优先用语义目标而不是猜坐标：`tap/longpress/text` 可传 `target='可见文字'`，代码会从
+控件树/observe/OCR 里找唯一命中；多个命中会返回候选，用 `target_index` 选择。动作后传
+`expect='应出现的文字'`（多个用 `|`）让代码核验，返回 `expect_verified`；`diff` 只证明画面变了，
+`expect_verified=false` 时不要当成任务推进。当前轮已经附图时，先直接读图；重复的 `see(text)` 会被
+拒绝并提示改用 `ocr`/`observe`。
 **坐标单位（真机实证：搞错这一条既点不中又不报错，是最大单一失败源）**：
 每个点有两种拼写，**只能给一种，不要自己换算**——
 `point` = **像素**（`dump()`/`look()`/`find()`/`obs` 的 `x/y` 和 `tap(x,y)` 都是它，照抄即可）；

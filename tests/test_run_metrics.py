@@ -64,6 +64,13 @@ class TestExtractVerdict:
         assert run_metrics.extract_verdict('{"broken') == {}
         assert run_metrics.extract_verdict('42') == {}
 
+    def test_expect_verified_is_a_first_class_verdict(self):
+        assert run_metrics.extract_verdict({'expect_verified': True}) == {'expect_verified': True}
+        assert run_metrics.classify_verdict({'expect_verified': True}) == 'verified'
+        assert run_metrics.classify_verdict({'expect_verified': False}) == 'negative'
+        # 动作后读不到期望文本时调用方会同时给 uncertain; 不确定必须优先于失败。
+        assert run_metrics.classify_verdict({'expect_verified': False, 'uncertain': True}) == 'uncertain'
+
 
 class TestAttribVerifier:
     @pytest.mark.parametrize('tool,verdict,expected', [

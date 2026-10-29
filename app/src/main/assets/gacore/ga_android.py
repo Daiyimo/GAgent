@@ -208,13 +208,40 @@ def consume_file(dr, file):
 _SEE_CLASS_INTENT = ('这是什么', '什么屏幕', '什么页面', '哪个页面', '什么界面', '哪个界面',
                      '当前画面', '当前屏', '是不是游戏', '是游戏吗', '大厅吗', '主界面吗', 'canvas')
 # 内容/定位词: 命中任一即否决拦截, 放行 VLM(问的是内容或位置, 不是画面类别)。
-_SEE_CONTENT_WORDS = ('在哪', '位置', '坐标', '有什么', '哪些', '写着', '文字', '模块', '按钮',
-                      '入口', '弹窗', '列表', '价格', '名称', '数量', '点哪', '怎么', '多少', '几个')
+_SEE_CONTENT_WORDS = ('在哪', '位置', '坐标', '有什么', '哪些', '写着', '文字', '内容', '模块', '按钮',
+                      '输入框', '入口', '弹窗', '列表', '价格', '名称', '数量', '点哪', '怎么', '多少', '几个',
+                      '是否', '有没有', '显示', '可见', '包含')
 _KIND_MEANING = {
     'tree': '普通控件树(有可点/可读节点)',
     'blanked': '敏感 App 或未解析前台, 控件树被置空',
     'canvas': '自绘/游戏/SurfaceView 画面, 无可用控件树',
 }
+
+# 完成契约: 这些都是"控制消息/工具调用", 不是给用户的最终答复。模型偶尔会把它们当正文输出,
+# 旧 do_no_tool 直接当作任务完成, 结果打开 finish_task/update_working_checkpoint 的 XML 也被当成 done。
+_CONTROL_TAG_RE = re.compile(
+    r'<\s*(?:update_working_checkpoint|tool_use|tool_call|finish_task|file_content|key_info)\b',
+    re.I)
+# 只匹配明确的"还在路上"信号, 不把普通结果里的"需要"误伤成未完成。
+_INCOMPLETE_RE = re.compile(
+    r'(需要依次|接下来|下一步|我将|我准备|正在(?:尝试|执行|查找|等待)|'
+    r'尚未完成|还需要|待完成|即将(?:点击|打开|执行|完成)|'
+    r'\b(?:next step|i will|i\'ll|i am going to|i\'m going to|still need|not yet|will now)\b)',
+    re.I)
+
+
+def _has_unparsed_control(text):
+    """正文里出现控制/工具标签, 说明模型把协议消息写进了回复, 没有真正调用工具。"""
+    return bool(_CONTROL_TAG_RE.search(text or ''))
+
+def _visible_reply_text(text):
+    """去掉内部块后的自然语言正文。只看这个判断是否真的给了用户一个结果。"""
+    x = text or ''
+    x = re.sub(r'<thinking>[\s\S]*?</thinking>', '', x, flags=re.I)
+    x = re.sub(r'<summary>[\s\S]*?</summary>', '', x, flags=re.I)
+    x = re.sub(r'<file_content[^>]*>[\s\S]*?</file_content>', '', x, flags=re.I)
+    x = re.sub(r'<[^>]+>', ' ', x)
+    return re.sub(r'\s+', ' ', x).strip()
 
 
 def _looks_like_screen_class_question(q):
@@ -251,6 +278,17 @@ class GenericAgentHandler(BaseHandler):
         self.code_stop_signal = []
         self._done_hooks = []
         self.print = safe_print
+        # 通用任务状态: 完成必须由 finish_task 显式标记; GUI 动作计数用于判断
+        # "模型只是输出计划/控制 XML" 时不能当成任务结束。
+        self._gui_actions = 0
+        self._task_finished = False
+        self._no_tool_retries = 0
+        self._finish_prompted = False
+        self._vision_in_turn_attached = False
+        self._see_cache = None
+        self._see_failed_digest = None
+        self._see_turn = -1
+        self._memory_tip_shown = False
 
     def _get_abs_path(self, path):
         if not path: return ""
@@ -294,7 +332,7 @@ class GenericAgentHandler(BaseHandler):
         raw_path = os.path.join(self.cwd, args.get("cwd", './'))
         cwd = os.path.normpath(os.path.abspath(raw_path))
         code_cwd = os.path.normpath(self.cwd)
-        maxlen = 10000 // args.get('_tool_num', 1)
+        maxlen = 6000 // args.get('_tool_num', 1)
         if code_type == 'python' and args.get("inline_eval"):
             ns = {'handler':self, 'parent':self.parent, 'history':json.dumps(self.parent.llmclient.backend.history)}
             old_cwd = os.getcwd()
@@ -312,9 +350,9 @@ class GenericAgentHandler(BaseHandler):
     
     _GUI_ACTIONS = ('tap', 'swipe', 'longpress', 'text', 'key', 'launch', 'back', 'home', 'wait')
 
-    _SEE_BUDGET_S = 90    # see() 自己的墙钟预算。视觉调用实测 15-46s, 而 code_run 默认只有 60s
-                          # —— 旧实现让 ask_vision 在 code_run 里跟脚本抢这 60s, 一轮最多一次,
-                          # 还要靠 4 个常量推导剩余。升为第一级工具后预算独立, 那套全删。
+    _SEE_BUDGET_S = 20    # see() 自己的墙钟预算。视觉调用实测 15-46s; 超过 20s 的调用通常
+                          # 是供应商卡住或整屏大图, 继续等只会把一次失败放大成 40-60s。超时后
+                          # 让模型改走本地 observe/ocr, 而不是在同一屏上反复重试。
 
     _GUI_ACT_BUDGET_S = 120   # gui_act 硬墙钟。code_run 已有 timeout(默认 60s, 模型可传),
                               # see() 有自己的 90s; gui_act 曾是唯一没有上限的工具 —— 真机一次
@@ -360,6 +398,14 @@ class GenericAgentHandler(BaseHandler):
                        'ms': round((time.time() - t1) * 1000, 1)}
                 return StepOutcome(json.dumps(out, ensure_ascii=False),
                                    next_prompt=self._get_anchor_prompt(skip=args.get('_index', 0) > 0))
+        # 本轮主循环已经附了当前截图时, 再调 want='text' 只是在同一张图上重付一次 prefill+TTFT。
+        # 精确文字优先用 ocr, 目标定位优先用 observe; 只有需要看语义/画面细节才允许强制 see。
+        if want == 'text' and getattr(self, '_vision_in_turn_attached', False) and not args.get('force'):
+            return StepOutcome(json.dumps({
+                'ok': False, 'reason': 'redundant_image',
+                'hint': '本轮消息已附当前屏幕截图, 直接读图即可; 需要精确文字用 ocr, '
+                        '需要控件坐标用 observe。确需视觉语义复核再传 force=true。'
+            }, ensure_ascii=False), next_prompt='\n')
         try:
             box = droid._resolve_roi(args.get('roi')) if args.get('roi') else (0, 0, geom.NORM, geom.NORM)
         except ValueError as e:
@@ -385,6 +431,37 @@ class GenericAgentHandler(BaseHandler):
         t0 = time.time()
         try:
             img = droid.shot()
+            # 同屏同问缓存: 重复 see 不改变答案, 但每次要重付 15-20s。截图摘要只用于判同屏。
+            try:
+                # 去掉状态栏时钟区域后再判同屏; 否则时间跳一分钟就会让缓存失效。
+                h = img.shape[0]
+                digest = hash(img[int(h * 0.04):, :].tobytes())
+            except Exception:
+                digest = None
+            if digest is not None and getattr(self, '_see_failed_digest', None) == digest \
+                    and not args.get('force'):
+                return StepOutcome(json.dumps({
+                    'ok': False, 'reason': 'already_failed',
+                    'hint': '这一屏的 see 已经失败过; 按失败 hint 改走 observe/ocr 或 ask_user, '
+                            '不要把同一张图再送一次。页面改变或确需强制复核再传 force=true。'
+                }, ensure_ascii=False), next_prompt='\n')
+            cache_key = (digest, want, q, tuple(box), max_pixels)
+            prev = getattr(self, '_see_cache', None)
+            if digest is not None and prev and prev.get('key') == cache_key:
+                cached = dict(prev.get('out') or {})
+                cached.update({'cached': True, 'ms': 0.0,
+                               'hint': '同一屏同一问题已问过, 直接复用上次结果; 不要重复 see。'})
+                return StepOutcome(json.dumps(cached, ensure_ascii=False),
+                                   next_prompt=self._get_anchor_prompt(skip=args.get('_index', 0) > 0))
+            # 同一轮已经调用过一次 see: 第二个问句通常是基于同一张图写的,
+            # 模型实际还没看到第一个答案。先让它用已有结果做下一步, 避免同轮多付 20s。
+            if getattr(self, '_see_turn', -1) == self.current_turn and not args.get('force'):
+                return StepOutcome(json.dumps({
+                    'ok': False, 'reason': 'redundant_turn',
+                    'hint': '本轮已经调用过一次 see; 先用已有结果或 observe/ocr 做下一步, '
+                            '不要在同一轮再问一次。确需强制复核传 force=true。'
+                }, ensure_ascii=False), next_prompt='\n')
+            self._see_turn = self.current_turn
             if want == 'point':
                 text = droid.ask_vision(img, droid._ASK_POINT_PROMPT % q, roi=box,
                                         timeout=self._SEE_BUDGET_S, max_pixels=max_pixels)
@@ -394,10 +471,17 @@ class GenericAgentHandler(BaseHandler):
                 ry = int(round(ry1 + cy / float(geom.NORM) * (ry2 - ry1)))
                 out = {'ok': True, 'rx': rx, 'ry': ry}
             else:
-                out = {'ok': True,
-                       'answer': droid.ask_vision(img, q, roi=box, timeout=self._SEE_BUDGET_S,
-                                                  max_pixels=max_pixels)}
+                concise_q = q + ('\n只回答当前画面可直接看到的事实，最多3行或200字；'
+                                 '不要解释、不要推测、不要补充与问题无关的常识。')
+                answer = str(droid.ask_vision(img, concise_q, roi=box, timeout=self._SEE_BUDGET_S,
+                                              max_pixels=max_pixels))
+                # 视觉回答最容易漂成长段散文。只保留前 600 字; 需要精确全文时用 ocr,
+                # 不把一次 VLM 的跑题输出永久写进后续每轮上下文。
+                if len(answer) > 600:
+                    answer = answer[:600] + '…[truncated]'
+                out = {'ok': True, 'answer': answer}
         except Exception as e:
+            self._see_failed_digest = locals().get('digest')
             return StepOutcome(json.dumps({
                 'ok': False, 'reason': 'call_failed',
                 'error': '%s: %s' % (type(e).__name__, str(e)[:200]),
@@ -406,6 +490,8 @@ class GenericAgentHandler(BaseHandler):
                 next_prompt='\n')
         out.update({'ms': round((time.time() - t0) * 1000, 1),
                     'model': droid._backend_id(backend)[:80]})
+        self._see_cache = {'key': cache_key, 'out': dict(out)}
+        self._see_failed_digest = None
         if want == 'point' and not args.get('roi'):
             # 1b: point 未传 roi → 全屏视觉 25-40s; 在执行点复述 roi 代价, 增强模型成本感知。
             # 只增字段、不改 rx/ry、不改成功路径; 传了 roi 不加。
@@ -471,6 +557,132 @@ class GenericAgentHandler(BaseHandler):
                                 *geom.to_norm(int(a), int(b), w, h)))
         return int(a), int(b)
 
+    def _find_target_candidates(self, target, exact=False):
+        """按可见文本/描述找目标。先走控件树, 再走 observe 的 YOLO+OCR, 最后直接 OCR。
+
+        这是通用动作落地, 不是给某个 App 写坐标: 按钮/标签/输入框的文字在哪个通道能看到,
+        就从哪个通道取边界。返回项统一带 x/y/bbox/source/t。找不到返回 []。
+        """
+        import droid
+        target = str(target or '').strip()
+        if not target:
+            return []
+        cands = []
+
+        def add(item, source, text=''):
+            try:
+                x, y = int(item['x']), int(item['y'])
+                t = str(text or item.get('t') or item.get('desc') or '')
+                bbox = item.get('bbox') or [x, y, x, y]
+                cands.append({'x': x, 'y': y, 'bbox': list(bbox), 't': t, 'src': source})
+            except Exception:
+                pass
+
+        try:
+            for n in droid.find(target, exact=exact):
+                add(n, 'tree', n.get('t') or n.get('d') or '')
+        except Exception:
+            pass
+        if cands:
+            return self._dedupe_candidates(cands)
+
+        try:
+            obs = droid.observe()
+            for it in obs.get('items') or []:
+                hay = '%s %s %s' % (it.get('t') or '', it.get('desc') or '', it.get('cls') or '')
+                if (hay.strip() == target) if exact else (target in hay):
+                    add(it, 'observe', it.get('t') or it.get('desc') or '')
+        except Exception:
+            pass
+        if cands:
+            return self._dedupe_candidates(cands)
+
+        # 树为空/敏感 App 时 observe 的 YOLO 可能拿不到语义图标; OCR 是文本目标的最后一层。
+        try:
+            import numpy as np
+            img = droid.shot()
+            H, W = img.shape[:2]
+            for box, text, score in droid.ocr(img) or []:
+                label = str(text).strip()
+                if (label != target) if exact else (target not in label):
+                    continue
+                pts = np.asarray(box)
+                gx = int((pts[:, 0].min() + pts[:, 0].max()) / 2)
+                gy = int((pts[:, 1].min() + pts[:, 1].max()) / 2)
+                add({'x': gx, 'y': gy, 't': str(text),
+                     'bbox': [int(pts[:, 0].min()), int(pts[:, 1].min()),
+                              int(pts[:, 0].max()), int(pts[:, 1].max())]}, 'ocr', str(text))
+        except Exception:
+            pass
+        return self._dedupe_candidates(cands)
+
+    @staticmethod
+    def _dedupe_candidates(cands):
+        out = []
+        seen = set()
+        for c in cands:
+            key = (c['x'], c['y'], c['t'])
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(c)
+        return out
+
+    def _resolve_action_target(self, args):
+        """gui_act 的 target → 像素点。多个候选时不替模型猜, 返回可选索引。"""
+        target = str(args.get('target') or '').strip()
+        if not target:
+            return None
+        if args.get('point') is not None or args.get('rel') is not None:
+            raise ValueError('target is an alternative to point/rel; pass only one location')
+        try:
+            idx = int(args.get('target_index')) if args.get('target_index') is not None else None
+        except (TypeError, ValueError):
+            raise ValueError('target_index must be an int')
+        cands = self._find_target_candidates(target, exact=bool(args.get('exact')))
+        if not cands:
+            raise LookupError('target %r was not found in the current tree/observe/OCR; '
+                              'take a fresh observe first, or use see(want="point") only for canvas' % target)
+        if idx is None and len(cands) > 1:
+            brief = '; '.join('[%d] %r @(%d,%d)' % (i, c['t'][:30], c['x'], c['y'])
+                              for i, c in enumerate(cands[:8]))
+            raise ValueError('target %r has %d matches: %s -> pass target_index or a unique exact target'
+                             % (target, len(cands), brief))
+        if idx is not None and not (0 <= idx < len(cands)):
+            raise ValueError('target_index %r out of range 0..%d' % (idx, len(cands) - 1))
+        c = dict(cands[idx or 0])
+        c['_matches'] = len(cands)
+        return int(c['x']), int(c['y']), c
+
+    def _expect_seen(self, expect, out):
+        """动作后核验 expect 文本。返回 (True|False|None, 证据列表)。
+        None = 当前通道读不到文字, 不伪造失败; False = 读到了文字但 expect 不在其中。"""
+        import droid
+        if isinstance(expect, (list, tuple)):
+            expect = '|'.join(str(x) for x in expect)
+        parts = [p.strip() for p in re.split(r'\s*\|\s*', str(expect or '')) if p.strip()]
+        if not parts:
+            return True, []
+        hay = []
+        for it in out.get('obs') or []:
+            for k in ('t', 'label', 'desc'):
+                if it.get(k):
+                    hay.append(str(it[k]))
+        joined = ' '.join(hay)
+        ok = any(p in joined for p in parts)
+        # obs 只保留前 12 项; expect 可能在后面, 不能因为"前 12 项没有"就判失败。
+        # 未命中时再 OCR 一次当前画面; OCR 读不到文字才返回 None(不伪造失败)。
+        if not ok:
+            try:
+                extra = [str(t) for _b, t, _s in (droid.ocr(droid.shot()) or [])]
+            except Exception:
+                return None, []
+            if not extra:
+                return None, []
+            joined = (joined + ' ' + ' '.join(extra)).strip()
+            ok = any(p in joined for p in parts)
+        return ok, [p for p in parts if p in joined]
+
     def do_gui_act(self, args, response):
         """GUI structured action: the model picks an action instead of writing Python.
         Measured on a real device against the alternative design: a free-form code agent
@@ -508,7 +720,11 @@ class GenericAgentHandler(BaseHandler):
             except Exception: pass
         try:
             if act in ('tap', 'longpress'):
-                x, y = self._resolve_point(args, 'point', 'rel')
+                target_info = None
+                if args.get('target'):
+                    x, y, target_info = self._resolve_action_target(args)
+                else:
+                    x, y = self._resolve_point(args, 'point', 'rel')
                 if act == 'tap':
                     ret = droid.tap(x, y)
                 else:
@@ -516,6 +732,10 @@ class GenericAgentHandler(BaseHandler):
                 # verified/uncertain/hint/fg 必须一起转发: 坐标失效(屏幕形态变化)、点到非热区、
                 # 验证不可用在模型眼里要能区分。只给 diff 会把"没变化"当成"点到了但没反应"反复重发。
                 out = {'action': act, 'point': [x, y], 'diff': ret.get('diff')}
+                if target_info:
+                    out['target'] = {'text': target_info.get('t', '')[:60],
+                                     'src': target_info.get('src'),
+                                     'matches': target_info.get('_matches', 1)}
                 for k in ('verified', 'uncertain', 'hint', 'fg', 'screen', 'rot', 'orientation', 'orientation_changed'):
                     if ret.get(k) is not None:
                         out[k] = ret[k]
@@ -534,11 +754,25 @@ class GenericAgentHandler(BaseHandler):
                 # point/rel = 输入框中心(可选): 敏感 App 的 GUI 粘贴要长按输入框唤出菜单,
                 # 由模型直接给比让它猜"最近点过哪儿"稳。给了就传, 没给交给 droid 用手势落点兜底。
                 anchor = None
-                if args.get('point') is not None or args.get('rel') is not None:
+                target_info = None
+                if args.get('target'):
+                    try:
+                        ax, ay, target_info = self._resolve_action_target(args)
+                        anchor = (ax, ay)
+                    except Exception as e:
+                        # 显式给了 target 就说明模型认为这个输入框位置很关键; 静默换成"最近落点"
+                        # 会把定位失败伪装成一次成功粘贴。
+                        return StepOutcome('[Error] gui_act text target failed: %s: %s'
+                                           % (type(e).__name__, e), next_prompt='\n')
+                elif args.get('point') is not None or args.get('rel') is not None:
                     try: anchor = self._resolve_point(args, 'point', 'rel')
                     except Exception: anchor = None
                 ret = droid.paste(val, point=anchor) if anchor is not None else droid.paste(val)
                 out = {'action': act, 'hit': ret.get('hit'), 'uncertain': ret.get('uncertain')}
+                if target_info:
+                    out['target'] = {'text': target_info.get('t', '')[:60],
+                                     'src': target_info.get('src'),
+                                     'matches': target_info.get('_matches', 1)}
                 # 敏感 App(微信等): 文本经剪贴板 + 自动 GUI 粘贴落屏。hit=true 才是真上屏;
                 # needs_gui_paste/hint 必须原样带回, 否则模型只看到 hit=false/uncertain,
                 # 会误判“输入失败”并重复点搜索框。
@@ -605,6 +839,30 @@ class GenericAgentHandler(BaseHandler):
                     out['obs'] = self._compact_obs(pending() if pending else None)
                 except Exception:
                     pass
+        # 通用动作后验: 只信"动作返回成功"不够, 模型必须说明期望看到什么。
+        # expect 命中才算 verified; 读不到文字时保留 None, 不伪造失败。
+        expect = args.get('expect')
+        if expect and act != 'wait':
+            ok, seen = self._expect_seen(expect, out)
+            out['expect'] = expect if isinstance(expect, str) else list(expect)
+            out['expect_verified'] = ok
+            if ok is True:
+                out['verified'] = True
+            elif ok is False:
+                out['verified'] = False
+                # 不能让 paste 的 hit=True 盖过 expect 未命中: 指标里 uncertain 优先于 verified,
+                # 这里把"期望页面没出现"归为未确认, 而不是成功。
+                out['uncertain'] = True
+                prev = out.get('hint')
+                out['hint'] = ('动作后画面未出现 expect=%r; 不要把 diff/点击成功当成任务推进, '
+                               '先观察当前页面再决定下一步。' % (expect,))
+                if prev:
+                    out['hint'] = prev + ' | ' + out['hint']
+        if act != 'wait':
+            self._gui_actions = getattr(self, '_gui_actions', 0) + 1
+            self._see_failed_digest = None   # 动作后允许对当前画面重新做一次视觉复核
+            self._finish_prompted = False    # 新动作后的停止仍要先问一次 finish_task
+            self._no_tool_retries = 0        # 动作推进后重置短回复重试预算
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         return StepOutcome(json.dumps(out, ensure_ascii=False), next_prompt=next_prompt)
 
@@ -612,6 +870,7 @@ class GenericAgentHandler(BaseHandler):
     # 全量 look() 常常 2~5K 字符, 这里封顶后约 800)
     _OBS_ITEMS = 12
     _OBS_LABEL = 24
+    _OBS_RESULT_ITEMS = 16
 
     # 每轮附图: 长边 1440 + q70 ≈ 1.4k image token(真机 1200x2670 原图直发太贵)
     _VISION_MAX_SIDE = 1440
@@ -657,15 +916,19 @@ class GenericAgentHandler(BaseHandler):
         """
         mode = self._vision_mode()
         if mode == 'off' or not self._session_takes_images():
+            self._vision_in_turn_attached = False
             return None
         if mode == 'auto' and not self._vision_covers_screen():
+            self._vision_in_turn_attached = False
             return None
         try:
             import droid
             b64, (w, h) = droid.shot_frame_b64(max_side=self._VISION_MAX_SIDE,
                                                quality=self._VISION_QUALITY)
         except Exception as exc:
+            self._vision_in_turn_attached = False
             return [{"type": "text", "text": "[当前屏幕截图不可用: %s]" % type(exc).__name__}]
+        self._vision_in_turn_attached = True
         return [
             {"type": "text", "text": "当前屏幕截图（%dx%d 像素；坐标按这张图的像素给 gui_act 的 point）。"
                                      % (w, h)},
@@ -686,15 +949,8 @@ class GenericAgentHandler(BaseHandler):
             res = droid.observe()          # 旧 droid 没有 img= 形参时的降级
         except Exception:
             return []
-        items = []
-        for i in res['items'][:self._OBS_ITEMS]:
-            # t=显示文本(树节点的 text / yolo 的 OCR 文字), desc=contentDescription; 都没有才退 cls
-            label = str(i.get('t') or i.get('desc') or i.get('cls') or '').strip()[:self._OBS_LABEL]
-            items.append({'t': label, 'src': i['src'], 'label': label,
-                          'cls': str(i.get('cls') or '')[:16],
-                          'x': i['x'], 'y': i['y'], 'rx': i['rx'], 'ry': i['ry'],
-                          'click': i['click']})
-        return items
+        return [self._obs_item_view(i, self._OBS_LABEL)
+                for i in res['items'][:self._OBS_ITEMS]]
 
     @staticmethod
     def _act_proved_change(act, out):
@@ -721,6 +977,137 @@ class GenericAgentHandler(BaseHandler):
         yield f"Waiting for your answer ...\n"
         return StepOutcome(result, next_prompt="", should_exit=True)
     
+    def do_finish_task(self, args, response):
+        """显式结束任务。只有这个工具能把"任务完成"与"模型停止输出"分开。
+
+        设计口径:
+        - `result` 是给用户的最终交付物, 由 agent_loop 直接展示(不要把它再塞进普通正文);
+        - `evidence` 是本轮/本任务里已核验的证据(屏幕文字、工具返回、文件检查等);
+        - `status=done` 且做过 GUI 动作时必须有 evidence, 否则拒绝——屏幕变了不等于任务完成;
+        - `blocked` 用于登录/权限/风控等不可继续的人为边界, 也要写清原因。
+        """
+        status = str(args.get('status') or '').strip().lower()
+        result = str(args.get('result') or '').strip()
+        raw_evidence = args.get('evidence')
+        if isinstance(raw_evidence, str):
+            evidence = [raw_evidence.strip()] if raw_evidence.strip() else []
+        elif isinstance(raw_evidence, (list, tuple)):
+            evidence = [str(x).strip() for x in raw_evidence if str(x).strip()]
+        else:
+            evidence = []
+        if status not in ('done', 'blocked', 'needs_user'):
+            return StepOutcome('[Error] finish_task.status must be done/blocked/needs_user',
+                               next_prompt=self._get_anchor_prompt())
+        if not result:
+            return StepOutcome('[Error] finish_task needs result: the final user-facing answer',
+                               next_prompt=self._get_anchor_prompt())
+        if status == 'done' and getattr(self, '_gui_actions', 0) and not evidence:
+            return StepOutcome('[Error] finish_task(done) needs evidence after GUI actions; '
+                               'include the observed text/page or tool result that proves completion',
+                               next_prompt=self._get_anchor_prompt())
+        self._task_finished = True
+        # agent_loop 会对 finish_task 的结果做专门的用户可见输出, 不把它当普通 tool_result。
+        return StepOutcome({'status': status, 'result': result, 'evidence': evidence},
+                           next_prompt=None, should_exit=True)
+
+    def _obs_item_view(self, item, label_limit=24):
+        """观测项 → 模型可读的紧凑项。所有观察工具共用, 防止各通道字段漂移。"""
+        label = str(item.get('t') or item.get('desc') or item.get('cls') or '').strip()[:label_limit]
+        return {'t': label, 'src': item.get('src'), 'label': label,
+                'cls': str(item.get('cls') or '')[:16],
+                'x': item.get('x'), 'y': item.get('y'),
+                'rx': item.get('rx'), 'ry': item.get('ry'),
+                'click': item.get('click')}
+
+    def do_observe(self, args, response):
+        """第一级本地观测: 一次截图 + 控件树/YOLO, 返回最多 N 个紧凑目标。
+
+        这是 `print(droid.observe())` 的结构化替代。旧路径让模型在 code_run 里打印全量
+        dict, 一次 8~12K 字符, 既撑上下文又难读; 这里只保留选目标必需字段。
+        """
+        import droid
+        try:
+            limit = int(args.get('limit') or self._OBS_RESULT_ITEMS)
+        except (TypeError, ValueError):
+            return StepOutcome('[Error] observe.limit must be an int', next_prompt='\n')
+        limit = max(1, min(limit, 40))
+        try:
+            res = droid.observe(roi=args.get('roi')) if args.get('roi') else droid.observe()
+        except Exception as e:
+            return StepOutcome(json.dumps({
+                'ok': False, 'reason': 'observe_failed',
+                'error': '%s: %s' % (type(e).__name__, str(e)[:180]),
+                'hint': '本地观测失败; 不要反复重试。若是 canvas/自绘页, 用 see(want="point"/"text", roi=...)。'
+            }, ensure_ascii=False), next_prompt='\n')
+        items = [self._obs_item_view(i) for i in (res.get('items') or [])[:limit]]
+        out = {'ok': True, 'source': 'local', 'kind': res.get('kind'),
+               'items': items, 'notes': list(res.get('notes') or []),
+               'needs_vision': bool(res.get('needs_vision')),
+               'ms': res.get('ms')}
+        if not items:
+            out['hint'] = ('本地没有可用框; 只有需要定位/理解画面时才用 '
+                           'see(want="point"/"text", roi=...), 不要反复 observe。')
+        elif res.get('needs_vision'):
+            out['hint'] = ('本地框不足; 先从 items 里选目标; 确需定位再用 '
+                           'see(want="point", roi=...)。')
+        return StepOutcome(json.dumps(out, ensure_ascii=False),
+                           next_prompt=self._get_anchor_prompt(skip=args.get('_index', 0) > 0))
+
+    def do_ocr(self, args, response):
+        """第一级 OCR: 只返回 {text, x, y, rx, ry, conf}, 不把 numpy 数组 repr 塞给模型。"""
+        import droid
+        import numpy as np
+        try:
+            limit = int(args.get('limit') or 24)
+        except (TypeError, ValueError):
+            return StepOutcome('[Error] ocr.limit must be an int', next_prompt='\n')
+        try:
+            min_conf = float(args.get('min_conf') or 0.0)
+        except (TypeError, ValueError):
+            return StepOutcome('[Error] ocr.min_conf must be a number', next_prompt='\n')
+        t0 = time.time()
+        try:
+            img = droid.shot()
+            H, W = img.shape[:2]
+            roi = args.get('roi')
+            if roi:
+                box = droid._resolve_roi(roi)
+                x1n, y1n, x2n, y2n = box
+                px1, py1 = int(x1n / 1000.0 * W), int(y1n / 1000.0 * H)
+                px2, py2 = int(x2n / 1000.0 * W), int(y2n / 1000.0 * H)
+                crop = img[py1:py2, px1:px2]
+            else:
+                px1 = py1 = 0
+                crop = img
+            raw = droid.ocr(crop)
+        except Exception as e:
+            return StepOutcome(json.dumps({
+                'ok': False, 'reason': 'ocr_failed',
+                'error': '%s: %s' % (type(e).__name__, str(e)[:180]),
+                'hint': 'OCR 失败; 不要反复重试。需要语义理解再用 see。'
+            }, ensure_ascii=False), next_prompt='\n')
+        items = []
+        for box, text, score in raw or []:
+            try:
+                pts = np.asarray(box)
+                lx1, ly1 = int(pts[:, 0].min()), int(pts[:, 1].min())
+                lx2, ly2 = int(pts[:, 0].max()), int(pts[:, 1].max())
+                gx, gy = px1 + (lx1 + lx2) // 2, py1 + (ly1 + ly2) // 2
+                rx, ry = geom.to_norm(gx, gy, W, H)
+                text = str(text).strip()
+                if text and float(score) >= min_conf:
+                    items.append({'text': text, 'x': gx, 'y': gy, 'rx': rx, 'ry': ry,
+                                  'bbox': [px1 + lx1, py1 + ly1, px1 + lx2, py1 + ly2],
+                                  'conf': round(float(score), 3)})
+            except Exception:
+                continue
+        items.sort(key=lambda z: (z['y'], z['x']))
+        items = items[:max(1, min(limit, 80))]
+        return StepOutcome(json.dumps({'ok': True, 'source': 'ocr', 'items': items,
+                                       'ms': round((time.time() - t0) * 1000, 1)},
+                                      ensure_ascii=False),
+                           next_prompt=self._get_anchor_prompt(skip=args.get('_index', 0) > 0))
+
     def do_file_patch(self, args, response):
         path = self._get_abs_path(args.get("path", ""))
         yield f"[Action] Patching file: {path}\n"
@@ -773,19 +1160,25 @@ class GenericAgentHandler(BaseHandler):
         path = self._get_abs_path(args.get("path", ""))
         yield f"\n[Action] Reading file: {path}\n"
         start = args.get("start", 1)
-        count = args.get("count", 200)
+        # 通用上下文约束: 记忆/SOP 文件通常很长, 默认只取一屏; 需要更多时显式传 count。
+        default_count = 60 if ('memory' in path or 'sop' in path) else 200
+        count = args.get("count", default_count)
         keyword = args.get("keyword")
         show_linenos = args.get("show_linenos", True)
         result = file_read(path, start=start, keyword=keyword,
                            count=count, show_linenos=show_linenos)
         if show_linenos and not result.startswith("Error:"): result = '由于设置了show_linenos，以下返回信息为：(行号|)内容 。\n' + result 
         if ' ... [TRUNCATED]' in result: result += '\n\n（某些行被截断，如需完整内容可改用 code_run 读取）'
-        maxlen = 15000 // args.get('_tool_num', 1)
+        maxlen = 10000 // args.get('_tool_num', 1)
         result = smart_format(result, max_str_len=maxlen, omit_str='\n\n[omitted long content]\n\n')
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         log_memory_access(path)
-        if 'memory' in path or 'sop' in path: 
-            next_prompt += "\n[SYSTEM TIPS] 正在读取记忆或SOP文件，若决定按sop执行请提取sop中的关键点（特别是靠后的）update working memory."
+        if ('memory' in path or 'sop' in path) and not getattr(self, '_memory_tip_shown', False):
+            # 同一任务只提示一次; 每次 file_read 都追加会变成上下文噪音。
+            self._memory_tip_shown = True
+            next_prompt += ("\n[SYSTEM TIPS] 正在读取记忆或SOP文件，若决定按sop执行请提取关键点"
+                            "（特别是靠后的）update working memory；默认只返回前80行，"
+                            "需要后续段落请带 start/count 或 keyword。")
         return StepOutcome(result, next_prompt=next_prompt)
     
     def _in_plan_mode(self): return self.working.get('in_plan_mode')
@@ -829,7 +1222,46 @@ class GenericAgentHandler(BaseHandler):
             return self._retry_or_exit("[System] Incomplete response. Regenerate and tooluse.")
         if 'max_tokens !!!]' in content[-100:]:
             return self._retry_or_exit("[System] max_tokens limit reached. Use multi small steps to do it.")
-        
+
+        # 通用完成契约: 控制/工具标签被当正文输出, 或只输出"下一步/我准备..."时,
+        # 不是任务完成。旧逻辑把它们直接当作 CURRENT_TASK_DONE, 真机已出现两次。
+        visible = _visible_reply_text(content)
+        if _has_unparsed_control(content):
+            yield "[Warn] Detected control/tool markup without an actual tool call.\n"
+            return StepOutcome({}, next_prompt=(
+                "[System] 你刚才把控制标签/工具XML写进了回复正文, 但没有真正调用工具。"
+                "请用实际 tool_call 调用对应工具; 如果已有最终结果, 调用 finish_task(status, result, evidence)。"))
+        if getattr(self, '_gui_actions', 0) and not visible:
+            yield "[Warn] GUI task ended without a user-facing result.\n"
+            return StepOutcome({}, next_prompt=(
+                "[System] 当前任务已经执行过 GUI 动作, 但本轮没有给用户最终结果。"
+                "继续执行, 或调用 finish_task(status='done'|'blocked', result=..., evidence=[...])。"))
+        # 有实际动作却直接输出普通正文: 先给一次显式 finish_task 的机会。这不是为了多一轮,
+        # 而是把"模型停止输出"和"任务已完成"分开; 第二次仍不调用则允许结束, 避免死循环。
+        if getattr(self, '_gui_actions', 0) and not getattr(self, '_task_finished', False) \
+                and not getattr(self, '_finish_prompted', False):
+            self._finish_prompted = True
+            yield "[Warn] GUI task ended without finish_task.\n"
+            return StepOutcome({}, next_prompt=(
+                "[System] 你已经做过 GUI 动作, 但本轮没有调用 finish_task。"
+                "若任务已完成, 调用 finish_task(status='done', result=<完整最终答案>, evidence=[...]); "
+                "若被登录/权限/风控阻塞, 用 status='blocked' 并写清原因; 否则继续执行。"))
+        if getattr(self, '_gui_actions', 0) and _INCOMPLETE_RE.search(visible):
+            self._no_tool_retries = getattr(self, '_no_tool_retries', 0) + 1
+            yield "[Warn] Detected progress/plan text, not a finished task.\n"
+            return StepOutcome({}, next_prompt=(
+                "[System] 你只是在描述计划/下一步, 没有完成交付。继续执行; "
+                "若已经得到最终结果, 必须调用 finish_task(status, result, evidence)。"
+                "不要把‘需要点击/接下来/我将’当成任务完成。"))
+        if getattr(self, '_gui_actions', 0) and not getattr(self, '_task_finished', False) \
+                and getattr(self, '_no_tool_retries', 0) < 2 and len(visible) < 12:
+            # 极短且没有结论的停止(如只输出"ok")也先问一次; 正常结果/纯聊天不会走到这里,
+            # 因为只在有 GUI 动作且任务未显式 finish 时触发。
+            self._no_tool_retries = getattr(self, '_no_tool_retries', 0) + 1
+            return StepOutcome({}, next_prompt=(
+                "[System] 若有最终结果, 请直接给出完整答案并调用 "
+                "finish_task(status='done'|'blocked', result=..., evidence=[...])。"))
+
         if self._in_plan_mode() and any(kw in content for kw in ['任务完成', '全部完成', '已完成所有', '🏁']):
             if 'VERDICT' not in content and '[VERIFY]' not in content and '验证subagent' not in content:
                 yield "[Warn] Plan模式完成声明拦截。\n"
@@ -908,6 +1340,10 @@ class GenericAgentHandler(BaseHandler):
         prompt += f"\nCurrent turn: {self.current_turn}\n"
         if self.working.get('key_info'): prompt += f"\n<key_info>{self.working.get('key_info')}</key_info>"
         if self.working.get('related_sop'): prompt += f"\n有不清晰的地方请再次读取{self.working.get('related_sop')}"
+        if getattr(self, '_gui_actions', 0) and not getattr(self, '_task_finished', False):
+            prompt += ("\n[FINISH] 有过实际 GUI 动作: 完成或确认阻塞时必须调用 "
+                       "finish_task(status='done'|'blocked', result=..., evidence=[...]); "
+                       "不要用‘下一步/需要点击/工具XML’作为结束。")
         if getattr(self.parent, 'verbose', False): self.print(prompt)
         return prompt
     
