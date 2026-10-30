@@ -90,9 +90,13 @@ class TaskEndHookTest(unittest.TestCase):
     def test_home_is_pressed_only_on_real_completion(self):
         done = self._body('onTaskDone')
         self.assertIn('GA.goHome()', done)
-        self.assertIn('if(homeAfterTask)', done)
+        self.assertIn('if(homeAfterTask&&show!==false)', done)     # 只在本会话在屏上时退回桌面
         need = self._body('onNeedInput')
         self.assertNotIn('goHome', need)                          # ask_user 不退回桌面
+
+    def test_background_task_does_not_hijack_the_screen(self):
+        done = self._body('onTaskDone')
+        self.assertIn('show!==false', done)                       # 别会话/预览态不抢屏
 
     def test_switch_is_not_behind_a_permission(self):
         body = self._body('toggleHomeAfterTask')

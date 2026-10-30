@@ -1904,7 +1904,7 @@ function onTaskDone(show,c,end){playDone();const err=end==='error';   // show=fa
     if(pinned){_snDown.classList.add('done');_snDown.hidden=false;_snav.classList.add('on')}}   // C2C4(监察 F2): 顶置阅读态不抢滚, 改点亮回底钮; 点击/贴底自然清除
   // 结束任务后返回桌面(默认关): 只在**真结束**(done/error)触发; ask_user 这种"要你回话"的停点走 onNeedInput,
   //   那是还要继续的任务, 退回桌面反而把用户从上下文里推出去。GA.goHome 用 HOME intent, 无权限、幂等。
-  if(homeAfterTask){try{GA.goHome()}catch(e){}}
+  if(homeAfterTask&&show!==false){try{GA.goHome()}catch(e){}}   // show!==false: 只有"这个"会话在屏幕上时才退回桌面 —— 后台任务跑完把正在用手机的用户弹回桌面是打扰(多会话下 onTaskDone 也会为别的会话触发)
   notifyAway(err?'error':'done',c)}                     // 完成/出错: 轻提示音 + 普通通知(署名任务归属会话)
 function onNeedInput(c){playAsk();notifyAway('ask',c)}  // 需要回答 ask_user: 醒目提示音 + 高优先级通知
 let _askKey=null;
