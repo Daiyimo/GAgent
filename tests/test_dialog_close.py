@@ -394,5 +394,58 @@ class CloseWiringTest(unittest.TestCase):
         self.assertIsNone(ga_android.GenericAgentHandler._diff_bbox({'diff': 'n/a'}))
 
 
+class CloseRegressionTest(unittest.TestCase):
+    """真机 2026-10-30 15:08/15:11 三次会话的三条硬伤(逐条回归)。
+
+    1. 弹窗里「航天基地」卡片正好落在弹层 bbox 右上方 → 旧 close 把它当图标叉点下去,
+       人直接进了航天基地详情(= 用户说的"点了今日密码却进了航天基地")。
+    2. 打分单位错: _pct_from_diff 给的是百分数(10.037 = 10.037%), 成功判据却写 pct >= 0.2
+       → 卡片轮播抖 10% 就算"关上了", 模型带着"已关闭"的错觉继续点。
+    3. 单字 target="X" 命中屏上别的 X(实测点到 (361,2366) 底栏), 弹窗依旧开着。
+    """
+
+    @staticmethod
+    def _icon(x, y):
+        return {'x': x, 'y': y, 'label': 'Icon', 'cls': 'icon',
+                'bbox': [x - 20, y - 20, x + 20, y + 20]}
+
+    def _run(self, items, ocr_items, diffs, expect_text=None, bbox=(64, 737, 968, 1577)):
+        taps = []
+        seq = list(diffs)
+
+        def fake_tap(x, y, **kw):
+            taps.append((x, y))
+            return {'diff': seq.pop(0) if len(seq) > 1 else seq[0]}
+
+        with patch.object(droid, 'shot', lambda *a, **k: IMG),              patch.object(droid, 'ocr', lambda img: ocr_items),              patch.object(droid, 'look', lambda **kw: items),              patch.object(droid, 'tap', fake_tap),              patch.object(droid, 'longpress', fake_tap),              patch.object(droid, 'back', lambda: {'diff': 'diff: 0.050% bbox=[0, 0, 1199, 2669]'}):
+            res = droid.close_dialog(bbox=bbox, expect_text=expect_text)
+        return res, taps
+
+    def test_body_card_label_is_not_a_close_icon(self):
+        self.assertFalse(droid._close_icon_ok('航天基地'))
+        self.assertTrue(droid._close_icon_ok('Icon'))       # 无中文的图标标签仍然准入
+        res, taps = self._run([{'x': 690, 'y': 675, 'label': '航天基地',
+                                'cls': 'text', 'bbox': [64, 737, 968, 1577]}], [],
+                              ['diff: 10.037% bbox=[64, 737, 968, 1577]'])
+        self.assertEqual(taps, [])           # 一下都不点, 尤其不能点进卡片详情
+        self.assertFalse(res['ok'])
+
+    def test_card_carousel_jitter_is_not_a_close(self):
+        res, taps = self._run([self._icon(1030, 400)], [],
+                              ['diff: 10.037% bbox=[64, 737, 968, 1577]',
+                               'diff: 12.400% bbox=[64, 737, 968, 1577]',
+                               'diff: 9.100% bbox=[64, 737, 968, 1577]'])
+        self.assertEqual(taps, [(1030, 400)])
+        self.assertFalse(res['ok'])          # 10% 抖动不是关闭(旧判据 0.2% 会误判成功)
+
+    def test_expect_text_still_on_screen_is_not_closed(self):
+        res, taps = self._run([self._icon(1030, 400)],
+                              [(_box(560, 300, 760, 340), '今日密码', 0.93)],
+                              ['diff: 63.000% bbox=[0, 0, 1199, 2669]'],
+                              expect_text='今日密码')
+        self.assertEqual(taps, [(1030, 400)])
+        self.assertFalse(res['ok'])          # 画面变了 63%, 但「今日密码」还在屏上
+        self.assertTrue(res.get('still_there'))
+
 if __name__ == '__main__':
     unittest.main()

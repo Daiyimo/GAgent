@@ -141,5 +141,33 @@ class PointSoftResultTest(unittest.TestCase):
         self.assertIn("'soft': True", src[i:i + 900])
 
 
+class CloseIconTargetSoftResultTest(unittest.TestCase):
+    """target="X" 不能再当关闭键用: canvas 弹窗那个叉是画出来的, 文字层里没有它。"""
+
+    def test_single_letter_x_target_is_refused_with_a_hint(self):
+        taps = []
+        h = _Handler().h
+        with patch.dict(sys.modules, {'droid': _fake(taps, OCR)}):
+            out = h.do_gui_act({'action': 'tap', 'target': 'X'},
+                               types.SimpleNamespace(content=''))
+        self.assertEqual(taps, [])
+        self.assertNotIn('[Error]', out.data)
+        data = json.loads(out.data)
+        self.assertFalse(data['ok'])
+        self.assertTrue(data['soft'])
+        self.assertEqual(data['zone'], 'close_icon')
+        self.assertIn('exit_miniapp', data['hint'])
+        self.assertIn('"action":"close"', data['hint'])
+
+    def test_letter_x_as_a_real_word_still_works(self):
+        # 只拦"单字 X"; 正常文字里的 x 不受影响(例如 'Xbox')
+        taps = []
+        h = _Handler().h
+        with patch.dict(sys.modules, {'droid': _fake(taps, [(_box(300, 500), 'Xbox', 0.9)])}):
+            out = h.do_gui_act({'action': 'tap', 'target': 'Xbox'},
+                               types.SimpleNamespace(content=''))
+        self.assertEqual(len(taps), 1)
+        self.assertNotIn('[Error]', out.data)
+
 if __name__ == '__main__':
     unittest.main()

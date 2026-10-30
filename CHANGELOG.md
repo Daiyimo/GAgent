@@ -6,6 +6,23 @@ publicly released. Exact artifacts and acceptance belong to their release record
 本页记录源码候选的变化，不表示各版本均已公开；制品与验收以对应发布记录为准。
 
 ## Unreleased / 未发布变更
+- droid/ga_android: 关弹层不再把弹窗正文当叉点 + 关闭判据按百分比 + 单字 target="X" 软失败
+  / droid+ga_android: dialog close can no longer pick body text as the ×, close threshold is real percent, single-letter target="X" is refused
+  - 真机 15:08/15:11 三次会话同一条路打转: 模型 `tap target="X"` 命中了底栏 (361,2366); 之后 `gui_act close`
+    把弹窗里「航天基地」卡片(位置恰在弹层 bbox 右上方)当图标叉点了下去, 直接进了航天基地详情,
+    又因卡片轮播抖 10.037% 被判成"关上了" —— 于是"点了今日密码却进了航天基地", 再往后「制造推荐」
+    也穿透到弹窗后面的卡片, 最后退出小程序。
+  - `droid._DIFF_CLOSED_PCT = 20.0`: `_pct_from_diff` 返回的是百分数(10.037 表示 10.037%), 旧判据 `pct >= 0.2`
+    等于 0.2%, 任何抖动都算关成功; 现在按钮/图标/系统返回三处统一走 `_closed_ok(pct, expect_text)`,
+    要求变化 >= 20% 且(给了关键字时)该关键字已从屏上消失, 失败结果新增 `still_there`。
+  - `droid._close_icon_ok(label)` 准入: 空标签、命中 `_CLOSE_TEXTS`、或不含中文(CJK)的标签才当叉;
+    「航天基地」这类弹窗正文即便位置正好在右上方也一律不点。
+  - `ga_android._close_expect_text(args)`: 从 `target`/`expect` 剥掉「关闭窗口/弹窗/按钮/×」等词, 得到
+    这一层的名字(如 `关闭今日密码弹窗` → `今日密码`), close 时交给 `close_dialog(expect_text=…)` 核验。
+  - 单字 target(×/✕/╳/✖/x) 改成 SoftFail(`zone:'close_icon'`), 提示改用 `{"action":"close"}` 关这一层、
+    `{"action":"exit_miniapp"}` 离开小程序; 正常文字里的 x(如 `Xbox`)不受影响。
+  - 测试: `tests/test_dialog_close.py::CloseRegressionTest` 3 条 + `tests/test_soft_failures.py::CloseIconTargetSoftResultTest`
+    2 条 + `tests/test_ui_back.py` 补「系统返回后只抖 12% 不算退层成功」反例。
 - llmcore: 空流现场诊断(stream_diag) + 把网关塞在 SSE 里的 error 事件如实抛出
   / llmcore: empty-stream diagnostics dump + surface gateway error events carried inside SSE
   - 取证(PC 直连同一 key/端点): 1.7MB / 16 图 / 并发 5 / 两个模型全部正常, 排除配置与网络;

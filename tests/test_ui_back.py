@@ -79,12 +79,22 @@ class UiBackTest(unittest.TestCase):
         self.assertEqual(res['via'], 'button')
 
     def test_no_button_and_no_icon_falls_back_to_system_back(self):
+        # 系统返回后整页重绘(41%): 才算退层成功
         res, calls = self._run([], ['diff: 41.000%'],
-                               look_items=[{'x': 1100, 'y': 210, 'cls': 'Icon'}])
+                               look_items=[{'x': 1100, 'y': 210, 'cls': 'Icon'}],
+                               back_diff='diff: 41.000% bbox=(0,0,1200,2670)')
         self.assertEqual(calls['tap'], [])
         self.assertEqual(calls['back'], 1)
         self.assertTrue(res['ok'])
         self.assertIn('没有找到返回/关闭按钮', res['hint'])
+
+    def test_small_repaint_after_system_back_is_not_a_backed_out(self):
+        # 真机 15:11 的教训: 0.2%/12% 这种抖动(时钟、卡片轮播)不是退层成功; 判成功会让
+        # 模型带着「已经回上一级」的错觉继续点, 判失败才会真的再退一次。
+        res, calls = self._run([], ['diff: 0.000%'],
+                               back_diff='diff: 12.000% bbox=(0,0,1200,2670)')
+        self.assertEqual(calls['back'], 1)
+        self.assertFalse(res['ok'])
 
     def test_paragraph_text_is_not_a_button(self):
         res, calls = self._run([(_box(10, 900, 1100, 960),

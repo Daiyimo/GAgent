@@ -1049,6 +1049,21 @@ class GenericAgentHandler(BaseHandler):
                             'target_index=<alternatives 里的 index>' % (view['matches'], view['index']))
         return view
 
+    def _close_expect_text(self, args):
+        """从 target/expect 里抽出「这一层叫什么」, 给 close_dialog 做关闭后的消失核验。
+
+        真机 15:11:34: 模型说 close 时弹窗里「航天基地」卡片刚好在 bbox 右上方, 旧实现把它
+        当图标叉点了(进到航天基地详情), 又因卡片轮播抖 10% 判成功 —— 于是"关了"却还在弹窗里,
+        下一句 target="制造推荐" 直接穿透到弹窗后面的卡片。
+        例: '关闭今日密码弹窗' → '今日密码'; 抽不出(少于 2 字)返回 None, 退回只看画面变化。
+        """
+        raw = str(args.get('target') or args.get('expect') or '')
+        for w in ('关闭窗口', '关闭弹窗', '关掉', '关闭', '弹窗', '弹层', '窗口',
+                  '按钮', '页面', '对话框', '图标', '叉', '×', 'x', 'X'):
+            raw = raw.replace(w, '')
+        raw = raw.strip()
+        return raw if len(raw) >= 2 else None
+
     def _resolve_action_target(self, args):
         """gui_act 的 target → 像素点。
 
@@ -1066,6 +1081,14 @@ class GenericAgentHandler(BaseHandler):
         target = str(args.get('target') or '').strip()
         if not target:
             return None
+        if target in ('×', '✕', '╳', '✖') or self._norm_target_text(target) == 'x':
+            # 真机 15:08:55 三角洲: 模型拿 target="X" 去关 canvas 弹窗, 文字层上正好有个别的
+            # 'X' 字, 于是点到了 (361,2366) 底栏 —— 弹窗没关, 人已经跑偏。
+            raise SoftFail({
+                'target': target, 'zone': 'close_icon',
+                'hint': ('别用 target=%r 关弹窗: canvas 弹窗上那个叉是画出来的, 文字层里没有它, '
+                         '硬点只会命中屏幕上随便一个同样的字。要关这一层用 gui_act '
+                         '{"action":"close"}; 要离开整个小程序用 {"action":"exit_miniapp"}。' % (target,))})
         try:
             idx = int(args.get('target_index')) if args.get('target_index') is not None else None
         except (TypeError, ValueError):
@@ -1373,7 +1396,8 @@ class GenericAgentHandler(BaseHandler):
                 # 关掉当前弹层(弹窗/抽屉/分享面板): 只在**弹层自己的范围**里找关闭控件。
                 # 模型没法知道 canvas 弹窗里那个 × 在哪(OCR 读不出文字), 与其让它猜坐标
                 # —— 真机 10:06 猜成标题栏右角, 一点就把分享面板打开了 —— 不如让它只说要关。
-                res = droid.close_dialog(bbox=self._last_bbox)
+                res = droid.close_dialog(bbox=self._last_bbox,
+                                          expect_text=self._close_expect_text(args))
                 out = {'action': act, 'via': res.get('via'), 'diff': res.get('diff')}
                 for k in ('ok', 'text', 'point', 'hint'):
                     if res.get(k) not in (None, ''):

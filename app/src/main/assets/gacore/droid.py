@@ -2351,18 +2351,63 @@ def ui_back(verify=True, wait=1.0, tries=2):
             break
         pct = _pct_from_diff(r.get("diff"))
         tried.append({"text": t, "point": [x, y], "diff": r.get("diff")})
-        if verify and (pct is None or pct >= 0.2):
+        if verify and _closed_ok(pct):
             return {"ok": True, "via": "button", "text": t, "point": [x, y],
                     "diff": r.get("diff"), "tried": tried}
     r = back()
     pct = _pct_from_diff(r.get("diff"))
-    return {"ok": bool(pct is not None and pct >= 0.2), "via": "system",
+    return {"ok": bool(pct is not None and pct >= _DIFF_CLOSED_PCT), "via": "system",
             "diff": r.get("diff"), "tried": tried,
             "hint": ("" if tried else "屏上没有找到返回/关闭按钮"),
             }
 
 
-_CLOSE_TEXTS = ("关闭窗口", "关闭", "取消", "我知道了", "知道了", "暂不", "以后再说", "退出", "×", "✕", "╳", "X")
+_CLOSE_TEXTS = ("关闭窗口", "关闭", "取消", "我知道了", "知道了", "暂不", "以后再说", "×", "✕", "╳", "X")
+
+# 「关掉这一层」的最小画面变化(百分数)。_pct_from_diff 返回的就是百分数(10.037 = 10.037%),
+# 这里原本跟 0.2 比 —— 等于把 0.2% 的动画抖动当成关上了。真机 15:11:34 / 15:13:51 两次
+# close 就是被弹窗里卡片轮播抖出来的 10% 判成成功, 模型以为关掉了, 接着点「制造推荐」
+# 直接穿透到弹窗后面的「航天基地」卡片详情, 然后再也回不来。
+_DIFF_CLOSED_PCT = 20.0
+
+
+def _close_icon_ok(label):
+    """图标兜底的准入: 只有「没文字」或「像关闭键」的检出项才当成那个叉。
+
+    真机 15:11:34 的 close 把弹窗里「航天基地」这张卡当成了右上角叉 —— 它只是位置落在弹层
+    bbox 的右上方, 一点就进航天基地详情。所以带中文内容的标签一律不进候选。
+    """
+    t = str(label or "").strip()
+    if not t:
+        return True
+    if t in _CLOSE_TEXTS:
+        return True
+    for ch in t:
+        if ord(ch) > 0x2E80:
+            return False
+    return len(t) <= 12
+
+
+def _text_on_screen(text):
+    """这一层的关键字还在不在屏上(重新截一帧 OCR), 用来核验「真的关掉了」。"""
+    if not text:
+        return False
+    try:
+        for _bx, t, _s in ocr(shot()) or []:
+            if text in str(t or ""):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _closed_ok(pct, expect_text=None):
+    """这一下算不算把层关掉: 画面变化够大, 且给了 expect_text 时它真的从屏上消失了。"""
+    if pct is None:
+        return True
+    if pct < _DIFF_CLOSED_PCT:
+        return False
+    return not _text_on_screen(expect_text)
 
 
 _CAPSULE_MIN_X = 0.72      # 小程序「总控胶囊」在标题带右侧, 只认最右 28% 的图标框
@@ -2440,14 +2485,14 @@ def exit_miniapp(verify=True, wait=1.0):
         return {"ok": False, "via": "capsule_close", "point": [x, y], "more": cap.get("more"),
                 "diff": None, "hint": "点胶囊关闭键失败: %s" % (e,)}
     pct = _pct_from_diff(r.get("diff"))
-    ok = bool((pct is not None and pct >= 0.2) or (pct is None and not verify))
+    ok = bool((pct is not None and pct >= _DIFF_CLOSED_PCT) or (pct is None and not verify))
     return {"ok": ok, "via": "capsule_close", "point": [x, y], "more": cap.get("more"),
             "diff": r.get("diff"),
             "hint": (None if ok else "点了胶囊关闭键但画面没变: 可能已退出小程序/或在别的层, "
                                      "先 observe 看清楚再动")}
 
 
-def close_dialog(bbox=None, verify=True, wait=0.8, tries=3):
+def close_dialog(bbox=None, verify=True, wait=0.8, tries=3, expect_text=None):
     """关掉屏幕上的弹层: **只在弹层自己的范围里**找关闭控件, 找不到再按系统返回。
 
     为什么单独一个原语: 真机 2026-10-30 10:06 的三角洲会话里, 「今日密码」是 canvas 里的一个
@@ -2457,7 +2502,10 @@ def close_dialog(bbox=None, verify=True, wait=0.8, tries=3):
       1. 全屏 OCR 只认「关闭窗口/关闭/取消/我知道了/×」这类按钮文字(长句不算);
       2. 有 bbox(最近一次画面变化的范围)时, 只在这块范围里选, 并按"离弹层右上角多近"排序;
          没有 bbox 时, 标题带(y < 10% 屏高)一律不碰, 那是分享/更多;
-      3. 点一个核验一个(diff >= 0.2 即认为关掉了), 最多试 tries 个。
+      3. 点一个核验一个: 画面变化 >= 20% **且** expect_text(这一层的关键字, 例如「今日密码」)
+         已经从屏上消失, 才算关掉; 最多试 tries 个。
+    真机 15:11:34 的教训: 弹窗里「航天基地」卡片的位置正好落在弹层 bbox 的右上方, 旧实现
+    把它当图标叉点了下去(进了航天基地详情), 又因为卡片轮播抖了 10% 被当成关闭成功。
     返回 {ok, via: 'button'|'system', text, point, diff, tried, hint}。
     """
     if not verify:
@@ -2502,7 +2550,7 @@ def close_dialog(bbox=None, verify=True, wait=0.8, tries=3):
             break
         pct = _pct_from_diff(r.get("diff"))
         tried.append({"text": t, "point": [x, y], "diff": r.get("diff")})
-        if verify and (pct is None or pct >= 0.2):
+        if verify and _closed_ok(pct, expect_text):
             return {"ok": True, "via": "button", "text": t, "point": [x, y],
                     "diff": r.get("diff"), "tried": tried}
     if box:
@@ -2521,7 +2569,10 @@ def close_dialog(bbox=None, verify=True, wait=0.8, tries=3):
                     continue
                 if iy > box[1] + (box[3] - box[1]) * 0.45:
                     continue
-                icons.append((iy, ix, str(it.get("label") or "")))
+                _lab = str(it.get("label") or "")
+                if not _close_icon_ok(_lab):
+                    continue          # 弹窗正文/卡片名(如「航天基地」)不是叉, 别再点进详情
+                icons.append((iy, ix, _lab))
             icons.sort()
             for iy, ix, lab in icons[:max(1, int(tries)) - len(tried)]:
                 try:
@@ -2531,15 +2582,16 @@ def close_dialog(bbox=None, verify=True, wait=0.8, tries=3):
                 pct2 = _pct_from_diff(r2.get("diff"))
                 tried.append({"text": lab or "icon", "point": [ix, iy],
                               "diff": r2.get("diff"), "via": "icon"})
-                if verify and (pct2 is None or pct2 >= 0.2):
+                if verify and _closed_ok(pct2, expect_text):
                     return {"ok": True, "via": "icon", "text": lab or "icon",
                             "point": [ix, iy], "diff": r2.get("diff"), "tried": tried}
         except Exception:
             pass
     r = back()
     pct = _pct_from_diff(r.get("diff"))
-    return {"ok": bool(pct is not None and pct >= 0.2), "via": "system",
+    return {"ok": bool(pct is not None and _closed_ok(pct, expect_text)), "via": "system",
             "diff": r.get("diff"), "tried": tried,
+            "still_there": bool(expect_text and _text_on_screen(expect_text)),
             "hint": ("屏上没有认出「关闭窗口/取消/×」这类按钮, 系统返回也没关掉: 这一层可能要"
                      "先用 target=<弹层上的文字> 操作, 或者它根本不是弹层")}
 
