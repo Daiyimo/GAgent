@@ -7,6 +7,22 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- gacore: 关弹层改成一条原语 `gui_act action=close`，并且不再允许"文字没找到 → 点模型目测的坐标"
+  / dismissal is now a primitive (`gui_act action=close`) and a missed target can no longer fall
+  back to a guessed coordinate in the title bar
+  - 真机 2026-10-30 10:06（三角洲「今日密码」）：关闭控件是 canvas 里的图标型 ×，OCR 读不出文字；
+    模型把 `target='关闭按钮（X）'` 当文字找 → `target_miss` → 退回它目测的 `(906,205)`，
+    那正是小程序**标题栏右上角的分享/更多** → 一下点开分享面板，之后 6 轮都在关分享、找返回，
+    真正的下一步「特勤处 → 制作推荐」一次都没走到。
+  - `droid.close_dialog(bbox=None)`：全屏 OCR 只认「关闭窗口/关闭/取消/我知道了/×」这类按钮文字
+    （长句不算），有 bbox 时只在这块范围里选并按"离弹层右上角最近"排序，没有 bbox 时标题带
+    (y<10%) 一律不碰 —— 那是分享/更多；点一个核验一个，全都点不动才退系统返回。
+  - `_do_gui_act` 新增 `close` 分支（结果带 `via: button|system`、`text`、`point`、`tried`），
+    并把最近一次画面变化的 bbox 记下来当弹层作用域；两份 schema 的 action 枚举同步。
+  - 新增 `_share_trap(x, y)`：`target` 没命中又退回坐标、而坐标落在标题栏右侧（x>55%）时**直接拒绝**
+    并提示改用 `close` / `target` / `img_point`，不再"帮忙"点一下。
+  - 知识卡与 SOP 同步：小程序标题栏右角是分享/更多、今日密码弹窗自带图标型关闭窗口、关弹层用 `close`。
+
 - Task-start knowledge is now retrieved **into the anchor prompt** instead of being read by the model:
   `gacore/kb.py` scores `memory/kb/*.md` cards (front-matter + body) with a deterministic lexical
   ranker -- Chinese character bigrams (no jieba), BM25(k1=1.2, b=0.75), field weights

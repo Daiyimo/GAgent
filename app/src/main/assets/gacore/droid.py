@@ -2294,7 +2294,7 @@ def app_search(pkg="com.tencent.mm", query="", wait=2.0):
 
 def search_app(pkg="com.tencent.mm", query="", wait=2.0): return app_search(pkg=pkg, query=query, wait=wait)   # schema 的 action 名就是 search_app, 契约测试按名对账
 def pkgs(filter=""): return _act(op="pkgs", filter=filter)["apps"]  # 列可启动app[{pkg,label}], filter模糊匹配包名/应用名如'美团'
-_BACK_TEXTS = ("返回上一级", "返回", "关闭", "取消", "退出", "跳过", "×", "✕", "╳", "X", "←", "‹", "〈")
+_BACK_TEXTS = ("返回上一级", "返回", "关闭窗口", "关闭", "取消", "退出", "跳过", "×", "✕", "╳", "X", "←", "‹", "〈")
 
 
 def _pct_from_diff(diff):
@@ -2360,6 +2360,75 @@ def ui_back(verify=True, wait=1.0, tries=2):
             "diff": r.get("diff"), "tried": tried,
             "hint": ("" if tried else "屏上没有找到返回/关闭按钮"),
             }
+
+
+_CLOSE_TEXTS = ("关闭窗口", "关闭", "取消", "我知道了", "知道了", "暂不", "以后再说", "退出", "×", "✕", "╳", "X")
+
+
+def close_dialog(bbox=None, verify=True, wait=0.8, tries=3):
+    """关掉屏幕上的弹层: **只在弹层自己的范围里**找关闭控件, 找不到再按系统返回。
+
+    为什么单独一个原语: 真机 2026-10-30 10:06 的三角洲会话里, 「今日密码」是 canvas 里的一个
+    小弹窗, 它自己的关闭控件在弹窗内部; 而小程序**页面标题栏右上角是「分享 / 更多」**。模型把
+    (906,205) 当成关闭点了 —— 直接把分享面板点开, 之后 6 轮都在关分享、找返回。
+    所以这里不猜坐标, 也不让模型猜:
+      1. 全屏 OCR 只认「关闭窗口/关闭/取消/我知道了/×」这类按钮文字(长句不算);
+      2. 有 bbox(最近一次画面变化的范围)时, 只在这块范围里选, 并按"离弹层右上角多近"排序;
+         没有 bbox 时, 标题带(y < 10% 屏高)一律不碰, 那是分享/更多;
+      3. 点一个核验一个(diff >= 0.2 即认为关掉了), 最多试 tries 个。
+    返回 {ok, via: 'button'|'system', text, point, diff, tried, hint}。
+    """
+    if not verify:
+        tries = 1
+    img = shot()
+    H, W = img.shape[:2]
+    box = None
+    if bbox:
+        try:
+            x1, y1, x2, y2 = [int(v) for v in list(bbox)[:4]]
+            box = (x1, y1, x2, y2)
+        except Exception:
+            box = None
+    cands = []
+    try:
+        for bx, text, score in ocr(img) or []:
+            t = str(text or "").strip()
+            if not t or len(t) > 10:
+                continue                       # 长句是正文/说明, 不是按钮
+            if not any(k == t or k in t for k in _CLOSE_TEXTS):
+                continue
+            xs = [p[0] for p in bx]
+            ys = [p[1] for p in bx]
+            cx, cy = int((min(xs) + max(xs)) / 2), int((min(ys) + max(ys)) / 2)
+            if box:
+                if not (box[0] - 20 <= cx <= box[2] + 20 and box[1] - 20 <= cy <= box[3] + 20):
+                    continue                   # 弹层之外的「取消/关闭」不是这一层的
+                rank = (0, -cx, cy)            # 弹层里靠右上角的先试
+            else:
+                if cy < H * 0.10:
+                    continue                   # 标题带: 那是分享/更多, 不是页内按钮
+                rank = (0 if cy < H * 0.35 else 1, cy, cx)
+            cands.append((rank, cx, cy, t))
+    except Exception:
+        cands = []
+    cands.sort(key=lambda c: c[0])
+    tried = []
+    for _, x, y, t in cands[:max(1, int(tries))]:
+        try:
+            r = tap(x, y, verify=verify, wait=wait)
+        except Exception:
+            break
+        pct = _pct_from_diff(r.get("diff"))
+        tried.append({"text": t, "point": [x, y], "diff": r.get("diff")})
+        if verify and (pct is None or pct >= 0.2):
+            return {"ok": True, "via": "button", "text": t, "point": [x, y],
+                    "diff": r.get("diff"), "tried": tried}
+    r = back()
+    pct = _pct_from_diff(r.get("diff"))
+    return {"ok": bool(pct is not None and pct >= 0.2), "via": "system",
+            "diff": r.get("diff"), "tried": tried,
+            "hint": ("屏上没有认出「关闭窗口/取消/×」这类按钮, 系统返回也没关掉: 这一层可能要"
+                     "先用 target=<弹层上的文字> 操作, 或者它根本不是弹层")}
 
 
 def back():

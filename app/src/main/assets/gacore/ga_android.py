@@ -295,6 +295,7 @@ class GenericAgentHandler(BaseHandler):
         self._done_steps = []         # 已被动作验证过的里程碑 → 下一轮当 [DONE] 展示
         self._silent_exit_warned = False
         self._goal_text = ''
+        self._last_bbox = None    # 最近一次画面变化的 bbox: close 只在这个范围里找关闭控件
         for _line in self.history_info:      # [USER] 行就是原始任务陈述: 每轮重注它, 防止子目标漂移
             _s = str(_line)
             if _s.startswith('[USER]'):
@@ -359,7 +360,7 @@ class GenericAgentHandler(BaseHandler):
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         return StepOutcome(result, next_prompt=next_prompt)
     
-    _GUI_ACTIONS = ('tap', 'swipe', 'longpress', 'text', 'key', 'launch', 'back', 'home', 'wait',
+    _GUI_ACTIONS = ('tap', 'swipe', 'longpress', 'text', 'key', 'launch', 'back', 'home', 'wait', 'close',
                     'search_app')
 
     _SEE_BUDGET_S = 20    # see() 自己的墙钟预算。视觉调用实测 15-46s; 超过 20s 的调用通常
@@ -473,6 +474,38 @@ class GenericAgentHandler(BaseHandler):
                                          '同一次别重复这个数 —— 直接给 img_point 或 target。'
                                          % (float(sw) / float(iw), landed or '该位置'))
         return out
+
+    @staticmethod
+    def _share_trap(x, y):
+        """(x,y) 是否落在"标题栏右侧"——小程序/微信那段是分享/更多, 不是页内按钮。
+
+        只用来挡"target 没命中、退回模型目测坐标"这一种情况: 那时点这里的期望是关掉一层,
+        实际动作是把分享面板打开, 代价是后面 6 轮都在关分享(真机 2026-10-30 10:06)。
+        正常指名 target 或 img_point 的点击不受影响。"""
+        try:
+            import droid, geom
+            w, h = droid.screen()
+            band = (getattr(geom, 'BANDS', {}) or {}).get('title') or (0.0, 0.055, 1.0, 0.120)
+            y1, y2 = float(band[1]) * h, float(band[3]) * h
+        except Exception:
+            return False
+        if not w or not h:
+            return False
+        return x > 0.55 * w and (y1 - 0.02 * h) <= y <= (y2 + 0.02 * h)
+
+    @staticmethod
+    def _diff_bbox(out):
+        """从 'diff: 85.850% bbox=[0, 0, 1199, 2669]' 里取 bbox → [x1,y1,x2,y2], 取不到返回 None。"""
+        try:
+            txt = str(out.get('diff') or '')
+            i = txt.find('bbox=[')
+            if i < 0:
+                return None
+            body = txt[i + 6:txt.index(']', i)]
+            vals = [int(float(v)) for v in body.split(',')]
+            return vals[:4] if len(vals) >= 4 else None
+        except Exception:
+            return None
 
     @staticmethod
     def _landed_text(x, y, pad_x=220, pad_y=70):
@@ -1022,6 +1055,16 @@ class GenericAgentHandler(BaseHandler):
                     x, y, target_info = info
                 else:
                     x, y = self._resolve_point(args, 'point', 'rel')
+                    if target_miss and self._share_trap(x, y):
+                        # 真机 2026-10-30 10:06: 模型找不到「关闭窗口」, 退回它自己目测的 (906,205),
+                        # 那个位置正是小程序**标题栏右上角的分享/更多** —— 一下把分享面板点开,
+                        # 之后 6 轮都在关分享。宁可不点, 也不能把"找不到文字"变成"点开分享"。
+                        raise ValueError(
+                            'point %r looks like the mini-program title bar right corner '
+                            '(share/more), and target %r is not on screen. Close the layer with '
+                            'gui_act action="close", or aim at real text with target=..., or use '
+                            'img_point=[x,y] with pixels read off the attached screenshot.'
+                            % ([x, y], args.get('target')))
                 if act == 'tap':
                     ret = droid.tap(x, y)
                 else:
@@ -1096,6 +1139,17 @@ class GenericAgentHandler(BaseHandler):
                     # 相对坐标全部落在小窗之外, agent 既不知道原因, 也没法告诉用户怎么修。
                     if ret.get(k) is not None:
                         out[k] = ret[k]
+            elif act == 'close':
+                # 关掉当前弹层(弹窗/抽屉/分享面板): 只在**弹层自己的范围**里找关闭控件。
+                # 模型没法知道 canvas 弹窗里那个 × 在哪(OCR 读不出文字), 与其让它猜坐标
+                # —— 真机 10:06 猜成标题栏右角, 一点就把分享面板打开了 —— 不如让它只说要关。
+                res = droid.close_dialog(bbox=self._last_bbox)
+                out = {'action': act, 'via': res.get('via'), 'diff': res.get('diff')}
+                for k in ('ok', 'text', 'point', 'hint'):
+                    if res.get(k) not in (None, ''):
+                        out[k] = res[k]
+                if res.get('tried'):
+                    out['tried'] = res['tried']
             elif act == 'back':
                 # back 在自绘 canvas/小程序/H5 页面上没有响应(系统返回键被页面吃掉), 这类页面
                 # 的唯一出口是屏幕上的「返回/关闭/×」按钮。所以 back 先在当帧里找那个按钮点它,
@@ -1141,6 +1195,7 @@ class GenericAgentHandler(BaseHandler):
                     out['stable_uncertain'] = True
             except Exception:
                 pass
+        self._last_bbox = self._diff_bbox(out) or getattr(self, '_last_bbox', None)
         if jump:
             # 不调 wait_stable(那会白睡满 3s, 也是 "skips redundant wait" 那条既有契约),
             # 但也不再复用 pending 帧: 大跳变说明页面正在切换, 那一刻的帧是过渡帧。等一小段
@@ -1157,10 +1212,13 @@ class GenericAgentHandler(BaseHandler):
                 pass
         self._last_act_ok = bool(out.get('verified') is True or out.get('hit') is True
                                  or out.get('expect_verified') is True
-                                 or (act == 'launch' and out.get('fg_ok')))
+                                 or (act == 'launch' and out.get('fg_ok'))
+                                 # close/back 的 ok 是"这一层关掉了"的自身证据(diff 已核验),
+                                 # 不收进来的话下面的收尾守卫会把已成功的关闭当成未验证动作
+                                 or (act in ('close', 'back') and out.get('ok') is True))
         # C. 用画面指纹判断"真的在推进吗"。只看 diff 会被"开了又关"的 A/B 两帧骗过去
         # (三角洲那次每步 diff 85.850% 却一步没走), 指纹序列只有 ≤2 种值就是铁证。
-        if act in ('tap', 'longpress', 'swipe', 'back', 'home', 'key', 'launch'):
+        if act in ('tap', 'longpress', 'swipe', 'back', 'close', 'home', 'key', 'launch'):
             self._note_progress(out)
         # 动作后带回一份紧凑观测: 否则模型必须再花一整轮 code_run 去 dump()/look()
         # 才知道屏幕上现在有什么, "观察一轮→动作一轮"把每个动作的成本翻倍。
