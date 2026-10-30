@@ -487,9 +487,10 @@ class GenericAgentHandler(BaseHandler):
         if len(distinct) <= 2:
             out['layer_hint'] = (
                 '最近 %d 次动作的画面指纹只有 %d 种: 你在同一处"开了又关", 一步没往前走。'
-                '目标不在这两幅画面里 —— 它更可能在**上一级**页面。下一步优先 '
-                'gui_act action=back(或点左上返回箭头/弹窗关闭按钮)退回上一层, 站到上一级再找; '
-                '不要继续在这一层换坐标点。' % (len(hist), len(distinct)))
+                '目标不在这两幅画面里 —— 它更可能在**上一级**页面。回退用 '
+                'gui_act action=back(它会先点屏上的「返回/关闭/×」按钮, 找不到才按系统返回); '
+                '自绘/canvas/小程序页面里系统返回键通常无效, 所以也可以直接 target="返回"/"关闭"。'
+                '站到上一级再找, 不要继续在这一层换坐标点。' % (len(hist), len(distinct)))
             hist.clear()
 
     @staticmethod
@@ -870,8 +871,8 @@ class GenericAgentHandler(BaseHandler):
         cands = self._find_target_candidates(target, exact=bool(args.get('exact')))
         if not cands:
             raise LookupError('target %r was not found on this screen (tree/observe/OCR). '
-                              '这一层没有这段文字 —— 它更可能在**上一级**页面: 先 gui_act action=back '
-                              '(或点左上返回箭头/弹窗关闭按钮)退回上一层, 站到上一级再找; '
+                              '这一层没有这段文字 —— 它更可能在**上一级**页面: 先回退一层(自绘/canvas/小程序里系统返回键无效, '
+                              '用 gui_act action=back —— 它会先点屏上的「返回/关闭/×」按钮, 或直接 target="返回"), '
                               '不要在同一层反复换坐标点。若确定就在这一屏, 再 observe 一次拿当帧位置, '
                               '或对自绘/canvas 页用 see(want="point")。' % target)
         cands = self._rank_target_candidates(target, cands)
@@ -1054,8 +1055,20 @@ class GenericAgentHandler(BaseHandler):
                     if ret.get(k) is not None:
                         out[k] = ret[k]
             elif act == 'back':
-                droid.back()
-                out = {'action': act}
+                # back 在自绘 canvas/小程序/H5 页面上没有响应(系统返回键被页面吃掉), 这类页面
+                # 的唯一出口是屏幕上的「返回/关闭/×」按钮。所以 back 先在当帧里找那个按钮点它,
+                # 点不到才按系统返回 —— 否则模型想回上一级时只能在原地瞎点(真机 2026-10-30 09:15)。
+                res = droid.ui_back()
+                out = {'action': act, 'via': res.get('via'), 'diff': res.get('diff')}
+                for k in ('ok', 'text', 'point', 'hint'):
+                    if res.get(k) not in (None, ''):
+                        out[k] = res[k]
+                if res.get('tried'):
+                    out['tried'] = res['tried']
+                if not res.get('ok'):
+                    out['hint'] = ((out.get('hint') or '') +
+                                   ' 屏上没找到可点的返回/关闭按钮, 系统返回也没让画面变化: '
+                                   '看看有没有弹窗/浮层需要先关掉, 或用 target="返回"/"关闭" 指名点。').strip()
             elif act == 'home':
                 droid.home()
                 out = {'action': act}

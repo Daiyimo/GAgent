@@ -135,6 +135,7 @@ let userAv=LS.get('userAvatar','person'), soundOn=LS.get('soundDone',true);   //
 let keepAwake=LS.get('keepAwake',true);   // 模型运行时阻止系统息屏(默认开): setRunning 据此调 GA.keepAwake, 仅运行中且开关开才保持亮屏
 let showThinking=LS.get('showThinking',true);window.GA_THINKING_ON=showThinking;   // F1.3: 思考过程折叠块显示开关(默认开, KV 持久化); render.js 的 thinking 挂点按此渲染/跳过
 let floatAlwaysOn=LS.get('floatAlwaysOn',false);   // 悬浮窗常开(默认关): 开启后悬浮球常驻不随回前台收起, 由 GA.setFloatAlwaysOn 落原生 SharedPreferences + 前台服务保活
+let homeAfterTask=LS.get('homeAfterTask',false);   // 结束任务后返回桌面(默认关): 任务真正结束(done/error)时调 GA.goHome 退回桌面; 真值=原生 SP(home_after_task), LS 仅镜像
 let theme=LS.get('theme','system'), floatOpacity=LS.get('floatOpacity',0.9);   // 颜色模式(system/light/dark) + 悬浮窗透明度(0.3~1)
 let sendReady=false;   // 发送按钮启用态单一真值: boot/ready/input/附件/模型切换/停止键均经 applySendEnabled 收口，避免 WebView 初始 disabled 灰住
 let mkMixins=[];   // /config.items 中 type==='mixin' 的项(按 mykey.py 原始顺序), 供模型列表渲染
@@ -1901,6 +1902,9 @@ function notifyAway(level,c){if(!document.hidden)return;
 function onTaskDone(show,c,end){playDone();const err=end==='error';   // show=false: 正在预览别会话, doneNote 不画进当前视图(T6); 提示音/通知照常; end=后端结束原因, 出错不写成「任务完成」
   if(show!==false){const n=el('div','doneNote'+(err?' err':''));n.innerHTML=(err?ICO_X:ICO_CK)+'<span></span>';n.querySelector('span').textContent=t(err?'t_taskErr':'t_taskDone');scroll();
     if(pinned){_snDown.classList.add('done');_snDown.hidden=false;_snav.classList.add('on')}}   // C2C4(监察 F2): 顶置阅读态不抢滚, 改点亮回底钮; 点击/贴底自然清除
+  // 结束任务后返回桌面(默认关): 只在**真结束**(done/error)触发; ask_user 这种"要你回话"的停点走 onNeedInput,
+  //   那是还要继续的任务, 退回桌面反而把用户从上下文里推出去。GA.goHome 用 HOME intent, 无权限、幂等。
+  if(homeAfterTask){try{GA.goHome()}catch(e){}}
   notifyAway(err?'error':'done',c)}                     // 完成/出错: 轻提示音 + 普通通知(署名任务归属会话)
 function onNeedInput(c){playAsk();notifyAway('ask',c)}  // 需要回答 ask_user: 醒目提示音 + 高优先级通知
 let _askKey=null;
@@ -2826,6 +2830,8 @@ function refreshHome(){
   const swTh=$('swShowThinking');if(swTh){swTh.classList.toggle('on',showThinking);swTh.setAttribute('aria-checked',showThinking?'true':'false')}   // F1.3 开关同步
   try{if(window.GA&&GA.floatAlwaysOn){const nv=!!GA.floatAlwaysOn();if(nv!==floatAlwaysOn){floatAlwaysOn=nv;LS.set('floatAlwaysOn',nv)}}}catch(e){}   // 常开真值=原生 SP∧权限(读桥, 仿 a11yOn); kv 镜像可分叉(授权往返时 WebView 未载/登录切命名空间), 旧壳无桥保持镜像
   const swFA=$('swFloatAlways');if(swFA){swFA.classList.toggle('on',floatAlwaysOn);swFA.setAttribute('aria-checked',floatAlwaysOn?'true':'false')}
+  try{if(window.GA&&GA.homeAfterTask){const hv=!!GA.homeAfterTask();if(hv!==homeAfterTask){homeAfterTask=hv;LS.set('homeAfterTask',hv)}}}catch(e){}   // 同上: 读桥为真值, kv 镜像可分叉
+  const swHA=$('swHomeAfterTask');if(swHA){swHA.classList.toggle('on',homeAfterTask);swHA.setAttribute('aria-checked',homeAfterTask?'true':'false')}
   try{refreshA11y()}catch(e){}   // 无障碍行值含持久化态(设置首页打开/切语言时重读原生真值)
   refreshAvatarRow();refreshProxyVal();refreshAppVersion();_reflectUpdateBadge();refreshThemeVal();refreshEvoBadge();
   const pc=$('provCountVal');if(pc)pc.textContent=providers.length?(providers.length+t('count')):t('addProvider');
@@ -3209,6 +3215,13 @@ function toggleFloatAlways(e){   // 悬浮窗常开: 开→请求悬浮窗权限
   if(ok!==want){ e.classList.toggle('on',ok);e.setAttribute('aria-checked',ok?'true':'false'); }   // 权限被拒 → 回滚为关
   floatAlwaysOn=ok;LS.set('floatAlwaysOn',floatAlwaysOn);
   try{setTimeout(refreshFloat,300)}catch(e){}                                     // 服务起停是异步的, 略等再读 running(立即读必读到旧值)
+}
+function toggleHomeAfterTask(e){   // 结束任务后返回桌面: 原生 setHomeAfterTask 落 SharedPreferences 并回真值(无权限门, 不需要悬浮窗/无障碍)
+  const want=e.classList.toggle('on');e.setAttribute('aria-checked',want?'true':'false');
+  let ok=want;
+  try{ const r=GA.setHomeAfterTask(want); if(r===false||r==='false')ok=false; }catch(err){ ok=want; }   // 桥缺失(旧包/浏览器 demo)→乐观保留 UI 态
+  if(ok!==want){ e.classList.toggle('on',ok);e.setAttribute('aria-checked',ok?'true':'false'); }
+  homeAfterTask=ok;LS.set('homeAfterTask',ok);
 }
 let _swipeOpen=null;
 function closeSwipe(row){if(!row)return;const inner=row.querySelector('.provRowInner'),del=row.querySelector('.provDel');

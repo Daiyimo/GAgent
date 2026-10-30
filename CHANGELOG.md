@@ -7,6 +7,27 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- `back` now means "go up one level", not "press the system back key": in mini-programs,
+  self-drawn canvases and H5 pages the system back key is swallowed by the page, so pressing it
+  changes nothing -- which is exactly how the 2026-10-30 09:15 session got stuck (the next task
+  entry was one level up, and the only exits were the on-screen "返回/关闭" buttons).
+  `droid.ui_back()` looks at the current frame first: OCR finds an on-screen 返回/关闭/取消/退出/×
+  in the title band (falling back to the left-most title-bar icon when there is no text), taps it,
+  and verifies the change; only when no such button exists -- or tapping it changes nothing -- does
+  it fall back to the system back key. `gui_act action=back` routes through it and reports
+  `via: button|system` plus the button text/point, so the model can tell "the page has no way back"
+  from "I pressed the wrong thing".
+  另外新增设置项「结束任务后返回桌面」(设置 → 通用设置 → 悬浮窗常开 下面): 开启后任务真正结束
+  (done/error)时把设备退回桌面, 免得跑完还停在别人的 App 里。开关真值存原生
+  `SharedPreferences("ga").home_after_task`(读桥 `GA.homeAfterTask()`), `GA.goHome()` 用 HOME
+  intent(不需要悬浮窗/无障碍权限)。ask_user 那种"等你回话"的停点不触发——那是还要继续的任务。
+  `back` 现在等于"回退一层"，而不是"按系统返回键"：小程序、自绘 canvas、H5 页面会把系统返回键
+  吃掉，按了等于没按——2026-10-30 09:15 的会话就是这么卡住的（后续任务入口在上一级，唯一的出口
+  是屏幕上那个「返回/关闭」按钮）。`droid.ui_back()` 先看当帧：OCR 在标题带里找「返回/关闭/取消/
+  退出/×」（没有文字时退回标题栏最左边的图标），点它并核验画面变化；只有在屏上真没有这类按钮、
+  或点了没反应时，才退回系统返回键。`gui_act action=back` 走这条路径，并回报
+  `via: button|system` 与按钮文字/坐标，模型因此能区分"这页没有退路"和"我点错了东西"。
+
 - Levels, stuck loops and entry knowledge: the 2026-10-30 09:15 session showed the trap
   a per-tap diff cannot see -- after reading "today's password" the next task entry was on
   the *parent* page, so the model kept tapping "cancel"/"close" inside the dialog layer; six

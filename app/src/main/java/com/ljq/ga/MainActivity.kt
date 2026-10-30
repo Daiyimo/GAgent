@@ -476,6 +476,27 @@ class MainActivity : Activity() {
             if (on) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
+        // 结束任务后返回桌面: 设置页开关(通用设置 → 悬浮窗常开 下面一行)。
+        //   开→任务结束(done/error)时前端调 GA.goHome() 把设备退回桌面; 关→保持现状(停在任务结束的画面,
+        //   方便用户回看最后一步)。状态持久化到 SharedPreferences("ga").home_after_task, 真值走读桥
+        //   homeAfterTask()(与 floatAlwaysOn 同口径: 不让 kv 镜像和 SP 分叉出"开关开但没生效")。
+        @JavascriptInterface fun setHomeAfterTask(on: Boolean): Boolean {
+            getSharedPreferences("ga", MODE_PRIVATE).edit().putBoolean("home_after_task", on).apply()
+            Analytics.track(if (on) """{"event":"home_after_task","props":{"on":true}}"""
+                            else """{"event":"home_after_task","props":{"on":false}}""")
+            return on
+        }
+        @JavascriptInterface fun homeAfterTask(): Boolean =
+            getSharedPreferences("ga", MODE_PRIVATE).getBoolean("home_after_task", false)
+        // 回桌面: HOME intent 不需要任何权限, 也不受悬浮窗/无障碍授权状态影响。任务结束后一次, 幂等。
+        @JavascriptInterface fun goHome() {
+            runOnUiThread {
+                runCatching {
+                    startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }.onFailure { Diag.log("go_home_failed", it.toString()) }
+            }
+        }
         // 前端埋点上报入口: GA.track(JSON.stringify({event,props})); 脱敏在 Analytics 层完成
         @JavascriptInterface fun track(eventJson: String) { Analytics.track(eventJson) }
         // 账号身份: 登录成功 GA.setUser(userId) / 登出 GA.clearUser(); 让埋点带 user_id 跨设备归并(非 PII, 不传邮箱)

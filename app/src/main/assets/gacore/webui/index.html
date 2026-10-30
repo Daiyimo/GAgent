@@ -257,6 +257,13 @@ try{var _th=JSON.parse(localStorage.getItem('ga.theme')||'"system"');
           <span class="k" data-i18n="floatAlwaysOn">悬浮窗常开</span>
           <span class="v"><button class="sw" id="swFloatAlways" role="switch" aria-checked="false" data-i18n-aria="floatAlwaysOn" aria-label="悬浮窗常开" onclick="toggleFloatAlways(this)"></button></span>
         </div>
+        <!-- 结束任务后返回桌面: 任务真正结束(done/error)时把设备退回桌面, 免得跑完还停在别人的 App 里。
+             开关状态持久化(原生 SharedPreferences home_after_task, 读桥 GA.homeAfterTask 为真值; LS 只是镜像)。结构仿 swFloatAlways。 -->
+        <div class="row">
+          <span class="rowIco ic-teal"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9.5V20h13V9.5"/><path d="M10 20v-5h4v5"/></svg></span>
+          <span class="k" data-i18n="homeAfterTask">结束任务后返回桌面</span>
+          <span class="v"><button class="sw" id="swHomeAfterTask" role="switch" aria-checked="false" data-i18n-aria="homeAfterTask" aria-label="结束任务后返回桌面" onclick="toggleHomeAfterTask(this)"></button></span>
+        </div>
         <!-- 无障碍权限单入口(v2.30, 并入原「无障碍持久化」行): 未开启时磁贴角标红点+红「未开启」, 开启后「已开启」或「已开启 · 持久化」;
              点击进详情子页(服务状态+持久化授权+自动恢复开关+OEM保活); 状态由 refreshA11y 刷新, 值样式与 adbRow 同族(a11yValOn/Off)。 -->
         <button class="row rowBtn" id="a11yRow" onclick="openA11yPersistPage()">

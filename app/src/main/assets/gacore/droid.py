@@ -2294,6 +2294,74 @@ def app_search(pkg="com.tencent.mm", query="", wait=2.0):
 
 def search_app(pkg="com.tencent.mm", query="", wait=2.0): return app_search(pkg=pkg, query=query, wait=wait)   # schema 的 action 名就是 search_app, 契约测试按名对账
 def pkgs(filter=""): return _act(op="pkgs", filter=filter)["apps"]  # 列可启动app[{pkg,label}], filter模糊匹配包名/应用名如'美团'
+_BACK_TEXTS = ("返回上一级", "返回", "关闭", "取消", "退出", "跳过", "×", "✕", "╳", "X", "←", "‹", "〈")
+
+
+def _pct_from_diff(diff):
+    """'diff: 83.904% bbox=[...]' → 83.904; 解析不了返回 None。"""
+    try:
+        return float(str(diff).split("%", 1)[0].split()[-1])
+    except Exception:
+        return None
+
+
+def ui_back(verify=True, wait=1.0, tries=2):
+    """回退一层: **先点屏上的返回/关闭按钮**, 都点不到才按系统 back。
+
+    为什么不能直接 back: 小程序/自绘 canvas/H5 页面会把系统返回键吃掉(或根本不响应),
+    在那种页面上 back 等于没按。真机 2026-10-30 09:15 的三角洲会话就是这样: 目标入口在上一级
+    页面, 模型(和之前的提示)只会按 back, 于是在弹窗层里瞎点 6 次。这类页面唯一的出口是屏幕上
+    那个「返回 / 关闭 / ×」按钮。
+    宁可多点一次按钮, 也不要在 canvas 页上把"没反应"当成"回不去"。
+
+    返回 {ok, via: 'button'|'system', text, point, diff, tried}。"""
+    img = shot()
+    H, W = img.shape[:2]
+    cands = []
+    try:
+        for box, text, score in ocr(img) or []:
+            t = str(text or "").strip()
+            if not t or len(t) > 10:
+                continue                      # 长句是正文, 不是按钮
+            if not any(k == t or k in t for k in _BACK_TEXTS):
+                continue
+            xs = [p[0] for p in box]
+            ys = [p[1] for p in box]
+            cx, cy = int((min(xs) + max(xs)) / 2), int((min(ys) + max(ys)) / 2)
+            # 标题行/顶部的返回键优先, 其次按从左到右(返回键几乎都在左上)
+            cands.append((0 if cy < H * 0.3 else 1, cx, cy, t))
+    except Exception:
+        cands = []
+    if not cands:
+        # 无文字图标(← 这种没有 OCR 文本): 标题带里最左边那个 icon 就是返回键
+        try:
+            for it in look(roi="title") or []:
+                x, y = int(it.get("x") or 0), int(it.get("y") or 0)
+                if 0 < x < W * 0.3:
+                    cands.append((0, x, y, str(it.get("label") or it.get("cls") or "icon")))
+                    break
+        except Exception:
+            pass
+    cands.sort()
+    tried = []
+    for _, x, y, t in cands[:max(1, int(tries))]:
+        try:
+            r = tap(x, y, verify=verify, wait=wait)
+        except Exception:
+            break
+        pct = _pct_from_diff(r.get("diff"))
+        tried.append({"text": t, "point": [x, y], "diff": r.get("diff")})
+        if verify and (pct is None or pct >= 0.2):
+            return {"ok": True, "via": "button", "text": t, "point": [x, y],
+                    "diff": r.get("diff"), "tried": tried}
+    r = back()
+    pct = _pct_from_diff(r.get("diff"))
+    return {"ok": bool(pct is not None and pct >= 0.2), "via": "system",
+            "diff": r.get("diff"), "tried": tried,
+            "hint": ("" if tried else "屏上没有找到返回/关闭按钮"),
+            }
+
+
 def back():
     r = _act(op="back")
     _trace("back")
