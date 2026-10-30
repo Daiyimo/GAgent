@@ -6,6 +6,8 @@ publicly released. Exact artifacts and acceptance belong to their release record
 本页记录源码候选的变化，不表示各版本均已公开；制品与验收以对应发布记录为准。
 
 ## Unreleased / 未发布变更
+
+- tests: 降级契约用例不再因为环境没装 onnxruntime 就在收集期报错(CI 曾 `ModuleNotFoundError: No module named 'onnxruntime'` 打断整个 pytest) / degrade tests stub onnxruntime when absent
 - 解耦审核修整: 历史剪枝归会话侧, 猴补不再抄签名, 关闭/roi 的事实不再被丢
   / decoupling review: history pruning belongs to the session, monkey patches stop copying signatures, close/roi facts are no longer dropped
   - `ga_android._drop_stale_frame_history()` 不再自己遍历并改写 `parent.history`(会话消息库, 属主是

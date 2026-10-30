@@ -19,6 +19,15 @@ import numpy as np
 CORE = Path(__file__).resolve().parents[1] / 'app/src/main/assets/gacore'
 BUNDLE = CORE / 'models' / 'ui_detect_v1'
 sys.path.insert(0, str(BUNDLE))
+# 无 onnxruntime 的机器(CI 的 requirements-test.txt 不装它; 本地可能也没装)不能连收集都过不去:
+# 本组用例把 _session/_ocr_engine/_yolo 全 mock 掉, 根本不做真推理, 所以缺引擎时塞个占位模块即可。
+# 与 tests/test_detector_models.py 同一手法。
+if 'onnxruntime' not in sys.modules:
+    try:
+        import onnxruntime  # noqa: F401
+    except Exception:
+        import types as _types
+        sys.modules['onnxruntime'] = _types.SimpleNamespace()
 import ui_detect_lite
 
 
