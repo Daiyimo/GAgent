@@ -60,7 +60,7 @@ class EmptyStreamFallbackTest(unittest.TestCase):
         parse_fn = lambda r: llmcore._parse_openai_sse(r.iter_lines(), 'chat_completions')
         json_fn = lambda r: llmcore._parse_openai_json(r.json(), 'chat_completions')
         payload = {'model': 'm', 'messages': [], 'stream': True, 'stream_options': {'include_usage': True}}
-        with patch.object(llmcore.requests, 'post', fake_post):
+        with patch.object(llmcore.requests, 'post', fake_post), patch.object(llmcore, '_stream_diag', lambda *a, **k: None):
             chunks, ret = _drive(llmcore._stream_with_retry(_sess(), 'http://x', {}, payload, parse_fn, json_fn))
 
         self.assertEqual(len(calls), 2, '流式一次 + 非流式一次')
@@ -77,7 +77,7 @@ class EmptyStreamFallbackTest(unittest.TestCase):
         parse_fn = lambda r: llmcore._parse_openai_sse(r.iter_lines(), 'chat_completions')
         json_fn = lambda r: llmcore._parse_openai_json(r.json(), 'chat_completions')
         payload = {'model': 'm', 'messages': [], 'stream': True}
-        with patch.object(llmcore.requests, 'post', fake_post), patch.object(llmcore.time, 'sleep', lambda *_: None):
+        with patch.object(llmcore.requests, 'post', fake_post), patch.object(llmcore.time, 'sleep', lambda *_: None), patch.object(llmcore, '_stream_diag', lambda *a, **k: None):
             chunks, ret = _drive(llmcore._stream_with_retry(_sess(max_retries=3), 'http://x', {}, payload, parse_fn, json_fn))
 
         errs = [c for c in chunks if '!!!Error' in c]
@@ -85,6 +85,42 @@ class EmptyStreamFallbackTest(unittest.TestCase):
         self.assertIn('empty response', errs[0])
         self.assertIn('不是任务做错', errs[0])
         self.assertEqual([b.get('text') for b in ret if b.get('type') == 'text'], errs)
+
+
+    def test_gateway_error_event_is_surfaced_not_mistaken_for_empty_stream(self):
+        """网关把错误包成 SSE 事件时以前会被静默忽略, 于是"一片 data 全是 error"也被判成空流。"""
+        lines = [b'data: {"error": {"message": "upstream overloaded"}}', b'data: [DONE]']
+
+        def fake_post(url, headers=None, json=None, **kw):
+            return _FakeResp(lines=lines)
+
+        parse_fn = lambda r: llmcore._parse_openai_sse(r.iter_lines(), 'chat_completions')
+        payload = {'model': 'm', 'messages': [], 'stream': True}
+        ctx1 = patch.object(llmcore.requests, 'post', fake_post)
+        ctx2 = patch.object(llmcore, '_stream_diag', lambda *a, **k: None)
+        with ctx1, ctx2:
+            chunks, ret = _drive(llmcore._stream_with_retry(_sess(), 'http://x', {}, payload, parse_fn,
+                                                           lambda r: []))
+        self.assertTrue(any('upstream overloaded' in c for c in chunks), chunks)
+        self.assertFalse(any('empty response' in c for c in chunks), '有 error 事件时不该再说空流')
+
+    def test_empty_stream_writes_diagnostics(self):
+        """空流必须留下现场(raw_lines/saw_done/首行), 便于事后判断到底是真空 body 还是解析没认出来。"""
+        seen = []
+
+        def fake_post(url, headers=None, json=None, **kw):
+            r = _FakeResp(lines=[])
+            r.headers = {'Content-Type': 'text/event-stream; charset=utf-8'}
+            return r
+
+        parse_fn = lambda r: llmcore._parse_openai_sse(r.iter_lines(), 'chat_completions')
+        payload = {'model': 'm', 'messages': [], 'stream': True}
+        ctx1 = patch.object(llmcore.requests, 'post', fake_post)
+        ctx2 = patch.object(llmcore, '_stream_diag', lambda *a, **k: seen.append((a, k)))
+        with ctx1, ctx2:
+            _drive(llmcore._stream_with_retry(_sess(), 'http://x', {}, payload, parse_fn, lambda r: []))
+        self.assertEqual(len(seen), 1, '空流应落一次诊断')
+        self.assertEqual(seen[0][0][-1], 'empty response')
 
     def test_plain_timeout_keeps_old_behaviour(self):
         def fake_post(url, headers=None, json=None, **kw):

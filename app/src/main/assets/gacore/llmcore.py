@@ -366,6 +366,13 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
             if data_str == "[DONE]": break
             try: evt = json.loads(data_str)
             except: continue
+            if not evt.get("choices") and (evt.get("error") or evt.get("message")):
+                _em = evt.get("error") or evt
+                _msg = _em.get("message") if isinstance(_em, dict) else str(_em)
+                if _msg:
+                    content_text += "!!!Error: " + str(_msg)
+                    yield "!!!Error: " + str(_msg)
+                continue
             ch = (evt.get("choices") or [{}])[0]
             delta = ch.get("delta") or {}
             if delta.get("reasoning_content"):
@@ -478,6 +485,59 @@ def _stamp_oai_cache_markers(messages, model):
             c = list(c); c[-1] = dict(c[-1], cache_control={'type': 'ephemeral'})
             messages[idx] = {**messages[idx], 'content': c}
 
+class _RecProxy:
+    """包一层响应对象, 记录原始 SSE 行数/首行/是否见到 [DONE]。
+
+    用途: app 报的 "empty response" 到底是真·空 body, 还是 body 里有 data 但解析器没认出来
+    (例如网关把错误包成 data: {"error": ...} 事件, 或者只回了一个 data: [DONE])。
+    """
+    def __init__(self, resp):
+        self._resp = resp
+        self.n = 0
+        self.first = b''
+        self.done = False
+
+    def iter_lines(self, *a, **k):
+        for ln in self._resp.iter_lines(*a, **k):
+            if ln:
+                self.n += 1
+                if not self.first: self.first = ln[:400]
+                if b'[DONE]' in ln: self.done = True
+            yield ln
+
+    def json(self):
+        return self._resp.json()
+
+
+def _shrink_payload(o):
+    """把请求体缩到可落盘的形状: 长字符串(图片 base64/大提示词)只留长度。"""
+    if isinstance(o, str):
+        return o if len(o) < 400 else f"<str len={len(o)}>"
+    if isinstance(o, list):
+        return [_shrink_payload(x) for x in o]
+    if isinstance(o, dict):
+        return {k: _shrink_payload(v) for k, v in o.items()}
+    return o
+
+
+def _stream_diag(sess, url, payload, resp, proxy, why):
+    """空流出问题时落一份现场到 temp/stream_diag_<ts>.json, 不用再靠猜。"""
+    try:
+        d = {"t": time.time(), "why": why, "url": url, "model": getattr(sess, "model", ""),
+             "status": getattr(resp, "status_code", None),
+             "content_type": (getattr(resp, "headers", {}) or {}).get("Content-Type"),
+             "raw_lines": getattr(proxy, "n", 0), "saw_done": getattr(proxy, "done", False),
+             "first_line": (getattr(proxy, "first", b"") or b"").decode("utf-8", "replace"),
+             "payload": _shrink_payload(payload)}
+        path = pathlib.Path(__file__).parent.joinpath("temp", "stream_diag_%d.json" % int(time.time() * 1000))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if len(list(path.parent.glob("stream_diag_*.json"))) >= 20: return   # 最多留 20 份, 别把设备刷满
+        path.write_text(json.dumps(d, ensure_ascii=False)[:200000], encoding="utf-8")
+        print("[LLM Diag] " + path.name + " lines=" + str(d["raw_lines"]) + " done=" + str(d["saw_done"]))
+    except Exception as e:
+        print("[LLM Diag] dump failed: " + type(e).__name__ + ": " + str(e))
+
+
 def _stream_with_retry(sess, url, headers, payload, parse_fn, json_fn=None):
     _RETRYABLE = {408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 529}
     def _delay(resp, attempt):
@@ -498,11 +558,17 @@ def _stream_with_retry(sess, url, headers, payload, parse_fn, json_fn=None):
                     except: body = ""
                     err = f"!!!Error: HTTP {r.status_code}" + (f": {body}" if body else "")
                     yield err; return [{"type": "text", "text": err}]
-                gen = parse_fn(r)
+                rec = _RecProxy(r)
+                gen = parse_fn(rec)
                 try:
                     while True: chunk = next(gen); streamed = True; yield chunk
                 except StopIteration as e:
-                    if not e.value and not streamed: raise requests.ConnectionError("empty response")
+                    if not e.value and not streamed:
+                        _stream_diag(sess, url, payload, r, rec, "empty response")
+                        _ct = str((getattr(r, "headers", None) or {}).get("Content-Type"))
+                        raise requests.ConnectionError(
+                            "empty response (http " + str(r.status_code) + ", raw_lines=" + str(rec.n)
+                            + ", saw_done=" + str(rec.done) + ", ct=" + _ct + ")")
                     return e.value or []
         except (requests.Timeout, requests.ConnectionError) as e:
             #pathlib.Path(__file__).parent.joinpath('temp','bad_requests.json').write_text(json.dumps({"url":url,"headers":headers,"payload":payload,"err":str(e),"t":time.time()},ensure_ascii=False),encoding='utf-8')

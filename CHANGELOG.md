@@ -6,6 +6,15 @@ publicly released. Exact artifacts and acceptance belong to their release record
 本页记录源码候选的变化，不表示各版本均已公开；制品与验收以对应发布记录为准。
 
 ## Unreleased / 未发布变更
+- llmcore: 空流现场诊断(stream_diag) + 把网关塞在 SSE 里的 error 事件如实抛出
+  / llmcore: empty-stream diagnostics dump + surface gateway error events carried inside SSE
+  - 取证(PC 直连同一 key/端点): 1.7MB / 16 图 / 并发 5 / 两个模型全部正常, 排除配置与网络;
+    但 HTTP 200 的流确实可能只回 `role` + `finish_reason` + `usage` 三块而零正文 —— 这时旧代码一律
+    报 `ConnectionError: empty response`, 把"模型这一回合没吐字"和"网络一个字节没回"混成同一条红字。
+  - 现在空流会往 `temp/stream_diag_<ts>.json` 落现场(`raw_lines`/`saw_done`/首行/Content-Type/
+    请求体形状, 图片只留长度, 最多 20 份), 报错文案也带上 `raw_lines`/`saw_done`, 便于事后判定是哪一类。
+  - `_parse_openai_sse` 遇到 `data: {"error": ...}`(网关把错误包成事件)现在会 yield `!!!Error: <msg>`,
+    不再被静默忽略然后误报成"空流"。
 - llmcore: 空流(HTTP 200 零 chunk)自动改非流式重取 + 中间重试不再刷红字
   / llmcore: empty-stream auto-retry via non-stream fallback + silent intermediate retries
   - 真机取证(2026-10-30, StepFun `step_plan` + `step-3.7-flash`): `files/ga/chat.json` 20 条历史任务里 4 条
