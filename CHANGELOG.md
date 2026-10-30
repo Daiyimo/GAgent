@@ -6,6 +6,19 @@ publicly released. Exact artifacts and acceptance belong to their release record
 本页记录源码候选的变化，不表示各版本均已公开；制品与验收以对应发布记录为准。
 
 ## Unreleased / 未发布变更
+- llmcore: 空流(HTTP 200 零 chunk)自动改非流式重取 + 中间重试不再刷红字
+  / llmcore: empty-stream auto-retry via non-stream fallback + silent intermediate retries
+  - 真机取证(2026-10-30, StepFun `step_plan` + `step-3.7-flash`): `files/ga/chat.json` 20 条历史任务里 4 条
+    以 `!!!Error: ConnectionError: empty response` 收尾, 且都死在开局第 2 回合左右 —— 用户看到的就是
+    "刚开始执行就报一堆 error"; 失败那次 `model_responses_*.txt` 只有 `=== Prompt ===` 没有 `=== Response ===`,
+    即上游 200 但一个 chunk 都没回。
+  - `_stream_with_retry(sess, url, headers, payload, parse_fn, json_fn=None)`: 命中空流时先用同一 payload
+    (`stream=False`, 摘掉 `stream_options`) 走非流式再要一次, 拿到正文就直接继续本轮, 不再报错; 三个调用点
+    (`_openai_stream` 与两处 Claude `raw_ask`) 都补了 `json_fn`。
+  - 中间重试不再 `yield err`(真机一轮空流会连着重试好几次, 连出好几行红字), 只打 `[LLM Retry]` 到 stdout;
+    次数用尽才在正文里放一条, 并附中文说明"上游这一回合一个字都没回…不是任务做错了, 过一会儿重发或换模型"。
+  - 新增 `tests/test_empty_stream_fallback.py`(3 条): 兜底改非流式并继续、全失败只有一条红字且带恢复提示、
+    普通 `Timeout` 行为不变。
 - amoo(StepOS 语音助手) 接单通道: 新增 AppFunctions 服务 + 分享接单 + 结果回推 amoo
   / amoo (StepOS voice assistant) task intake: AppFunctions service + share-target intake + result push-back
   - 真机机制实测: 装/更新包即触发 `AbilityInstallerWatcher: handleAppUpdated` → `refreshAndUpload` →

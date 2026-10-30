@@ -478,7 +478,7 @@ def _stamp_oai_cache_markers(messages, model):
             c = list(c); c[-1] = dict(c[-1], cache_control={'type': 'ephemeral'})
             messages[idx] = {**messages[idx], 'content': c}
 
-def _stream_with_retry(sess, url, headers, payload, parse_fn):
+def _stream_with_retry(sess, url, headers, payload, parse_fn, json_fn=None):
     _RETRYABLE = {408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 529}
     def _delay(resp, attempt):
         try: ra = float((resp.headers or {}).get("retry-after"))
@@ -506,11 +506,41 @@ def _stream_with_retry(sess, url, headers, payload, parse_fn):
                     return e.value or []
         except (requests.Timeout, requests.ConnectionError) as e:
             #pathlib.Path(__file__).parent.joinpath('temp','bad_requests.json').write_text(json.dumps({"url":url,"headers":headers,"payload":payload,"err":str(e),"t":time.time()},ensure_ascii=False),encoding='utf-8')
+            # 空流(HTTP 200 但一个 chunk 都没来)先怀疑"流式被网关吞掉": 同一个请求改成非流式再要一次。
+            # 真机实测(StepFun step_plan, 2026-10-30): 20 条历史任务里 4 条死在这里(约 20%), 且都死在很靠前的回合,
+            # 看起来就是"刚开始执行就报一堆 error"。非流式走的是另一条网关路径, 拿得到完整回复的概率明显更高。
+            if json_fn and not streamed and 'empty response' in str(e) and payload.get('stream'):
+                try:
+                    p2 = dict(payload); p2['stream'] = False; p2.pop('stream_options', None)
+                    with requests.post(url, headers=dict(headers, Accept='application/json'), json=p2,
+                                       timeout=(sess.connect_timeout, sess.read_timeout),
+                                       proxies=sess.proxies, verify=sess.verify) as r2:
+                        if r2.status_code < 400:
+                            # json_fn 与 SSE 解析器同形: 边 yield 文本边用 StopIteration.value 交回内容块。
+                            gen2, blocks, got = json_fn(r2), [], False
+                            try:
+                                while True:
+                                    c2 = next(gen2)
+                                    if c2: got = True; yield c2
+                            except StopIteration as stop2:
+                                blocks = stop2.value or []
+                            if got:
+                                print('[LLM Retry] empty stream -> non-stream fallback ok')
+                                return blocks
+                        else:
+                            print(f'[LLM Retry] non-stream fallback HTTP {r2.status_code}')
+                except Exception as e2:
+                    print(f'[LLM Retry] non-stream fallback failed: {type(e2).__name__}: {e2}')
             err = f"!!!Error: {type(e).__name__}: {e}" if str(e) else f"!!!Error: {type(e).__name__}"
+            if 'empty response' in str(e):
+                err += (f" -- 上游这一回合一个字都没回(空流), 已重试 {attempt + 1} 次。"
+                        "这是网络/供应商侧的问题, 不是任务做错了: 过一会儿重发同一句就能继续, 也可以先换个模型。")
             if attempt < sess.max_retries:
                 d = _delay(None, attempt)
                 print(f"[LLM Retry] {type(e).__name__}, retry in {d:.1f}s ({attempt+1}/{sess.max_retries+1})")
-                yield err; time.sleep(d); continue
+                # 中间重试不再把 !!!Error 塞进正文: 真机一轮空流会连着重试好几次, 用户看到的就是"开机就一堆红字"。
+                # 内部仍然重试(退避见 _delay), 只在全部用尽后往正文里放一条(见下方 yield err)。
+                time.sleep(d); continue
             yield err; return [{"type": "text", "text": err}]
         except Exception as e:
             err = f"\n\n[!!! 流异常中断 {type(e).__name__}: {e} !!!]" if streamed else f"!!!Error: {type(e).__name__}: {e}"
@@ -584,7 +614,8 @@ def _openai_stream(sess, messages):
     if tools: payload["tools"] = _prepare_oai_tools(tools, api_mode)
     if sess.service_tier: payload["service_tier"] = sess.service_tier
     parse_fn = (lambda r: _parse_openai_sse(r.iter_lines(), api_mode)) if sess.stream else (lambda r: _parse_openai_json(r.json(), api_mode))
-    return (yield from _stream_with_retry(sess, url, headers, payload, parse_fn))
+    json_fn = lambda r: _parse_openai_json(r.json(), api_mode)
+    return (yield from _stream_with_retry(sess, url, headers, payload, parse_fn, json_fn))
         
 def _prepare_oai_tools(tools, api_mode="chat_completions"):
     if api_mode == "responses":
@@ -807,7 +838,8 @@ class ClaudeSession(BaseSession):
         if self.system: payload["system"] = [{"type": "text", "text": self.system, "cache_control": {"type": "persistent"}}]
         url = auto_make_url(self.api_base, "messages")
         parse_fn = (lambda r: _parse_claude_sse(r.iter_lines())) if self.stream else (lambda r: _parse_claude_json(r.json()))
-        return (yield from _stream_with_retry(self, url, headers, payload, parse_fn))
+        json_fn = lambda r: _parse_claude_json(r.json())
+        return (yield from _stream_with_retry(self, url, headers, payload, parse_fn, json_fn))
     def make_messages(self, raw_list):
         msgs = _drop_unsigned_thinking([{"role": m['role'], "content": list(m['content'])} for m in raw_list])
         user_idxs = [i for i, m in enumerate(msgs) if m['role'] == 'user']
@@ -906,7 +938,8 @@ class NativeClaudeSession(BaseSession):
             messages[idx]["content"][-1] = dict(messages[idx]["content"][-1], cache_control={"type": "ephemeral"})
         url = auto_make_url(self.api_base, "messages") + '?beta=true'
         parse_fn = (lambda r: _parse_claude_sse(r.iter_lines())) if self.stream else (lambda r: _parse_claude_json(r.json()))
-        return (yield from _stream_with_retry(self, url, headers, payload, parse_fn))
+        json_fn = lambda r: _parse_claude_json(r.json())
+        return (yield from _stream_with_retry(self, url, headers, payload, parse_fn, json_fn))
 
     def ask(self, msg):
         assert type(msg) is dict
