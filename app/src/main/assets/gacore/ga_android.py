@@ -395,6 +395,103 @@ class GenericAgentHandler(BaseHandler):
                 '如果它来自 obs/ocr 的 x/y, 那单位没错, 换个目标或先 observe 看清当前页。'
                 % ([px, py], iw, ih, sw, sh, [px, py]))
 
+    _RETRY_ALT_MAX = 2
+    _PROGRESS_WINDOW = 6
+
+    def _retry_noop_action(self, act, args, out, target_info):
+        """点空以后就地换一个候选/换一种单位再点一次。
+
+        真机实证(2026-10-30)两类白跑都能在这里救回来:
+          · `target='套牌'` 首候选是正文里的同名文字, 点了三次 diff 0.3~0.5%, 第四次才点到
+            底部导航栏 —— 候选清单本来就在手上, 换下一个候选比再问模型快得多;
+          · 模型把附图(647x1440)上的坐标填进 point(设备像素), 上一次点击落在屏幕的 1/1.86 处,
+            diff≈0, 它下一轮往往原样重发 —— 换算成设备像素再点一次通常就打中了。
+        只在"确实点空"时触发, 每次最多 tap 两次, 不改变正常路径的耗时。"""
+        import droid
+        alts = list((target_info or {}).get('_alternatives') or [])
+        tried = []
+        if alts:
+            for a in alts[:self._RETRY_ALT_MAX]:
+                pt = a.get('point') or []
+                if len(pt) != 2:
+                    continue
+                try:
+                    r2 = (droid.tap(int(pt[0]), int(pt[1])) if act == 'tap'
+                          else droid.longpress(int(pt[0]), int(pt[1]), int(args.get('ms') or 800)))
+                except Exception:
+                    break
+                p2 = self._parse_diff_pct({'diff': r2.get('diff')})
+                tried.append({'point': [int(pt[0]), int(pt[1])], 'diff': r2.get('diff')})
+                if p2 is not None and p2 >= 0.2:
+                    out['point'] = [int(pt[0]), int(pt[1])]
+                    out['diff'] = r2.get('diff')
+                    out['auto_retry'] = {'kind': 'target_alternate', 'index': a.get('index'),
+                                         'tried': tried}
+                    if out.get('target'):
+                        tv = dict(out['target'])
+                        tv['point'] = [int(pt[0]), int(pt[1])]
+                        tv['index'] = a.get('index')
+                        tv['chosen_by'] = 'auto_retry'
+                        tv['alternatives'] = [x for x in (tv.get('alternatives') or [])
+                                              if x.get('index') != a.get('index')]
+                        tv['hint'] = ('第一次点空(diff≈0), 我换成了候选 %r; 还不对就传 '
+                                      'target_index=<alternatives 里的 index>' % (a.get('index'),))
+                        out['target'] = tv
+                    return out
+        # 没有别的候选: 试"图坐标 → 设备像素"
+        pt = out.get('point') or []
+        iw, ih = getattr(self, '_attached_img_wh', None) or (None, None)
+        if len(pt) == 2 and iw and ih:
+            try:
+                sw, sh = getattr(self, '_attached_screen_wh', None) or droid.screen()
+            except Exception:
+                sw = sh = None
+            if sw and sh and (int(sw) != int(iw) or int(sh) != int(ih)) and 0 <= pt[0] <= iw and 0 <= pt[1] <= ih:
+                sx, sy = int(round(pt[0] * float(sw) / iw)), int(round(pt[1] * float(sh) / ih))
+                try:
+                    r3 = (droid.tap(sx, sy) if act == 'tap'
+                          else droid.longpress(sx, sy, int(args.get('ms') or 800)))
+                except Exception:
+                    return out
+                p3 = self._parse_diff_pct({'diff': r3.get('diff')})
+                out['auto_retry'] = {'kind': 'img_scale',
+                                     'from': [int(pt[0]), int(pt[1])], 'to': [sx, sy],
+                                     'diff': r3.get('diff')}
+                if p3 is not None and p3 >= 0.2:
+                    out['point'] = [sx, sy]
+                    out['diff'] = r3.get('diff')
+        return out
+
+    def _note_progress(self, out):
+        """按画面指纹判断"这一步真的往前走了吗", 并在原地给出层级提示。
+
+        三角洲会话(2026-10-30 09:15)的死循环: 模型在"分享菜单打开/关闭"之间来回点 6 次,
+        每次 diff 都是 85.850%(同一 bbox) —— 从 diff 看每步都成功, 实际一步没走; 而它要找
+        的后续入口在**上一级**页面, 越在这一层点越出不来。指纹序列只有 ≤2 种值就是铁证,
+        此时直接说"退到上一层", 比让它再观察一轮更快也更准。"""
+        try:
+            import droid
+            dg = droid.frame_digest()
+        except Exception:
+            dg = ''
+        if not dg:
+            return
+        hist = getattr(self, '_screen_hist', None)
+        if hist is None:
+            from collections import deque
+            hist = self._screen_hist = deque(maxlen=self._PROGRESS_WINDOW)
+        hist.append(dg)
+        if len(hist) < 4:
+            return
+        distinct = set(hist)
+        if len(distinct) <= 2:
+            out['layer_hint'] = (
+                '最近 %d 次动作的画面指纹只有 %d 种: 你在同一处"开了又关", 一步没往前走。'
+                '目标不在这两幅画面里 —— 它更可能在**上一级**页面。下一步优先 '
+                'gui_act action=back(或点左上返回箭头/弹窗关闭按钮)退回上一层, 站到上一级再找; '
+                '不要继续在这一层换坐标点。' % (len(hist), len(distinct)))
+            hist.clear()
+
     @staticmethod
     def _parse_diff_pct(out):
         """把动作结果里的 'diff': '83.904%' 解析成 83.904; 解析不了返回 None(宁可不判, 也不猜)。"""
@@ -772,8 +869,11 @@ class GenericAgentHandler(BaseHandler):
             raise ValueError('target_index must be an int')
         cands = self._find_target_candidates(target, exact=bool(args.get('exact')))
         if not cands:
-            raise LookupError('target %r was not found in the current tree/observe/OCR; '
-                              'take a fresh observe first, or use see(want="point") only for canvas' % target)
+            raise LookupError('target %r was not found on this screen (tree/observe/OCR). '
+                              '这一层没有这段文字 —— 它更可能在**上一级**页面: 先 gui_act action=back '
+                              '(或点左上返回箭头/弹窗关闭按钮)退回上一层, 站到上一级再找; '
+                              '不要在同一层反复换坐标点。若确定就在这一屏, 再 observe 一次拿当帧位置, '
+                              '或对自绘/canvas 页用 see(want="point")。' % target)
         cands = self._rank_target_candidates(target, cands)
         if idx is not None and not (0 <= idx < len(cands)):
             raise ValueError('target_index %r out of range 0..%d' % (idx, len(cands) - 1))
@@ -991,9 +1091,22 @@ class GenericAgentHandler(BaseHandler):
             # 但也不再复用 pending 帧: 大跳变说明页面正在切换, 那一刻的帧是过渡帧。等一小段
             # (截屏最小间隔量级)再重新截一张, 成本 0.35s, 换来模型看到的是到位后的画面。
             time.sleep(self._SETTLE_AFTER_JUMP_S)
+        # 点空就地重试: diff≈0 时不再把整轮还给模型。真机最常见的白跑就是"同一坐标点 2~3 次,
+        # 每次 diff 0.0xx%"(2026-10-30 09:15 三角洲: [601,2460] 点了 4 次, 每次白烧 5~6s)。
+        # 两种救法都不需要模型参与: ① target 还有别的候选 → 换下一个; ② 坐标落在附图范围内
+        # 而图比屏幕小 → 用换算后的设备像素再点一次。
+        if act in ('tap', 'longpress') and not proved and pct is not None and pct < 0.2:
+            try:
+                self._retry_noop_action(act, args, out, target_info)
+            except Exception:
+                pass
         self._last_act_ok = bool(out.get('verified') is True or out.get('hit') is True
                                  or out.get('expect_verified') is True
                                  or (act == 'launch' and out.get('fg_ok')))
+        # C. 用画面指纹判断"真的在推进吗"。只看 diff 会被"开了又关"的 A/B 两帧骗过去
+        # (三角洲那次每步 diff 85.850% 却一步没走), 指纹序列只有 ≤2 种值就是铁证。
+        if act in ('tap', 'longpress', 'swipe', 'back', 'home', 'key', 'launch'):
+            self._note_progress(out)
         # 动作后带回一份紧凑观测: 否则模型必须再花一整轮 code_run 去 dump()/look()
         # 才知道屏幕上现在有什么, "观察一轮→动作一轮"把每个动作的成本翻倍。
         # 真机实证: 39 轮任务里约 20 次是纯观察轮; 在供应商 p50 延迟 5~10s 的现状下,
@@ -1623,6 +1736,38 @@ class GenericAgentHandler(BaseHandler):
                 and not getattr(self, '_last_act_ok', True)
                 and not getattr(self, '_silent_exit_warned', False))
 
+    _KB_TURNS = 2
+    _KB_MAX_LINES = 24
+
+    def _kb_block(self):
+        """任务开头两轮注入"常见入口索引", 之后不再注入。
+
+        为什么塞进锚点而不是让模型自己 file_read: 真机每个任务开头都先 file_read
+        phone_use.md(314 行只给 60 行) + app_cards.md(133 行只给 60 行), 两条 ≈4s 且经常只拿到
+        无关段落; 而"微信里的小程序/朋友圈/表情包在哪"这类知识每次任务都要用。索引只留一屏
+        (≈1.6KB), 细节仍指向 app_cards.md, 不复制正文, 两处不会漂移。"""
+        try:
+            if int(getattr(self, 'current_turn', 0) or 0) > self._KB_TURNS:
+                return ''
+        except (TypeError, ValueError):
+            return ''
+        text = getattr(self, '_kb_text', None)
+        if text is None:
+            text = ''
+            try:
+                path = os.path.join(script_dir, 'memory/app_index.md')
+                with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                    lines = [l.rstrip() for l in f if l.strip()]
+                body = [l for l in lines if not l.startswith('# ')]
+                text = chr(10).join(body[:self._KB_MAX_LINES])
+            except Exception:
+                text = ''
+            self._kb_text = text
+        if not text:
+            return ''
+        return (chr(10) + '### [KB] 常见入口索引（先照这个走, 省一次 file_read; 细节见 ../memory/app_cards.md）'
+                + chr(10) + text + chr(10))
+
     def _goal_block(self):
         """每轮把"原始目标 / 已验证的里程碑 / 上次没兑现的期望"重注一遍(屏幕最前面)。
 
@@ -1646,7 +1791,7 @@ class GenericAgentHandler(BaseHandler):
         h = self.history_info; W = 30
         earlier = f'<earlier_context>\n{self._fold_earlier(h[:-W])}\n</earlier_context>\n' if len(h) > W else ""
         h_str = "\n".join(h[-W:])
-        prompt = self._goal_block() + f"\n### [WORKING MEMORY]\n{earlier}<history>\n{h_str}\n</history>"
+        prompt = self._goal_block() + self._kb_block() + f"\n### [WORKING MEMORY]\n{earlier}<history>\n{h_str}\n</history>"
         prompt += f"\nCurrent turn: {self.current_turn}\n"
         if self.working.get('key_info'): prompt += f"\n<key_info>{self.working.get('key_info')}</key_info>"
         if self.working.get('related_sop'): prompt += f"\n有不清晰的地方请再次读取{self.working.get('related_sop')}"

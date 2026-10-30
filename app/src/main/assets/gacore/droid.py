@@ -668,6 +668,23 @@ def shot_frame_b64(max_side=1440, quality=70, reuse_pending=True):
     return frame_jpeg_b64(img, max_side=max_side, quality=quality)
 
 
+def frame_digest(img=None, size=(36, 80)):
+    """一帧画面的粗指纹(灰度缩略图)。用来判断"这一下真的换页面了吗"。
+
+    为什么不能只看 diff: 2026-10-30 09:15 的三角洲会话里, 模型在"分享菜单打开/关闭"这两
+    帧之间来回点, 每次 diff 都是同一个 85.850%(连 bbox 都一样) —— 从 diff 看每一步都"成功
+    换了页面", 实际上一步都没往前走。指纹相同 = 真的还停在同一幅画上。
+    img 缺省取 _PENDING_FRAME(动作后那一帧), 不额外截图、不消费它。"""
+    import cv2, hashlib
+    img = _PENDING_FRAME.get("img") if img is None else img
+    if img is None:
+        return ""
+    try:
+        t = cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), size, interpolation=cv2.INTER_AREA)
+        return hashlib.md5(t.tobytes()).hexdigest()[:10]
+    except Exception:
+        return ""
+
 def _diff_pct(before, after):
     try:
         return float(_img_diff_str(before, after).split("%", 1)[0].split()[-1])

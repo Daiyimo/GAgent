@@ -7,6 +7,35 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- Levels, stuck loops and entry knowledge: the 2026-10-30 09:15 session showed the trap
+  a per-tap diff cannot see -- after reading "today's password" the next task entry was on
+  the *parent* page, so the model kept tapping "cancel"/"close" inside the dialog layer; six
+  taps in a row reported the same `diff: 85.850%` (same bbox), because the screen just
+  alternated between two frames. Every diff said "changed", the agent never moved. Three
+  things now come from the screen itself instead of from `diff`: (1) `droid.frame_digest()`
+  fingerprints the frame already in hand, and when the last actions only ever visit ≤2
+  distinct frames the result carries `layer_hint` telling the agent the target is one level
+  **up** -- use `back`/the title-bar arrow/close the dialog instead of trying another pixel
+  on this layer; (2) a tap that changes nothing is retried inside the same call, either on
+  the next `target` candidate (`auto_retry.kind=target_alternate`) or on the
+  image-to-screen converted point (`img_scale`), instead of spending another 5-6s round;
+  (3) a missing `target` now answers with "not on this screen -- it is probably one level
+  up, go back first" rather than "take a fresh observe". Entry knowledge also stops costing
+  a turn: `memory/app_index.md` (where mini-programs / Moments / stickers / scan live, with
+  unverified entries marked) is injected as `[KB]` on the first two turns only, and the L1
+  insight now points at it before telling anyone to read a card.
+  层级、原地打转与入口知识：2026-10-30 09:15 的会话暴露了 diff 看不见的陷阱——读完"今日密码"
+  后，后续任务入口在**上一级**页面，模型却一直在弹窗层点"取消/关闭"；连续 6 次点击报的都是
+  同一个 `diff: 85.850%`（连 bbox 都一样），因为画面只是在两帧之间来回切。每个 diff 都说"变了"，
+  agent 一步没走。现在三件事改由画面本身判断，而不是 diff：① `droid.frame_digest()` 给手上的帧
+  算指纹，最近几次动作只在 ≤2 个画面之间来回时，结果里带 `layer_hint` 告诉它目标在**上一级**——
+  用 `back`/标题栏返回箭头/关掉弹窗，而不是在这一层再换一个像素；② 点空的 tap 在同一次调用里
+  重试（换下一个 `target` 候选 `auto_retry.kind=target_alternate`，或换成"图坐标→设备像素"
+  `img_scale`），不再白花 5–6s 一轮；③ `target` 找不到时的答复改成"这一层没有，它更可能在上一级，
+  先回退"，而不是"再 observe 一次"。入口知识也不再花一轮：`memory/app_index.md`（小程序/朋友圈/
+  表情包/扫一扫在哪，未实测的条目标「待核」）只在任务开头两轮以 `[KB]` 注入，L1 提示也改成先看它
+  再决定要不要读卡片。
+
 - Search results and target ambiguity: `gui_act action=search_app` now returns the
   rows it can read on this frame (`results: [{t,x,y}]`, device pixels) with the
   keyword, so "where is the first result" is an observation instead of a guess.
