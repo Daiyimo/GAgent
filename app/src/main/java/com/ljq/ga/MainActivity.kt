@@ -100,6 +100,9 @@ class MainActivity : Activity() {
     private var pendingQrAfterPerm = false
     @Volatile private var launchSrc = "launcher"             // 本次 Activity 创建的唤起来源(launcher|float|notif_task|notif_keepalive)
     @Volatile private var launchCid = ""                      // per-cid 任务通知目标；冷启动由 launchInfo 交给 JS
+    // amoo(StepOS 语音助手) 派活: 服务只拉起 Activity, 真正的入队等 python boot 完再执行(见 AmooBridge)
+    @Volatile private var amooTask = ""
+    @Volatile private var amooCid = ""
     private var fgSince = 0L                                  // 本次前台会话起点(onResume 置位): onStop 上报 app_bg{fg_s} 会话时长
     // 悬浮窗授权往返意图(SP 持久化, key=overlay_perm_pending/overlay_perm_ts): 用户经引导弹窗去了系统授权页。
     // 存 SP 而非内存: 部分 ROM 授予 overlay 权限时会杀进程重启 app, 内存标记必丢 → 漏斗照样断。
@@ -142,6 +145,7 @@ class MainActivity : Activity() {
         // app_open 由 JS 在页面 boot 时上报, 与 Activity 创建一一对应, 故 onCreate 取一次即可。
         launchSrc = intent?.getStringExtra("ga_src") ?: "launcher"
         launchCid = intent?.getStringExtra("convo_cid").orEmpty()
+        takeAmooTask(intent)
         ensureAllFilesAccess()
         VoiceClient.init(this)
         web = WebView(this).apply {
@@ -260,6 +264,7 @@ class MainActivity : Activity() {
             if (!Python.isStarted()) Python.start(AndroidPlatform(this))
             bootMsg = runCatching { Py.boot(File(filesDir, "ga").absolutePath, packageName) }.getOrElse { "ERR:" + it.toString() }   // I4: Py.boot 异常时加 ERR: 前缀 → ready() 返回值可被 webui boot 门(仅认 ok/nokey)识别为"未就绪", 退避重试而非误当已就绪跑会话恢复(临时失忆根因)
             registerNudgeCallback()   // M1: boot 成功后立即注册 nudge 回调(boot 失败时 Py.ready=false, ensureNudgeRegistered 会在其就绪后补注册)
+            runAmooTaskIfPending()    // amoo 派来的任务: python 就绪后才入队(send2 异步, 秒回)
             // 契约文件: 把原生 cacheDir(应用运行时占用统计/清理用) 告诉 Python 侧, 失败半径小(不阻断启动)。
             runCatching { File(File(filesDir, "ga"), ".cache_path").writeText(cacheDir.absolutePath) }
         }
@@ -1138,10 +1143,45 @@ class MainActivity : Activity() {
         setIntent(intent)
         launchSrc = intent?.getStringExtra("ga_src") ?: launchSrc
         launchCid = intent?.getStringExtra("convo_cid").orEmpty()
+        takeAmooTask(intent)
         // 热态复用 Activity：WebView 已 boot，直接切目标会话；冷启动仍走 launchInfo.cid
         if (launchCid.isNotEmpty() && ::webCallbacks.isInitialized) {
             val jsCid = JSONObject.quote(launchCid)
             webCallbacks.raw("window.gaOpenConvo&&gaOpenConvo($jsCid)")
+        }
+        runAmooTaskIfPending()   // 热态: Py 已就绪, 直接入队
+    }
+
+    // amoo 派活: 取 extra 存起来(boot 未完成时先挂起), 由 runAmooTaskIfPending 在 Py.ready 后入队。
+    // 另外认 ACTION_SEND(text/plain) 分享进来的句子: 那条链路不经过 amoo 能力目录, 完全端侧可控。
+    private fun takeAmooTask(it: android.content.Intent?) {
+        var t = it?.getStringExtra(com.ljq.ga.amoo.AmooBridge.EXTRA_TASK).orEmpty()
+        var cid = it?.getStringExtra(com.ljq.ga.amoo.AmooBridge.EXTRA_CID).orEmpty()
+        if (t.isBlank()) {
+            val shared = com.ljq.ga.amoo.AmooBridge.taskFromShare(it)
+            if (shared.isNotBlank()) { t = shared; cid = "" }
+        }
+        if (t.isEmpty()) return
+        amooTask = t
+        amooCid = cid.ifEmpty { com.ljq.ga.amoo.AmooBridge.newTaskId() }
+    }
+
+    // 把挂起的 amoo 任务交给 python 侧(AmooBridge.dispatch -> send2): 失败只记日志, 不阻断 UI。
+    private fun runAmooTaskIfPending() {
+        val t = amooTask
+        if (t.isEmpty()) return
+        val cid = amooCid.ifEmpty { com.ljq.ga.amoo.AmooBridge.newTaskId() }
+        amooCid = cid
+        exec.execute {
+            if (!Py.ready) return@execute      // boot 还在跑: 由 boot 块收尾时再调一次
+            amooTask = ""
+            val r = com.ljq.ga.amoo.AmooBridge.dispatch(cid, t)
+            runCatching { android.util.Log.i("GaAmoo", "dispatch cid=$cid r=$r") }
+            if (r == "ok") {
+                runOnUiThread { runCatching { webCallbacks.raw("window.gaOpenConvo&&gaOpenConvo(${JSONObject.quote(cid)})") } }
+                // 收尾回推 amoo: 后台盯到 done 就把结论发回 amoo 聊天框(预填, 用户点一下发送)
+                runCatching { com.ljq.ga.amoo.AmooBridge.watchAndReport(this, cid) }
+            }
         }
     }
 

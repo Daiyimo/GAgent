@@ -6,7 +6,26 @@ publicly released. Exact artifacts and acceptance belong to their release record
 本页记录源码候选的变化，不表示各版本均已公开；制品与验收以对应发布记录为准。
 
 ## Unreleased / 未发布变更
-
+- amoo(StepOS 语音助手) 接单通道: 新增 AppFunctions 服务 + 分享接单 + 结果回推 amoo
+  / amoo (StepOS voice assistant) task intake: AppFunctions service + share-target intake + result push-back
+  - 真机机制实测: 装/更新包即触发 `AbilityInstallerWatcher: handleAppUpdated` → `refreshAndUpload` →
+    `AtomicAbilityRepository: syncPackage: package=io.github.shenhaostu.gagent.debug tools=4` →
+    `BM25Index: rebuild: docs=378` / `ToolSearchEngine: Index rebuilt: 378 tools` —— 第三方 AppFunctions
+    **装包即入本地目录, 不需要云端审核**; 但 `JetpackToolConverter` 生成的 `ToolItem(... hasAbilityId=false)`,
+    而 amoo 的 `ability.search` 只吐云端已发布项, 所以模型看不见这些工具(实测 4 次 search 全空, 说出来是
+    "本机没有能自动操作其他 App 界面的工具")。故自动派活这一步被 amoo 云端目录卡住, 端侧另开两条通道。
+  - 通道① AppFunctions(`com.ljq.ga.amoo.GaAppFunctionService`, 函数 `capabilities`/`startTask`/`taskStatus`/
+    `cancelTask`, amoo 侧工具名 `debug_start_task` 等 = 包名末段 + 方法名下划线): 直调实测
+    `{"ok":true,"state":"accepted","taskId":"amoomvugk7g3"}` → running(第5/7步, 前台 `AppBrandUI00`) → done 8 步;
+    `StepOSFreeze: [BLOCK_FREEZE] … FLAG_USING_SERVICE … perceivableUnfreeze true` 证明 amoo 挂后台时 GA 不被冻。
+  - 通道② 分享接单(A 路线, 完全端侧): `MainActivity` 认 `ACTION_SEND`+`text/plain` → `AmooBridge.taskFromShare`
+    → `takeAmooTask` → `AmooBridge.dispatch`(`send2`, 多会话关闭时自动降级 `send`) → 起跑; 实测 15 步跑完。
+  - 结果回推: `AmooBridge.watchAndReport` 每 6s 轮询 `status(taskId)`, `state=done` 后 `cleanFinal` 剥掉转写壳
+    (只留最后一回合的人话, 去掉 `**LLM Running`/工具 JSON/碎词) → `ACTION_SEND` 到 amoo `ShareActivity` 预填输入框
+    (实测 amoo 不会自动发送, 由用户点一下); 报告长度 1200→214 字符。
+  - 编译门: `compileSdk 34 → 36`(android.app.appfunctions.* 只在 API36) + `android.suppressUnsupportedCompileSdk=36`
+    (AGP 8.1.4 未声明支持 36); 元数据由 `tools/gen_amoo_functions.py` 手写生成 `app/src/main/assets/amoo/app_functions.xml`
+    与 `app_functions_v2.xml`(不走 KSP), schema 用 AOSP 的 `app_functions_schema.xsd`。
 - gacore: 参数/命中类失败不再渲染成 `[Error]`, 改成带现场事实的软失败结果(用户反馈"刚开始执行就报一堆 error")
   / parameter and hit-test failures are no longer rendered as `[Error]`; they return an actionable soft result
   - 真机普查(2026-10-29~30, 22 次会话): 45 条 `[Error]` 里 target 未命中 14、多选 6、三单位二选一 5、状态栏 4、附图越界 2、其它 12, 真正的设备故障只有 2 条(无障碍未开); 全部集中在 t3-t14, 正是用户说的"开头那一段"。

@@ -5,7 +5,7 @@ plugins {
 }
 android {
     namespace 'com.ljq.ga'
-    compileSdk 34
+    compileSdk 36
     ndkVersion "25.1.8937393"   // AGP 8.1 默认 NDK; CI(setup-android) 缺则 AGP 经 sdkmanager 自动拉取
     defaultConfig {
         applicationId "io.github.shenhaostu.gagent"
