@@ -5,6 +5,7 @@
 退回自己目测的 (906,205) —— 那是小程序标题栏右上角的分享/更多, 一下把分享面板点开,
 之后 6 轮都在关分享、找返回。所以: 关弹层不给坐标, 由本地按弹层范围找。
 """
+import json
 import sys
 import types
 import unittest
@@ -172,6 +173,97 @@ class ShareTrapTest(unittest.TestCase):
     def test_no_screen_geometry_means_no_blocking(self):
         with patch.object(droid, 'screen', side_effect=RuntimeError('bus down')):
             self.assertFalse(self.h._share_trap(906, 205))
+
+
+class TitleCornerRepeatTest(unittest.TestCase):
+    """2026-10-30 10:26 那一轮: 模型把标题栏右角的三个点(分享/更多)当"关闭/退出",
+    同一个点 [895,206] 连点 5 次, 每次 diff 都是 85.850%(分享面板开→关→开)。
+    第一下可以照着点(也可能是真的「完成/保存」), 但**同一处第二下起**不许再照点。"""
+
+    def _handler(self):
+        import ga_android
+        h = object.__new__(ga_android.GenericAgentHandler)
+        h.working = {}
+        h.history_info = []
+        h.current_turn = 0
+        h._gui_actions = 0
+        h._task_finished = False
+        h._no_tool_retries = 0
+        h._vision_in_turn_attached = False
+        h._see_cache = None
+        h._memory_tip_shown = False
+        h._last_bbox = [0, 0, 1199, 2669]
+        h._done_steps = []
+        h._silent_exit_warned = False
+        h._goal_text = ''
+        h._screen_hist = None
+        h._trap_seen = []
+        h.parent = types.SimpleNamespace(verbose=False)
+        return h
+
+    def _fake(self, taps, close_calls):
+        def tap(x, y, **kw):
+            taps.append((x, y))
+            return {'diff': 'diff: 85.850% bbox=[0, 0, 1199, 2669]'}
+
+        def close_dialog(bbox=None):
+            close_calls.append(bbox)
+            return {'ok': True, 'via': 'button', 'text': '关闭窗口',
+                    'point': [1015, 402], 'diff': 'diff: 62.100% bbox=[0, 0, 1199, 2669]'}
+
+        return types.SimpleNamespace(
+            find=lambda target, exact=False: [],
+            tap=tap, swipe=lambda *a, **k: {'diff': 'diff: 0.000%'},
+            longpress=lambda *a, **k: {'diff': 'diff: 0.000%'},
+            screen=lambda: (1200, 2670),
+            ensure_fresh_obs=lambda: None,
+            wait_stable=lambda **kw: {'stable': True, 'wait_for': 0.0},
+            _sensitive_fg=lambda: True,
+            observe=lambda **kw: {'kind': 'blanked', 'items': [], 'notes': [],
+                                  'needs_vision': True, 'ms': 1.0},
+            close_dialog=close_dialog,
+        )
+
+    def test_first_tap_is_allowed_but_flagged(self):
+        taps, closes = [], []
+        h = self._handler()
+        with patch.dict(sys.modules, {'droid': self._fake(taps, closes)}):
+            out = h.do_gui_act({'action': 'tap', 'point': [895, 206], 'expect': '关闭弹窗'},
+                               types.SimpleNamespace(content=''))
+        data = json.loads(out.data)
+        self.assertEqual(taps, [(895, 206)])
+        self.assertIn('zone_hint', data)
+        self.assertIn('close', data['zone_hint'])
+
+    def test_second_tap_with_close_intent_is_redirected_to_close(self):
+        taps, closes = [], []
+        h = self._handler()
+        fake = self._fake(taps, closes)
+        with patch.dict(sys.modules, {'droid': fake}):
+            h.do_gui_act({'action': 'tap', 'point': [895, 206], 'expect': '关闭弹窗'},
+                         types.SimpleNamespace(content=''))
+            out = h.do_gui_act({'action': 'tap', 'point': [895, 206], 'expect': '关闭今日密码弹窗'},
+                               types.SimpleNamespace(content=''))
+        data = json.loads(out.data)
+        self.assertEqual(taps, [(895, 206)])          # 第二下没有再点到分享上
+        self.assertEqual(closes, [[0, 0, 1199, 2669]])  # 换成本地 close, 用弹层范围
+        self.assertEqual(data['redirect'], 'title_band_close')
+        self.assertEqual(data['via'], 'button')
+        self.assertTrue(data['ok'])
+
+    def test_second_tap_without_close_intent_is_refused(self):
+        taps, closes = [], []
+        h = self._handler()
+        fake = self._fake(taps, closes)
+        with patch.dict(sys.modules, {'droid': fake}):
+            h.do_gui_act({'action': 'tap', 'point': [895, 206], 'expect': '打开今日密码'},
+                         types.SimpleNamespace(content=''))
+            out = h.do_gui_act({'action': 'tap', 'point': [895, 206], 'expect': '看看这层有什么'},
+                               types.SimpleNamespace(content=''))
+        self.assertEqual(len(taps), 1)
+        self.assertEqual(closes, [])
+        self.assertIn('share/more', out.data)
+        self.assertIn('action="close"', out.data)
 
 
 class CloseWiringTest(unittest.TestCase):

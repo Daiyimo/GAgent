@@ -296,6 +296,7 @@ class GenericAgentHandler(BaseHandler):
         self._silent_exit_warned = False
         self._goal_text = ''
         self._last_bbox = None    # 最近一次画面变化的 bbox: close 只在这个范围里找关闭控件
+        self._trap_seen = []      # 标题栏右侧(分享/更多)点过的位置: 同一处不再照点
         for _line in self.history_info:      # [USER] 行就是原始任务陈述: 每轮重注它, 防止子目标漂移
             _s = str(_line)
             if _s.startswith('[USER]'):
@@ -474,6 +475,35 @@ class GenericAgentHandler(BaseHandler):
                                          '同一次别重复这个数 —— 直接给 img_point 或 target。'
                                          % (float(sw) / float(iw), landed or '该位置'))
         return out
+
+    _CLOSE_WORDS = ('关闭', '关掉', '收起', '退出', '返回', '取消', 'close', 'dismiss', 'exit')
+
+    @classmethod
+    def _close_intent(cls, args):
+        """这一步是不是"想把这一层关掉"。只看 expect/note 里的意图词, 不猜坐标。
+
+        真机 2026-10-30 10:26: 模型连点标题栏右角 5 次, expect 全是"关闭今日密码弹窗" ——
+        意图明确、位置错。这种组合下换成本地 close 比让它再点一次划算得多。"""
+        txt = ' '.join(str(args.get(k) or '') for k in ('expect', 'note', 'reason', 'why'))
+        return any(w in txt.lower() for w in cls._CLOSE_WORDS)
+
+    def _trap_note(self, x, y):
+        """记住「标题栏右侧(分享/更多)」点过的位置 —— 测试替身可能没有这个属性。"""
+        try:
+            seen = getattr(self, '_trap_seen', None)
+            if seen is None:
+                seen = []
+                self._trap_seen = seen
+            seen.append((int(x), int(y)))
+        except Exception:
+            pass
+
+    def _trap_tapped(self, x, y, tol=40):
+        """这个任务里是否已经在标题栏右侧同一处点过(±40px)。"""
+        for px, py in getattr(self, '_trap_seen', []) or []:
+            if abs(int(px) - int(x)) <= tol and abs(int(py) - int(y)) <= tol:
+                return True
+        return False
 
     @staticmethod
     def _share_trap(x, y):
@@ -1040,6 +1070,7 @@ class GenericAgentHandler(BaseHandler):
                 target_info = None
                 info = None
                 target_miss = ''
+                out_hint = ''
                 if args.get('target'):
                     try:
                         info = self._resolve_action_target(args)
@@ -1056,15 +1087,43 @@ class GenericAgentHandler(BaseHandler):
                 else:
                     x, y = self._resolve_point(args, 'point', 'rel')
                     if target_miss and self._share_trap(x, y):
-                        # 真机 2026-10-30 10:06: 模型找不到「关闭窗口」, 退回它自己目测的 (906,205),
-                        # 那个位置正是小程序**标题栏右上角的分享/更多** —— 一下把分享面板点开,
-                        # 之后 6 轮都在关分享。宁可不点, 也不能把"找不到文字"变成"点开分享"。
+                        # 指名要找的文字不在屏上、退回的又是标题栏右角: 一步都别点。
                         raise ValueError(
                             'point %r looks like the mini-program title bar right corner '
                             '(share/more), and target %r is not on screen. Close the layer with '
                             'gui_act action="close", or aim at real text with target=..., or use '
                             'img_point=[x,y] with pixels read off the attached screenshot.'
                             % ([x, y], args.get('target')))
+                if self._share_trap(x, y):
+                    # 真机 2026-10-30 10:06 / 10:26 两次: 小程序**标题栏右上角那三个点是分享/更多**,
+                    # 模型一直把它当"关闭/退出"点(10:26 那轮同一个点 [895,206] 连点 5 次, 每次
+                    # diff 85.850% = 分享面板开→关→开)。第一次照点但带提示; 第二次起不再照点:
+                    # 想关这一层就换成本地的 close(它会在弹层范围里找真的关闭控件), 其它意图直接拒绝。
+                    if self._trap_tapped(x, y):
+                        if self._close_intent(args):
+                            res = droid.close_dialog(bbox=self._last_bbox)
+                            out = {'action': act, 'redirect': 'title_band_close',
+                                   'via': res.get('via'), 'diff': res.get('diff'),
+                                   'point': res.get('point') or [x, y],
+                                   'hint': ('你把标题栏右上角([%d,%d] 那三个点)当成关闭点, 那是'
+                                            '分享/更多 —— 我替你改成关这一层: ' % (x, y))}
+                            for k in ('ok', 'text', 'hint'):
+                                if res.get(k) not in (None, ''):
+                                    out[k if k != 'hint' else 'close_hint'] = res[k]
+                            if res.get('tried'):
+                                out['tried'] = res['tried']
+                            self._trap_note(x, y)
+                            self._last_act_ok = out.get('ok') is True
+                            return StepOutcome(json.dumps(out, ensure_ascii=False, default=str),
+                                               next_prompt=self._get_anchor_prompt(skip=True))
+                        raise ValueError(
+                            'point %r is the mini-program title bar right corner (share/more), '
+                            'not a close/exit control, and you already tried it here. To close '
+                            'this layer use gui_act action="close"; to press something, aim at '
+                            'text with target=... or at img_point=[x,y].'
+                            % ([x, y],))
+                    out_hint = ('[title-zone] 标题栏右上角([%d,%d])是小程序/微信的"分享/更多", 不是关闭/退出。'
+                                '要关掉这一层用 gui_act {"action":"close"}; 要读这一层的文字用 ocr。' % (x, y))
                 if act == 'tap':
                     ret = droid.tap(x, y)
                 else:
@@ -1072,6 +1131,10 @@ class GenericAgentHandler(BaseHandler):
                 # verified/uncertain/hint/fg 必须一起转发: 坐标失效(屏幕形态变化)、点到非热区、
                 # 验证不可用在模型眼里要能区分。只给 diff 会把"没变化"当成"点到了但没反应"反复重发。
                 out = {'action': act, 'point': [x, y], 'diff': ret.get('diff')}
+                if out_hint:
+                    out['zone_hint'] = out_hint
+                if self._share_trap(x, y):
+                    self._trap_note(x, y)
                 if target_info:
                     out['target'] = self._target_view(target_info)
                 if target_miss:
@@ -1235,8 +1298,10 @@ class GenericAgentHandler(BaseHandler):
                                        '定位优先级: ① target="屏上看得见的文字" —— 我拿全分辨率截图做 '
                                        'OCR 定位, 你不用换算也不会偏; ② img_point=[x,y] —— 图上量的像素, '
                                        '我按 图→屏幕 比例换算; ③ rel(0-1000)。**别把图坐标填进 point**(那是'
-                                       '设备像素, 填错会整体偏一半以上)。需要文字内容时用 code_run 的 '
-                                       'look()/ocr')
+                                       '设备像素, 填错会整体偏一半以上)。④ 要关掉这一层(弹窗/抽屉/'
+                                       '分享面板)直接 gui_act {"action":"close"}, 不用给坐标 —— 标题栏右上角'
+                                       '那三个点是分享/更多, 点它只会打开分享面板。需要文字内容时用 '
+                                       'code_run 的 look()/ocr')
                 else:
                     # 这句以前无条件说"已附": 真机 25 轮里说了 8 次, 实际一帧都没发出去(会话是文本
                     # 协议), 于是模型既不换定位通道也不再质问画面, 只在 see/ocr 之间来回。话术必须与

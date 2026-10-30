@@ -7,6 +7,19 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- gacore: 标题栏右侧那三个点（⋯）不再被当成关闭键 —— 同一处重复点击会被拒或被改成 `close`
+  / the mini-program title-bar ⋯ (share/more) is no longer treated as a close button; a repeat tap
+  there is refused or turned into `close`
+  - 真机 2026-10-30 10:26: 同一个点 `[895,206]` 连点 5 次（每次 diff 85.850% = 分享面板开→关→开），
+    `expect` 全是"关闭今日密码弹窗"。上一版只在"target 没命中且退回坐标"时拦，模型这次直接给坐标，
+    拦不住。
+  - `_share_trap` 现在对所有落点在标题带右侧（x>55%）的点击生效：第一次照点但结果里带
+    `zone_hint`；同一处（±40px）第二下起，带「关闭/关掉/退出/返回/取消」意图就**替你改成
+    `droid.close_dialog(bbox=最近一次画面变化范围)`**（结果带 `redirect: title_band_close`），
+    其它意图直接拒绝并给出正确做法。
+  - `obs_note` 增加第 ④ 条：要关掉这一层用 `gui_act {"action":"close"}`，不用给坐标 ——
+    这段话每轮都在，比 schema/SOP 更靠前。
+
 - gacore: 关弹层改成一条原语 `gui_act action=close`，并且不再允许"文字没找到 → 点模型目测的坐标"
   / dismissal is now a primitive (`gui_act action=close`) and a missed target can no longer fall
   back to a guessed coordinate in the title bar
