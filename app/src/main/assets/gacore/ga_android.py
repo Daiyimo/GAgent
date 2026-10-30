@@ -13,6 +13,28 @@ import geom          # 坐标换算唯一权威(0-1000 ↔ 像素) + 实测系�
 run_guard.install_thread_inheritance()   # 让用户代码派生的子线程也继承取消令牌(僵尸孙线程同样受护栏); 幂等
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
+
+class SoftFail(ValueError):
+    """动作参数/前置条件不成立, 但现场有可行动事实可以回给模型 —— 不渲染成 [Error]。
+
+    真机统计(2026-10-29~30, 22 次会话 45 条 `[Error]`): target 没命中 14 条、坐标越界/状态栏
+    6 条、其余参数类 12 条, 真正的设备故障只有 2 条(无障碍未开)。这些"错误"其实都能当场给出
+    正确写法(近似候选/正确单位/当前屏幕尺寸), 却因为 raise 变成了 UI 上的红块 —— 用户看到的
+    就是"刚开始执行就一堆 error", 而模型还要再花一轮(真机 5.0-5.6s)才改对。
+    SoftFail 由 _do_gui_act 的兜底转成 {"ok": false, "soft": true, ...} 的普通结果。
+    继承 ValueError 是刻意的: 这些守卫的老契约与老测试都断言 ValueError。
+    """
+    def __init__(self, payload=None, message=''):
+        self.payload = dict(payload or {})
+        super().__init__(message or str(self.payload.get('hint') or 'soft failure'))
+
+
+class SoftMiss(LookupError):
+    """target 在这一屏没命中: 回近似候选清单, 不报错。继承 LookupError 保持老契约。"""
+    def __init__(self, payload=None, message=''):
+        self.payload = dict(payload or {})
+        super().__init__(message or str(self.payload.get('hint') or 'target miss'))
+
 def safe_print(*args, **kwargs):
     try: print(*args, **kwargs)
     except: pass
@@ -791,21 +813,33 @@ class GenericAgentHandler(BaseHandler):
         has_rel = args.get(rel_key) is not None
         has_img = args.get(img_key) is not None
         if sum(1 for f in (has_px, has_rel, has_img) if f) > 1:
-            raise ValueError('%s/%s/%s are the same coordinate in three units; pass only one'
-                             % (img_key, key, rel_key))
+            raise SoftFail({'units_given': [n for n in (img_key, key, rel_key)
+                                            if args.get(n) is not None],
+                            'hint': ('同一处坐标只填一个单位: %s=附图上量的像素(我换算), '
+                                     'point=设备像素(obs/ocr 的 x,y), %s=0-1000(see 的 rx/ry)。'
+                                     % (img_key, rel_key))},
+                           '%s/%s/%s are the same coordinate in three units; pass only one'
+                           % (img_key, key, rel_key))
         if not (has_px or has_rel or has_img):
-            raise ValueError('%s needs %s [x,y] in the attached screenshot pixels, '
-                             'point [x,y] in device pixels (dump()/look()/obs x,y) or '
-                             '%s [x,y] in 0-1000 (see/ask_vision); screen is %dx%d'
-                             % (key, img_key, rel_key, w, h))
+            raise SoftFail({'screen': [w, h],
+                            'hint': ('这个动作要位置: %s=[x,y](附图上量的像素, 我换算到设备像素) / '
+                                     'point=[x,y](设备像素, 取 obs 或 ocr 的 x,y) / '
+                                     '%s=[x,y](0-1000, 取 see 的 rx,ry)。当前屏幕 %dx%d。'
+                                     % (img_key, rel_key, w, h))},
+                           '%s needs %s [x,y] in the attached screenshot pixels, '
+                           'point [x,y] in device pixels (dump()/look()/obs x,y) or '
+                           '%s [x,y] in 0-1000 (see/ask_vision); screen is %dx%d'
+                           % (key, img_key, rel_key, w, h))
         name = img_key if has_img else (key if has_px else rel_key)
         v = args[name]
         if not isinstance(v, (list, tuple)) or len(v) != 2:
-            raise ValueError('%s must be [x, y], got %r' % (name, v))
+            raise SoftFail({'value': v, 'hint': '%s 要给 [x, y] 两个数, 例如 [612, 316]。' % name},
+                           '%s must be [x, y], got %r' % (name, v))
         try:
             a, b = float(v[0]), float(v[1])
         except (TypeError, ValueError):
-            raise ValueError('%s must be two numbers, got %r' % (name, v))
+            raise SoftFail({'value': v, 'hint': '%s 的两个分量都要是数字; 现在是 %r。' % (name, v)},
+                           '%s must be two numbers, got %r' % (name, v))
         if has_img:
             # 附图坐标(in-image pixels) → 设备像素。为什么必须有这条路: 每轮附给主模型的
             # 截图是缩放过的(长边 1440), 而 point/rel 分别是设备像素与 0-1000, 两者都不等于
@@ -815,14 +849,32 @@ class GenericAgentHandler(BaseHandler):
             # 也就是"进了自绘页面就漂"。换算由代码做, 单位仍不猜(三选一, 只给一个)。
             wh = getattr(self, '_attached_img_wh', None)
             if not wh:
-                raise ValueError('%s needs a screenshot attached to this turn, but none was '
-                                 '(text-only session? vision off?) — use point (device pixels '
-                                 'from obs/ocr) or %s' % (img_key, rel_key))
+                raise SoftFail({'attached': False,
+                                'hint': ('这一轮没有附图(文本协议会话或视觉关闭), 用不了 %s; '
+                                         '改用 point=[x,y](设备像素, 取 obs/ocr 的 x,y) 或 %s(0-1000)。'
+                                         % (img_key, rel_key))},
+                               '%s needs a screenshot attached to this turn, but none was '
+                               '(text-only session? vision off?) — use point (device pixels '
+                               'from obs/ocr) or %s' % (img_key, rel_key))
             iw, ih = wh
+            sw0, sh0 = getattr(self, '_attached_screen_wh', None) or (w, h)
             if not (0 <= a <= iw and 0 <= b <= ih):
-                raise ValueError('%s %r is outside the attached screenshot (%dx%d); read the '
-                                 'position off the image of this turn, or pass point/rel'
-                                 % (img_key, v, iw, ih))
+                if 0 <= a <= sw0 and 0 <= b <= sh0:
+                    # 数值超出附图、但落在屏幕范围内: 这其实是设备像素(obs/ocr 的 x,y)。
+                    # 报错要白烧一轮, 而两种单位差 1.86 倍 —— 直接按设备像素用, 并把
+                    # "我按 point 理解了"带回去, 下一轮它就知道该给 img_point。
+                    self._unit_notes = getattr(self, '_unit_notes', None) or []
+                    self._unit_notes.append('img_point %r 超出附图 %dx%d, 但落在屏幕 %dx%d 内: '
+                                            '我按设备像素(point)处理了。' % (list(v), iw, ih, sw0, sh0))
+                    return (int(a), int(b))
+                raise SoftFail({'img': [iw, ih], 'screen': [sw0, sh0],
+                                'hint': ('%s %r 超出附图范围 %dx%d。图上量的坐标是这张图的像素, '
+                                         '不是设备像素: 重看附图上你要点的位置(图只有 %dx%d), '
+                                         '或改用 point(设备像素)/%s(0-1000)。'
+                                         % (img_key, v, iw, ih, iw, ih, rel_key))},
+                               '%s %r is outside the attached screenshot (%dx%d); read the '
+                               'position off the image of this turn, or pass point/rel'
+                               % (img_key, v, iw, ih))
             sw, sh = getattr(self, '_attached_screen_wh', None) or (w, h)
             x = int(round(a * float(sw) / float(max(1, iw))))
             y = int(round(b * float(sh) / float(max(1, ih))))
@@ -830,17 +882,28 @@ class GenericAgentHandler(BaseHandler):
         if has_rel:
             return geom.to_px(a, b, w, h)
         if not (0 <= a < w and 0 <= b < h):
-            raise ValueError('%s %r is outside the current screen (%dx%d). If those are '
-                             '0-1000 normalized values, pass them as %s instead.'
-                             % (name, v, w, h, rel_key))
+            raise SoftFail({'screen': [w, h], 'value': v,
+                            'hint': ('%s %r 超出屏幕 %dx%d。若这是 0-1000 的归一化值, 改成 %s=[%d, %d]; '
+                                     '若是附图上的像素, 改成 %s。'
+                                     % (name, v, w, h, rel_key, int(min(999, a)),
+                                        int(min(999, b)), 'img_' + key))},
+                           '%s %r is outside the current screen (%dx%d). If those are '
+                           '0-1000 normalized values, pass them as %s instead.'
+                           % (name, v, w, h, rel_key))
         if w > 1 and h > 1 and geom.in_band('status', int(a), int(b), w, h):
-            raise ValueError('%s %r lands in the status bar (y 0-%d on a %dx%d screen), '
-                             'which has no tap target. That almost always means these are '
-                             '0-1000 normalized values, not pixels — pass them as %s '
-                             '(e.g. %s:[%d, %d]). If you really must tap the status bar, '
-                             'use droid.tap(x, y) in code_run.'
-                             % (name, v, int(0.04 * h), w, h, rel_key, rel_key,
-                                *geom.to_norm(int(a), int(b), w, h)))
+            nx, ny = geom.to_norm(int(a), int(b), w, h)
+            raise SoftFail({'band': 'status', 'screen': [w, h], 'value': v,
+                            'rel_suggestion': [nx, ny],
+                            'hint': ('%s %r 落在状态栏(y 0-%d / %dx%d), 那里没有可点目标。'
+                                     '这几乎总是把 0-1000 的归一化值当成了像素: 改成 %s=[%d, %d]。'
+                                     '确需点状态栏就在 code_run 里用 droid.tap(x, y)。'
+                                     % (name, v, int(0.04 * h), w, h, rel_key, nx, ny))},
+                           '%s %r lands in the status bar (y 0-%d on a %dx%d screen), '
+                           'which has no tap target. That almost always means these are '
+                           '0-1000 normalized values, not pixels — pass them as %s '
+                           '(e.g. %s:[%d, %d]). If you really must tap the status bar, '
+                           'use droid.tap(x, y) in code_run.'
+                           % (name, v, int(0.04 * h), w, h, rel_key, rel_key, nx, ny))
         return int(a), int(b)
 
     def _find_target_candidates(self, target, exact=False):
@@ -888,16 +951,20 @@ class GenericAgentHandler(BaseHandler):
             import numpy as np
             img = droid.shot()
             H, W = img.shape[:2]
+            pool = []   # 这一帧 OCR 到的全部文字, 供 miss 时给近似候选(见 _near_targets)
             for box, text, score in droid.ocr(img) or []:
                 label = str(text).strip()
-                if (label != target) if exact else (target not in label):
-                    continue
                 pts = np.asarray(box)
                 gx = int((pts[:, 0].min() + pts[:, 0].max()) / 2)
                 gy = int((pts[:, 1].min() + pts[:, 1].max()) / 2)
+                if label:
+                    pool.append({'t': label[:30], 'point': [gx, gy]})
+                if (label != target) if exact else (target not in label):
+                    continue
                 add({'x': gx, 'y': gy, 't': str(text),
                      'bbox': [int(pts[:, 0].min()), int(pts[:, 1].min()),
                               int(pts[:, 0].max()), int(pts[:, 1].max())]}, 'ocr', str(text))
+            self._target_pool = pool[:40]
         except Exception:
             pass
         return self._dedupe_candidates(cands)
@@ -913,6 +980,37 @@ class GenericAgentHandler(BaseHandler):
             seen.add(key)
             out.append(c)
         return out
+
+    @staticmethod
+    def _norm_target_text(s):
+        """比较用归一: 只留字母/数字, 去掉空白与中英标点。
+
+        模型常把 '三角洲行动 小程序' 写成带空格的样子, 而 OCR 出来的是 '三角洲行动小程序' ——
+        只差一个空格就 miss, 一次 5-6s(真机 14/45 条 `[Error]` 是这类 target 未命中)。
+        不用正则: 转义字符在生成脚本里已经被吃过一次, 直接按 isalnum 过滤最稳。
+        """
+        s = str(s or '').strip().lower()
+        return ''.join(ch for ch in s if ch.isalnum())
+
+    def _near_targets(self, target, limit=5):
+        """target 没命中时给近似候选: 复用刚才那次候选搜索留下的文本池, 不再多截一张图。
+
+        为什么必须有: 真机 45 条 `[Error]` 里 14 条是 `LookupError: target ... was not found`,
+        而 miss 时返回里一个可用字符串都没有 —— 模型只能盲猜下一个写法。把这一屏真实存在
+        的文字(带设备像素点)直接摆出来, 它同一轮就能照抄原文, 而不是再花 5-6s 试一次。
+        """
+        pool = getattr(self, '_target_pool', None) or []
+        t0 = self._norm_target_text(target)
+        scored = []
+        for it in pool:
+            t = str(it.get('t') or '')
+            if not t:
+                continue
+            r = difflib.SequenceMatcher(None, t0, self._norm_target_text(t)).ratio()
+            if r >= 0.5:
+                scored.append({'t': t, 'point': list(it.get('point') or []), 'ratio': round(r, 2)})
+        scored.sort(key=lambda x: -x['ratio'])
+        return scored[:limit]
 
     @staticmethod
     def _rank_target_candidates(target, cands):
@@ -971,17 +1069,41 @@ class GenericAgentHandler(BaseHandler):
         try:
             idx = int(args.get('target_index')) if args.get('target_index') is not None else None
         except (TypeError, ValueError):
-            raise ValueError('target_index must be an int')
+            raise SoftFail({'hint': 'target_index 必须是整数(0 起): 你要挑第几个候选就把序号填进来。'},
+                            'target_index must be an int')
         cands = self._find_target_candidates(target, exact=bool(args.get('exact')))
         if not cands:
-            raise LookupError('target %r was not found on this screen (tree/observe/OCR). '
-                              '这一层没有这段文字 —— 它更可能在**上一级**页面: 先回退一层(自绘/canvas/小程序里系统返回键无效, '
-                              '用 gui_act action=back —— 它会先点屏上的「返回/关闭/×」按钮, 或直接 target="返回"), '
-                              '不要在同一层反复换坐标点。若确定就在这一屏, 再 observe 一次拿当帧位置, '
-                              '或对自绘/canvas 页用 see(want="point")。' % target)
+            # 没命中不是"错误", 是"这一屏没有这段字": 把这一屏真实存在的近似文字摆出来
+            # (真机 14/45 条 [Error] 都是这里, 而旧返回里一个可用字符串都没有 → 模型盲猜)。
+            near = self._near_targets(target)
+            if near:
+                best = near[0]
+                runner = near[1]['ratio'] if len(near) > 1 else 0.0
+                if best['point'] and best['ratio'] >= 0.85 and best['ratio'] - runner >= 0.15:
+                    # 只差空格/标点/一个多余的字('三角洲行动 小程序' vs OCR 的 '三角洲行动小程序'):
+                    # 直接命中, 并把"我把它当成了哪个"写回结果 —— 报错要白烧一轮(5-6s)。
+                    fx, fy = int(best['point'][0]), int(best['point'][1])
+                    return fx, fy, {'x': fx, 'y': fy, 't': best['t'], 'src': 'fuzzy',
+                                    'bbox': [fx, fy, fx, fy], '_matches': 1, '_index': 0,
+                                    '_alternatives': [], '_fuzzy': best['t'],
+                                    '_ratio': best['ratio']}
+            raise SoftMiss({'target_miss': target, 'near': near,
+                            'hint': ('这一层没有 %r 这段文字。near 是这一屏 OCR 到的、和它最像的几行'
+                                     '(t/point/ratio, point 是设备像素) —— 直接用 near 里的 t 作为 target, '
+                                     '或按它的 point 点。若都不对, 说明入口在**上一级**页面: '
+                                     '用 gui_act action=back(先点屏上的返回/关闭按钮) 或 action=close(关页内弹层)。'
+                                     % target)},
+                           'target %r not found; near=%r' % (target, [n['t'] for n in near]))
         cands = self._rank_target_candidates(target, cands)
         if idx is not None and not (0 <= idx < len(cands)):
-            raise ValueError('target_index %r out of range 0..%d' % (idx, len(cands) - 1))
+            raise SoftFail({'target_index': idx, 'matches': len(cands),
+                            'candidates': [{'index': i, 't': str(x.get('t') or '')[:30],
+                                            'point': [int(x['x']), int(x['y'])]}
+                                           for i, x in enumerate(cands[:6])],
+                            'hint': 'target_index %r 超出范围 0..%d: 这些是这一屏的候选, 序号照 candidates 填。'
+                                    % (idx, len(cands) - 1)},
+                           'target_index %r out of range 0..%d' % (idx, len(cands) - 1))
+
         use = 0 if idx is None else idx
         c = dict(cands[use])
         c['_matches'] = len(cands)
@@ -1038,6 +1160,8 @@ class GenericAgentHandler(BaseHandler):
     def _do_gui_act(self, args):
         import droid
         act = str(args.get('action') or '')
+        # 单位自纠的说明: _resolve_point 在"换了单位替我点"时往这里写一句, 由动作结果带回模型。
+        self._unit_notes = []
         if act not in self._GUI_ACTIONS:
             return StepOutcome('[Error] gui_act unknown action %r, choose from: %s'
                                % (act, '/'.join(self._GUI_ACTIONS)), next_prompt='\n')
@@ -1101,7 +1225,14 @@ class GenericAgentHandler(BaseHandler):
                     x, y = self._resolve_point(args, 'point', 'rel')
                     if target_miss and self._share_trap(x, y):
                         # 指名要找的文字不在屏上、退回的又是标题栏右角: 一步都别点。
-                        raise ValueError(
+                        raise SoftFail(
+                            {'zone': 'miniapp_capsule', 'point': [x, y],
+                             'target_miss': args.get('target'),
+                             'hint': ('(%d,%d) 是小程序总控胶囊(左分享右关闭), 而 %r 不在这一屏: '
+                                      '别点胶囊。要关这一层用 gui_act {"action":"close"}; '
+                                      '要点真实文字用 target=... (先 ocr 看原文); '
+                                      '要用图上的位置用 img_point=[x,y]。'
+                                      % (x, y, args.get('target')))},
                             'point %r looks like the mini-program title bar right corner '
                             '(share/more), and target %r is not on screen. Close the layer with '
                             'gui_act action="close", or aim at real text with target=..., or use '
@@ -1164,6 +1295,9 @@ class GenericAgentHandler(BaseHandler):
                 # verified/uncertain/hint/fg 必须一起转发: 坐标失效(屏幕形态变化)、点到非热区、
                 # 验证不可用在模型眼里要能区分。只给 diff 会把"没变化"当成"点到了但没反应"反复重发。
                 out = {'action': act, 'point': [x, y], 'diff': ret.get('diff')}
+                if getattr(self, '_unit_notes', None):
+                    out_hint = ((out_hint + ' ') if out_hint else '') + ' '.join(self._unit_notes)
+                    self._unit_notes = []
                 if out_hint:
                     out['zone_hint'] = out_hint
                 if self._share_trap(x, y):
@@ -1283,6 +1417,17 @@ class GenericAgentHandler(BaseHandler):
                 sec = min(float(args.get('seconds') or 2), 30)
                 st = droid.wait_stable(max_wait=sec)
                 out = {'action': act, 'stable': st.get('stable'), 'waited_s': round(st.get('waited_s', 0), 2)}
+        except (SoftFail, SoftMiss) as e:
+            # 见 SoftFail 的说明: 参数/命中类失败回"带现场事实的普通结果", 不是 [Error]。
+            # 模型能在同一轮按 near / unit 提示改对, 不必先读一遍红字再重来一轮(5.0-5.6s)。
+            body = {'ok': False, 'action': act, 'soft': True}
+            body.update(getattr(e, 'payload', None) or {})
+            body.setdefault('hint', str(e))
+            try:
+                return StepOutcome(json.dumps(body, ensure_ascii=False, default=json_default),
+                                   next_prompt=self._get_anchor_prompt(skip=True))
+            except Exception:
+                return StepOutcome(str(body), next_prompt='\n')
         except Exception as e:
             return StepOutcome('[Error] gui_act failed: %s: %s' % (type(e).__name__, e), next_prompt='\n')
         # 动作后自动等页面稳定(F1): 静态页几乎不花时间, 加载页不抢跑。

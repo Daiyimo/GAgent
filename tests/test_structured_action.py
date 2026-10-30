@@ -123,13 +123,20 @@ class GuiActHandlerTest(unittest.TestCase):
             self._run({'action': 'tap', 'rel': [831, 81]})
         self.assertEqual(calls, [('tap', 996, 216)])
 
-    def test_out_of_range_rejected_before_device_call(self):
+    def test_out_of_range_is_a_soft_result_not_an_error(self):
+        # 真机 2026-10-29~30 的 45 条 [Error] 里, 这类"坐标越界/单位用错"占 6 条, 而它本可
+        # 当场给出正确写法。现在回 ok:false 的普通结果(soft), 把屏幕尺寸与 rel 建议一起带上,
+        # 模型同一轮就能改对 —— 用户在界面上也不再看到一串红字。
         import ga_android
         fake = types.SimpleNamespace(screen=lambda: (1200, 2670))
         with patch.dict(sys.modules, {'droid': fake}):
             out = self._run({'action': 'tap', 'point': [1500, 250]})
-        self.assertIn('[Error]', str(out.data))
-        self.assertIn('1200x2670', str(out.data))      # 报错要能自解释
+        self.assertNotIn('[Error]', str(out.data))
+        data = json.loads(out.data)
+        self.assertFalse(data['ok'])
+        self.assertTrue(data['soft'])
+        self.assertEqual(data['screen'], [1200, 2670])
+        self.assertIn('rel', data['hint'])
 
     def test_text_calls_paste(self):
         calls = []

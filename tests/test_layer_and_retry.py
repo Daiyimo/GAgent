@@ -144,12 +144,16 @@ class KbBlockTest(unittest.TestCase):
 
 
 class MissingTargetSaysGoUpTest(unittest.TestCase):
-    def test_lookup_error_points_at_the_parent_page(self):
+    def test_target_miss_soft_result_points_at_the_parent_page(self):
+        # target 没命中现在是 SoftMiss(软失败结果, 带 near 候选), 不再是 [Error]:
+        # 文案仍要指"上一级页面", 并且必须把这一屏真实存在的近似文字一起带回去。
         src = (CORE / 'ga_android.py').read_text(encoding='utf-8')
-        i = src.find('raise LookupError(')
-        msg = src[i:i + 700]
+        i = src.find('raise SoftMiss(')
+        self.assertGreater(i, 0)
+        msg = src[i:i + 1200]
         self.assertIn('上一级', msg)
         self.assertIn('back', msg)
+        self.assertIn('near', msg)
 
 
 if __name__ == '__main__':

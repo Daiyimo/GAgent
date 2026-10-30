@@ -148,7 +148,9 @@ class ShareTrapUnderGuiActTest(unittest.TestCase):
                                 'target': '关闭按钮（X）'},
                                _types.SimpleNamespace(content=''))
         self.assertEqual(taps, [])                       # 一下都没点
-        self.assertIn('title bar right corner', out.data)
+        # 软失败: 不再是 [Error] 红块, 而是带 zone/hint 的普通结果(见 SoftFail)
+        self.assertNotIn('[Error]', out.data)
+        self.assertIn('miniapp_capsule', out.data)
         self.assertIn('close', out.data)                 # 提示改用什么
 
 

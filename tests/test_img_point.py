@@ -70,10 +70,19 @@ class ResolveImgPointTest(unittest.TestCase):
             h._resolve_point({'img_point': [10, 10]}, 'point', 'rel')
         self.assertIn('img_point', str(ctx.exception))
 
-    def test_outside_the_image_is_an_error_not_a_clamp(self):
+    def test_outside_the_image_but_inside_the_screen_is_read_as_device_pixels(self):
+        # 真机 2026-10-30 11:09 那次: 模型把设备像素 [680,156] 填进 img_point(图只有 647 宽)。
+        # 旧行为直接报错, 白烧一轮(5-6s); 现在按设备像素用掉, 并把"我按 point 理解了"带回去。
         h = _handler()
-        with self.assertRaises(ValueError):
-            h._resolve_point({'img_point': [700, 100]}, 'point', 'rel')   # 图只有 647 宽
+        self.assertEqual(h._resolve_point({'img_point': [700, 100]}, 'point', 'rel'), (700, 100))
+        self.assertTrue(any('设备像素' in n for n in h._unit_notes))
+
+    def test_outside_the_screen_as_well_is_a_soft_failure(self):
+        h = _handler()
+        with self.assertRaises(ValueError) as ctx:
+            h._resolve_point({'img_point': [5000, 5000]}, 'point', 'rel')
+        self.assertIsInstance(ctx.exception, ga_android.SoftFail)
+        self.assertEqual(ctx.exception.payload['img'], list(IMAGED))
 
     def test_takes_exactly_one_unit(self):
         h = _handler()

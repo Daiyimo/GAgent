@@ -7,6 +7,13 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- gacore: 参数/命中类失败不再渲染成 `[Error]`, 改成带现场事实的软失败结果(用户反馈"刚开始执行就报一堆 error")
+  / parameter and hit-test failures are no longer rendered as `[Error]`; they return an actionable soft result
+  - 真机普查(2026-10-29~30, 22 次会话): 45 条 `[Error]` 里 target 未命中 14、多选 6、三单位二选一 5、状态栏 4、附图越界 2、其它 12, 真正的设备故障只有 2 条(无障碍未开); 全部集中在 t3-t14, 正是用户说的"开头那一段"。
+  - 新增 `SoftFail(ValueError)` / `SoftMiss(LookupError)`, 由 `_do_gui_act` 兜底转成 `{"ok": false, "soft": true, ...}` 的普通 `StepOutcome`: 仍是失败, 但不是红字, 模型同一轮就能按提示改对。
+  - `target` 没命中时回这一屏的近似候选 `near`(`t`/`point`/`ratio`); 只差空格/标点/一个字且 ratio >= 0.85、领先次名 >= 0.15 时直接命中并回 `fuzzy` —— 真机 14 条 miss 里大半是这种写法差异。
+  - 坐标守卫(三单位互斥/缺位置/形状/像素越界/状态栏/附图越界)改 `SoftFail` 并带 `screen`、`rel_suggestion`、单位说明; 附图坐标越界但落在屏幕内时按设备像素用掉, 并在结果的 `zone_hint` 里说明。
+  - 新增 `tests/test_soft_failures.py`; `tests/test_img_point.py`、`tests/test_structured_action.py`、`tests/test_dialog_close.py`、`tests/test_layer_and_retry.py` 的旧契约随之更新。
 - gacore: 小程序「总控胶囊」不再被当关闭键 —— 胶囊区坐标一律拒点，改成 `close` / `exit_miniapp`
   / the mini-program capsule (share + close keys) is no longer tapped as if it were a close button;
   any coordinate inside it is now refused and redirected to `close` or `exit_miniapp`
