@@ -14,6 +14,8 @@ import re
 
 KV_DIRNAME = 'kv'
 KEY_VISION_IN_TURN = 'ga.visioninturn'
+KEY_KB_MODE = 'ga.kbmode'
+KB_MODES = ('off', 'lexical', 'recall', 'both')
 MODES = ('off', 'auto', 'always')
 _ON = {'1', 'true', 'on', 'yes', 'always', 'all'}
 _OFF = {'0', 'false', 'no', 'off', 'none'}
@@ -76,6 +78,24 @@ def vision_in_turn(root=None):
 
 def vision_on(root=None):
     return vision_in_turn(root) != 'off'
+
+
+def kb_mode(root=None):
+    """知识库注入档位：'off' | 'lexical'（默认）| 'recall' | 'both'。
+
+    Stage 1 只有 lexical（卡片检索）；recall/both 是 Stage 2 的开关位，先留名字，
+    读到也不报错（当前实现按 lexical 处理），这样灰度脚本不用等代码。
+    默认开: 注入一次 ≈1.2KB 字符, 而模型自己 file_read 两轮 ≈4s + 经常只拿到无关段落。
+    用户可在聊天框直接 `/kv.set ga.kbmode off` 热关(不用重装)。
+    """
+    v = str(kv_get(KEY_KB_MODE, '', root) or '').strip().lower()
+    if not v:
+        return 'lexical'
+    if v in _OFF:
+        return 'off'
+    if v in _ON:
+        return 'lexical'
+    return v if v in KB_MODES else 'lexical'
 
 
 def vision_always(root=None):

@@ -439,6 +439,10 @@ class GenericAgentHandler(BaseHandler):
                         out['target'] = tv
                     return out
         # 没有别的候选: 试"图坐标 → 设备像素"
+        # 只在**没给 target** 时才做: 给了 target 说明模型本来要的是那段文字, 位置是它自己量的,
+        # 按比例硬换算过去常常落到别的控件上(09:45 那次就是这么点开分享的)。
+        if args.get('target'):
+            return out
         pt = out.get('point') or []
         iw, ih = getattr(self, '_attached_img_wh', None) or (None, None)
         if len(pt) == 2 and iw and ih:
@@ -448,6 +452,7 @@ class GenericAgentHandler(BaseHandler):
                 sw = sh = None
             if sw and sh and (int(sw) != int(iw) or int(sh) != int(ih)) and 0 <= pt[0] <= iw and 0 <= pt[1] <= ih:
                 sx, sy = int(round(pt[0] * float(sw) / iw)), int(round(pt[1] * float(sh) / ih))
+                landed = self._landed_text(sx, sy)          # 点之前先认一下那位置是什么字
                 try:
                     r3 = (droid.tap(sx, sy) if act == 'tap'
                           else droid.longpress(sx, sy, int(args.get('ms') or 800)))
@@ -457,10 +462,32 @@ class GenericAgentHandler(BaseHandler):
                 out['auto_retry'] = {'kind': 'img_scale',
                                      'from': [int(pt[0]), int(pt[1])], 'to': [sx, sy],
                                      'diff': r3.get('diff')}
+                if landed:
+                    out['auto_retry']['landed_on'] = landed  # 换算后落在什么控件上, 让模型能立刻纠正
                 if p3 is not None and p3 >= 0.2:
                     out['point'] = [sx, sy]
                     out['diff'] = r3.get('diff')
+                    # 第一次点空的 hint 到这里已经过期(画面明明变了), 留着只会误导下一轮
+                    out.pop('hint', None)
+                    out['retry_note'] = ('你给的坐标像附图坐标, 我按 %.2fx 换算成设备像素后点到了 %r; '
+                                         '同一次别重复这个数 —— 直接给 img_point 或 target。'
+                                         % (float(sw) / float(iw), landed or '该位置'))
         return out
+
+    @staticmethod
+    def _landed_text(x, y, pad_x=220, pad_y=70):
+        """点之前认一下 (x,y) 附近是什么字 —— 换算坐标最怕"点到了别的控件"。"""
+        import droid
+        try:
+            img = droid.shot()
+            H, W = img.shape[:2]
+            x1, x2 = max(0, int(x) - pad_x), min(W, int(x) + pad_x)
+            y1, y2 = max(0, int(y) - pad_y), min(H, int(y) + pad_y)
+            texts = [str(t).strip() for _b, t, _s in (droid.ocr(img[y1:y2, x1:x2]) or [])]
+            texts = [t for t in texts if t]
+            return '|'.join(texts)[:60]
+        except Exception:
+            return ''
 
     def _note_progress(self, out):
         """按画面指纹判断"这一步真的往前走了吗", 并在原地给出层级提示。
@@ -851,19 +878,20 @@ class GenericAgentHandler(BaseHandler):
     def _resolve_action_target(self, args):
         """gui_act 的 target → 像素点。
 
-        两个真机教训写在这里:
+        三个真机教训写在这里:
           · 模型经常同时给 target 和 point(它把 target 当成"我要点的是这个"), 旧实现直接
-            ValueError 拒掉 —— 一轮 5.6s 白烧, 4 次/会话。现在 point/rel 优先, target 只当标注;
-            真正会出错的是"给了 target 不给位置"那种, 那种仍然走解析。
+            ValueError 拒掉 —— 一轮 5.6s 白烧, 4 次/会话。现在两者共存不报错。
+          · **target 优先于坐标**(2026-10-30 09:45 三角洲会话的教训): 模型给
+            target="查看今日密码" + point=[513,115](那是 647x1440 附图上量的), 位置优先 → 落在
+            屏幕 (951,213), 正好是标题栏右上角的**分享**图标, 于是"看一眼今日密码"变成了打开分享
+            面板, 之后在取消/返回里绕了 6 轮。target 是全分辨率 OCR 的文字匹配, 与坐标单位无关,
+            所以在文字能命中的时候它是更可信的那一个; 坐标只在 target 不存在/没命中时兜底。
           · 同名多解时不抛错, 按 _rank_target_candidates 选一个并**把落选清单一起带回去**,
             模型在同一轮内就能用 target_index 纠正, 不必多跑一轮。
         """
         target = str(args.get('target') or '').strip()
         if not target:
             return None
-        if (args.get('point') is not None or args.get('rel') is not None
-                or args.get('img_point') is not None):
-            return None                     # 显式坐标优先; target 退化成"这一下点的是什么"的标注
         try:
             idx = int(args.get('target_index')) if args.get('target_index') is not None else None
         except (TypeError, ValueError):
@@ -977,8 +1005,20 @@ class GenericAgentHandler(BaseHandler):
         try:
             if act in ('tap', 'longpress'):
                 target_info = None
-                info = self._resolve_action_target(args) if args.get('target') else None
-                if info:                       # 只有"给了 target 没给位置"才真的走解析
+                info = None
+                target_miss = ''
+                if args.get('target'):
+                    try:
+                        info = self._resolve_action_target(args)
+                    except (LookupError, ValueError) as e:
+                        # target 没命中(或 index 越界)但给了坐标: 退回坐标这一手还能试 ——
+                        # 但把没命中的原因带回去, 别让模型以为"文字找到了"。
+                        has_pos = (args.get('point') is not None or args.get('rel') is not None
+                                   or args.get('img_point') is not None)
+                        if not has_pos:
+                            raise
+                        target_miss = str(e)[:160]
+                if info:                       # target 命中就用它(文字比模型目测的坐标可信)
                     x, y, target_info = info
                 else:
                     x, y = self._resolve_point(args, 'point', 'rel')
@@ -991,6 +1031,8 @@ class GenericAgentHandler(BaseHandler):
                 out = {'action': act, 'point': [x, y], 'diff': ret.get('diff')}
                 if target_info:
                     out['target'] = self._target_view(target_info)
+                if target_miss:
+                    out['target_miss'] = target_miss          # 文字没找到, 这段坐标是兜底
                 for k in ('verified', 'uncertain', 'hint', 'fg', 'screen', 'rot', 'orientation', 'orientation_changed'):
                     if ret.get(k) is not None:
                         out[k] = ret[k]
@@ -1751,35 +1793,109 @@ class GenericAgentHandler(BaseHandler):
 
     _KB_TURNS = 2
     _KB_MAX_LINES = 24
+    _KB_MAX_INJECT = 3          # 一个任务最多注入几次"任务相关卡"(开局 + pkg 变化)
 
     def _kb_block(self):
-        """任务开头两轮注入"常见入口索引", 之后不再注入。
+        """锚点里的知识块: 开局两轮给"入口索引 + 任务相关的知识卡", 之后只在 pkg 变化时补一次。
 
         为什么塞进锚点而不是让模型自己 file_read: 真机每个任务开头都先 file_read
-        phone_use.md(314 行只给 60 行) + app_cards.md(133 行只给 60 行), 两条 ≈4s 且经常只拿到
-        无关段落; 而"微信里的小程序/朋友圈/表情包在哪"这类知识每次任务都要用。索引只留一屏
-        (≈1.6KB), 细节仍指向 app_cards.md, 不复制正文, 两处不会漂移。"""
+        phone_use.md(318 行只给 60 行) + app_cards.md(133 行只给 60 行), 两条 ≈4s 且经常只拿到
+        无关段落(2026-10-30 四段会话里 100% 复现); 而"微信里的小程序/朋友圈在哪"这类知识每次
+        任务都要用。索引只留一屏(≈1.9KB), 细节仍指向 app_cards.md, 不复制正文, 两处不会漂移。
+
+        两段内容:
+          · `[KB] 常见入口索引` —— 固定的全应用索引(memory/app_index.md), 只在前 _KB_TURNS 轮给;
+          · `[KB:卡片id] ...` —— `kb.search()` 按**任务原文 + 当前前台包名**检索出来的 1-3 张卡,
+            带 `[待核]` 标记, 每任务最多 _KB_MAX_INJECT 次(开局一次 + 每次换 App 一次)。
+            检索发生在模型说话之前, 所以不额外花一轮工具调用(每轮往返 5-6s)。
+        """
         try:
-            if int(getattr(self, 'current_turn', 0) or 0) > self._KB_TURNS:
+            import agent_settings
+            if agent_settings.kb_mode() == 'off':      # /kv.set ga.kbmode off 可热关
                 return ''
+        except Exception:
+            pass
+        try:
+            turn = int(getattr(self, 'current_turn', 0) or 0)
         except (TypeError, ValueError):
-            return ''
-        text = getattr(self, '_kb_text', None)
-        if text is None:
-            text = ''
-            try:
-                path = os.path.join(script_dir, 'memory/app_index.md')
-                with open(path, 'r', encoding='utf-8', errors='replace') as f:
-                    lines = [l.rstrip() for l in f if l.strip()]
-                body = [l for l in lines if not l.startswith('# ')]
-                text = chr(10).join(body[:self._KB_MAX_LINES])
-            except Exception:
+            turn = 0
+        parts = []
+        if turn <= self._KB_TURNS:
+            text = getattr(self, '_kb_text', None)
+            if text is None:
                 text = ''
-            self._kb_text = text
+                try:
+                    path = os.path.join(script_dir, 'memory/app_index.md')
+                    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                        lines = [l.rstrip() for l in f if l.strip()]
+                    body = [l for l in lines if not l.startswith('# ')]
+                    text = chr(10).join(body[:self._KB_MAX_LINES])
+                except Exception:
+                    text = ''
+                self._kb_text = text
+            if text:
+                parts.append('### [KB] 常见入口索引（先照这个走, 省一次 file_read; 细节见 ../memory/app_cards.md）'
+                             + chr(10) + text)
+        # 任务相关卡: 开局给, 换 App 再给; 同一张卡不重复注入
+        try:
+            hits = self._kb_cards()
+        except Exception:
+            hits = ''
+        if hits:
+            parts.append(hits)
+        if not parts:
+            return ''
+        return chr(10) + chr(10).join(parts) + chr(10)
+
+    def _kb_cards(self):
+        """按任务原文 + 当前前台包名检索知识卡(每任务最多 _KB_MAX_INJECT 次)。"""
+        import droid      # 本模块刻意不 import droid(设备无关), 一律函数内 lazy import
+        import kb as _kb
+        try:
+            turn = int(getattr(self, 'current_turn', 0) or 0)
+        except (TypeError, ValueError):
+            turn = 0
+        injected = getattr(self, '_kb_injected', None)
+        if injected is None:
+            injected = self._kb_injected = {'n': 0, 'ids': set(), 'pkg': ''}
+        if injected['n'] >= self._KB_MAX_INJECT:
+            return ''
+        try:
+            pkg = droid._fg()
+        except Exception:
+            pkg = ''
+        fresh_pkg = bool(pkg) and pkg != injected['pkg']
+        if turn > self._KB_TURNS and not fresh_pkg:
+            return ''
+        query = ' '.join(str(x) for x in (getattr(self, '_goal_text', ''),
+                                          self._last_expect or '',
+                                          (droid.entry_hint(pkg) if pkg else '')) if x)
+        res = _kb.search(query, pkg=pkg, k=3)
+        text = res.get('text') or ''
         if not text:
             return ''
-        return (chr(10) + '### [KB] 常见入口索引（先照这个走, 省一次 file_read; 细节见 ../memory/app_cards.md）'
-                + chr(10) + text + chr(10))
+        # 已经注入过的卡不重复: 先按行切成"每张卡一块", 再按卡片 id 过滤
+        blocks, cur = [], []
+        for line in text.split(chr(10)):
+            if line.startswith('[KB:'):
+                if cur:
+                    blocks.append(cur)
+                cur = [line]
+            elif cur:
+                cur.append(line)
+        if cur:
+            blocks.append(cur)
+        keep = []
+        for block in blocks:
+            cid = block[0][4:].split(']')[0].split(' ')[0].strip()
+            if cid and cid not in injected['ids']:
+                keep.append(chr(10).join(block))
+                injected['ids'].add(cid)
+        if not keep:
+            return ''
+        injected['n'] += 1
+        injected['pkg'] = pkg
+        return chr(10).join(keep)
 
     def _goal_block(self):
         """每轮把"原始目标 / 已验证的里程碑 / 上次没兑现的期望"重注一遍(屏幕最前面)。

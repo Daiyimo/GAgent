@@ -7,6 +7,26 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- Task-start knowledge is now retrieved **into the anchor prompt** instead of being read by the model:
+  `gacore/kb.py` scores `memory/kb/*.md` cards (front-matter + body) with a deterministic lexical
+  ranker -- Chinese character bigrams (no jieba), BM25(k1=1.2, b=0.75), field weights
+  (app/aliases x3, intent x2, body x1), confidence (verified 1.0 / pending 0.5) and a +5 bonus for the
+  foreground package -- and `_kb_block()` injects the top 1-3 cards (<=1200 chars) on the first two
+  turns plus once per app switch, never repeating a card. Evidence: every real session opened with two
+  `file_read` calls (phone_use.md 318 lines served 60, app_cards.md 133 lines served 60) costing ~4s and
+  often returning the wrong section; and the 09:45 delta-force run tapped the mini-program's title-bar
+  share icon because nothing in context said where 查看今日密码 lives. Retrieval runs before the model
+  speaks, so it costs no extra tool turn (a turn is 5-6s). Hot switch: `/kv.set ga.kbmode off`.
+  `tools/kb_eval.py` pins recall@1/@3, the injection budget and the no-leak property on real task texts.
+  任务开头的知识现在**检索进锚点**，而不是让模型自己去读：`gacore/kb.py` 用确定性词法打分
+  （中文字符 bigram，不引 jieba；BM25 k1=1.2/b=0.75；字段权重 app/别名 x3、意图 x2、正文 x1；
+  置信度 verified 1.0 / 待核 0.5；前台包名 +5）给 `memory/kb/*.md` 的卡片排序，`_kb_block()` 在前两轮
+  以及每次换 App 时注入前 1-3 张（<=1200 字符），同一张卡不重复。依据：真机每个任务都先两次
+  `file_read`（phone_use.md 318 行只给 60 行、app_cards.md 133 行只给 60 行）≈4s 且常拿到无关段落；
+  09:45 的三角洲会话连标题栏右上角的分享都点开了，原因是上下文里没有任何一句说「查看今日密码」在哪。
+  检索发生在模型说话之前，所以不额外花工具轮（一轮 5-6s）。热开关：`/kv.set ga.kbmode off`。
+  `tools/kb_eval.py` 用真机任务原文把 recall@1/@3、注入预算与「无关查询零注入」钉住。
+
 - `back` now means "go up one level", not "press the system back key": in mini-programs,
   self-drawn canvases and H5 pages the system back key is swallowed by the page, so pressing it
   changes nothing -- which is exactly how the 2026-10-30 09:15 session got stuck (the next task

@@ -259,8 +259,9 @@ class SemanticActionTest(unittest.TestCase):
         self.assertEqual([a['point'] for a in data['target']['alternatives']], [[700, 500]])
         self.assertIn('target_index', data['target']['hint'])
 
-    def test_target_alongside_point_is_a_label_not_an_error(self):
+    def test_target_alongside_point_is_not_an_error(self):
         # 模型反复同时给 target 和 point("我要点的是这个 + 大致位置"), 旧实现直接 ValueError。
+        # 契约演化: 现在两者共存不报错, 且**文字命中就用文字**(见下面那条)。
         h = _handler()
         fake, taps = self._fake_droid(
             [{'x': 600, 'y': 300, 't': '搜索', 'd': ''}], [])
@@ -268,8 +269,34 @@ class SemanticActionTest(unittest.TestCase):
             out = h.do_gui_act({'action': 'tap', 'target': '搜索', 'point': [640, 320]},
                                types.SimpleNamespace(content=''))
         data = json.loads(out.data)
+        self.assertNotIn('error', data)
+        self.assertEqual(data['point'], [600, 300])
+
+    def test_target_wins_over_a_guessed_point(self):
+        # 2026-10-30 09:45 三角洲会话: target="查看今日密码" + point=[513,115](那是 647x1440 附图
+        # 上量的)。旧口径位置优先 → 落在 (951,213) 也就是标题栏右上角的「分享」图标, 一次"看密码"
+        # 变成了打开分享面板, 之后在取消/返回里绕了 6 轮。文字是全分辨率 OCR, 与坐标单位无关。
+        h = _handler()
+        fake, taps = self._fake_droid(
+            [{'x': 517, 'y': 1320, 't': '查看今日密码', 'd': ''}], [])
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = h.do_gui_act({'action': 'tap', 'target': '查看今日密码', 'point': [513, 115]},
+                               types.SimpleNamespace(content=''))
+        data = json.loads(out.data)
+        self.assertEqual(taps, [(517, 1320)])
+        self.assertEqual(data['target']['text'], '查看今日密码')
+
+    def test_target_miss_falls_back_to_the_point_but_says_so(self):
+        # 文字这一屏没有(可能在弹层后), 但坐标给了: 允许试坐标, 同时把"文字没命中"带回去,
+        # 免得模型以为文字已经找到。
+        h = _handler()
+        fake, taps = self._fake_droid([], [])
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = h.do_gui_act({'action': 'tap', 'target': '不存在的字', 'point': [640, 320]},
+                               types.SimpleNamespace(content=''))
+        data = json.loads(out.data)
         self.assertEqual(taps, [(640, 320)])
-        self.assertEqual(data['point'], [640, 320])
+        self.assertIn('target_miss', data)
         self.assertNotIn('target', data)
 
 
