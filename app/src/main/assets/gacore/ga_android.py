@@ -318,6 +318,11 @@ class GenericAgentHandler(BaseHandler):
         self._silent_exit_warned = False
         self._goal_text = ''
         self._last_bbox = None    # 最近一次画面变化的 bbox: close 只在这个范围里找关闭控件
+        # 任务第一步必须让模型看到"此刻"的屏幕: 真机 15:29/15:34 两次任务里, 会话历史还带着
+        # 上一个任务的截图与"弹窗已打开、密码是 XXXX"的结论, 而这一轮因为前台是桌面(auto 模式
+        # 只在视觉型页面上附图)根本没发图 —— 模型凭旧记忆判断"弹窗还开着", 于是在桌面上连按
+        # close/back, 把小程序退掉了。下面这个位保证第一步一定附图, 并清掉历史里的旧截图。
+        self._task_frame_pending = True
         self._trap_seen = []      # 标题栏右侧(分享/更多)点过的位置: 同一处不再照点
         for _line in self.history_info:      # [USER] 行就是原始任务陈述: 每轮重注它, 防止子目标漂移
             _s = str(_line)
@@ -1423,7 +1428,11 @@ class GenericAgentHandler(BaseHandler):
                 # back 在自绘 canvas/小程序/H5 页面上没有响应(系统返回键被页面吃掉), 这类页面
                 # 的唯一出口是屏幕上的「返回/关闭/×」按钮。所以 back 先在当帧里找那个按钮点它,
                 # 点不到才按系统返回 —— 否则模型想回上一级时只能在原地瞎点(真机 2026-10-30 09:15)。
-                res = droid.ui_back()
+                # target/expect 里写了「弹窗/弹层/对话框/窗口」= 这是弹层, 不是整页:
+                # 关不掉时不许按系统返回(在自绘小程序里那会把整个小程序退掉)。
+                _layer = any(w in (str(args.get('target') or '') + str(args.get('expect') or ''))
+                             for w in ('弹窗', '弹层', '对话框', '窗口'))
+                res = droid.ui_back(allow_system=not _layer)
                 out = {'action': act, 'via': res.get('via'), 'diff': res.get('diff')}
                 for k in ('ok', 'text', 'point', 'hint'):
                     if res.get(k) not in (None, ''):
@@ -1648,6 +1657,7 @@ class GenericAgentHandler(BaseHandler):
         不是每步多调一次视觉模型。see() 仍留给"这屏是什么意思"这类一次性提问。
         """
         mode = self._vision_mode()
+        first = bool(getattr(self, '_task_frame_pending', False))
         # 每轮先清"这一轮的附图尺寸": 它决定 img_point 能不能换算、换算比例是多少。
         # 留着上一轮的尺寸比不留更糟 —— 会被当成这轮的像素基准。
         self._attached_img_wh = None
@@ -1655,9 +1665,14 @@ class GenericAgentHandler(BaseHandler):
         if mode == 'off' or not self._session_takes_images():
             self._vision_in_turn_attached = False
             return None
-        if mode == 'auto' and not self._vision_covers_screen():
+        if mode == 'auto' and not first and not self._vision_covers_screen():
+            # auto: 只在"本地通道看不到结构"的视觉型页面上附图; 但**任务第一步例外** ——
+            # 开局必须知道现在到底在哪一屏(桌面? 微信? canvas 小程序?), 一帧图约 1.4k token。
             self._vision_in_turn_attached = False
             return None
+        if first:
+            self._task_frame_pending = False
+            self._drop_stale_frame_history()
         try:
             import droid
             b64, (w, h) = droid.shot_frame_b64(max_side=self._VISION_MAX_SIDE,
@@ -1676,18 +1691,51 @@ class GenericAgentHandler(BaseHandler):
         # 1200x2670, 附图是 647x1440; 旧文案"坐标按这张图的像素给 point"让模型把图坐标当设备
         # 像素填进 point, 于是搜索之后每一步都点在偏左/偏上 1.855 倍的位置(y>1440 的下半屏
         # 根本点不到)。改成三个具名单位, 并明确"图坐标用 img_point, 我来换算"。
+        head = ''
+        if first:
+            head = ('任务刚开始(第 1 步): 这是**此刻**的真实屏幕。上一个任务/上一轮的截图、坐标、'
+                    '"已经打开了什么页面"的结论一律作废, 先按这张图判断现在在哪一屏。')
+            try:
+                _fg = str(droid.ping().get('pkg') or '')
+            except Exception:
+                _fg = ''
+            if _fg:
+                head += '当前前台: %s。' % _fg
         if sw and sh:
-            note = ('当前屏幕截图（%dx%d，由 %dx%d 设备像素按长边缩放而来）。'
+            note = head + ('当前屏幕截图（%dx%d，由 %dx%d 设备像素按长边缩放而来）。'
                     'gui_act 坐标三选一: img_point=[x,y] 用这张图上的像素(我按比例换算); '
                     'point=[x,y] 用设备像素(obs/ocr 的 x/y); rel=[rx,ry] 用 0-1000(see 的 rx/ry)。'
                     % (w, h, sw, sh))
         else:
-            note = ('当前屏幕截图（%dx%d）。像素基准与设备屏幕不同: 图上位置请用 '
+            note = head + ('当前屏幕截图（%dx%d）。像素基准与设备屏幕不同: 图上位置请用 '
                     'img_point=[x,y](我换算), 设备像素用 point, 0-1000 用 rel。' % (w, h))
         return [
             {"type": "text", "text": note},
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
         ]
+
+    def _drop_stale_frame_history(self):
+        """任务开始时把会话历史里的旧截图块摘掉。
+
+        旧图留在历史里有两条害处: ① 模型会把上一任务的画面当成"现在"(真机 15:29 就是这样在
+        桌面上找弹窗); ② 每张图约 1.4k token, 历史里堆十几张会把上下文吃光(真机日志见过
+        1.5MB 的 prompt)。文字记录保留, 只摘 image 块。返回摘掉的消息条数。"""
+        hist = getattr(getattr(self, 'parent', None), 'history', None)
+        if not isinstance(hist, list):
+            return 0
+        n = 0
+        for m in hist:
+            c = m.get('content') if isinstance(m, dict) else None
+            if not isinstance(c, list):
+                continue
+            if not any(isinstance(b, dict) and b.get('type') == 'image' for b in c):
+                continue
+            kept = [b for b in c if not (isinstance(b, dict) and b.get('type') == 'image')]
+            m['content'] = kept or [{'type': 'text', 'text': '(上一轮的截图已过期, 已移除)'}]
+            n += 1
+        if n:
+            print('[GA] 任务开始: 移除历史里 %d 条旧截图(避免把上一任务的画面当成现在)' % n)
+        return n
 
     def _compact_obs(self, frame=None):
         """动作后的紧凑观测: [{t, src, label, cls, x, y, rx, ry, click}], 只留选目标必需的字段。

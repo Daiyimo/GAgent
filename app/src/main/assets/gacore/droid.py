@@ -1079,7 +1079,10 @@ def observe(roi=None, conf=0.25, cache=True, img=None):
     import cv2
     img = shot() if img is None else img     # img 由调用方给: 动作后帧直接复用, 不重复截图(截屏有最小间隔)
     H, W = img.shape[:2]
-    if isinstance(roi, str):
+    box = _roi_box(roi)
+    if box is not None:
+        roi = tuple(v / 1000.0 for v in box)     # 0-1000 契约 -> 比例, 下面的比例分支换算成像素
+    elif isinstance(roi, str):
         if roi not in _ROI_NAMES:
             raise ValueError('observe: unknown roi %r, choose from: %s' % (roi, '/'.join(sorted(_ROI_NAMES))))
         roi = _ROI_NAMES[roi]
@@ -1253,9 +1256,35 @@ def _mark_cap(backend, value):
     _CAP[_backend_id(backend)] = value
 
 
+def _roi_box(roi):
+    """字符串形式的 4 元组 -> (x1, y1, x2, y2)(0-1000 归一化); 不是数字框就返回 None。
+
+    真机 2026-10-30 15:41 实证: 模型按记忆里的 0-1000 契约把 roi 写成 "[800, 150, 950, 250]",
+    而 observe()/_resolve_roi() 的名字校验只认 'title'/'top' 这类名字, 于是整轮观测作废:
+    {"ok":false,"reason":"ocr_failed","error":"ValueError: unknown roi '[800, 150, 950, 250]'"}。
+    模型这样传是对的, 该吃下; 这里不写正则(ops 环境会吃反斜杠), 只按括号/逗号切。"""
+    if not isinstance(roi, str):
+        return None
+    s = roi.strip()
+    if not s or s[0] not in '[(':
+        return None
+    body = s.strip('[]() ')
+    parts = [p.strip() for p in body.split(',')]
+    if len(parts) != 4:
+        return None
+    try:
+        vals = [float(p) for p in parts]
+    except ValueError:
+        return None
+    return tuple(max(0.0, min(1000.0, v)) for v in vals)
+
+
 def _resolve_roi(roi):
     """ROI 名 → 0-1000 矩形。'title'/'status'/'navbar' 走 geom 实测锚带(与 look() 同一份),
     'top'/'upper'/... 走通用比例带; 已是 4 元组就原样返回。"""
+    box = _roi_box(roi)
+    if box is not None:
+        return tuple(int(round(v)) for v in box)      # 已经是 0-1000, 不用再换算
     if isinstance(roi, str):
         if roi not in _ROI_NAMES:
             raise ValueError('unknown roi %r, choose from: %s' % (roi, '/'.join(sorted(_ROI_NAMES))))
@@ -2305,7 +2334,7 @@ def _pct_from_diff(diff):
         return None
 
 
-def ui_back(verify=True, wait=1.0, tries=2):
+def ui_back(verify=True, wait=1.0, tries=2, allow_system=True):
     """回退一层: **先点屏上的返回/关闭按钮**, 都点不到才按系统 back。
 
     为什么不能直接 back: 小程序/自绘 canvas/H5 页面会把系统返回键吃掉(或根本不响应),
@@ -2354,6 +2383,11 @@ def ui_back(verify=True, wait=1.0, tries=2):
         if verify and _closed_ok(pct):
             return {"ok": True, "via": "button", "text": t, "point": [x, y],
                     "diff": r.get("diff"), "tried": tried}
+    if not allow_system:
+        return {"ok": False, "via": "none", "diff": None, "tried": tried,
+                "hint": ("这是弹层: 没找到可点的返回/关闭控件, 也没替你按系统返回"
+                         "(会把整个小程序退掉)。改用 gui_act {\"action\":\"close\"}, "
+                         "或 target=<弹层上的文字>。")}
     r = back()
     pct = _pct_from_diff(r.get("diff"))
     return {"ok": bool(pct is not None and pct >= _DIFF_CLOSED_PCT), "via": "system",
@@ -2362,7 +2396,20 @@ def ui_back(verify=True, wait=1.0, tries=2):
             }
 
 
-_CLOSE_TEXTS = ("关闭窗口", "关闭", "取消", "我知道了", "知道了", "暂不", "以后再说", "×", "✕", "╳", "X")
+_CLOSE_TEXTS = ("关闭窗口", "关闭", "取消", "我知道了", "知道了", "暂不", "以后再说")
+# 单字符关闭符: **只认全等**。真机 15:30:02 的 close 里 OCR 出来一个 "TEXT", 旧判据用
+# `any(k in t)` 匹配, 因为 _CLOSE_TEXTS 里有 "X", 于是 "TEXT" 被当成关闭按钮点到了 (193,418)。
+_CLOSE_CHARS = ("×", "✕", "╳", "✖", "x")
+
+
+def _is_close_text(t):
+    """这段文字是不是「关闭/取消/×」这类按钮(单字符只认全等, 不做子串)。"""
+    s_ = str(t or "").strip()
+    if not s_:
+        return False
+    if s_.lower() in _CLOSE_CHARS:
+        return True
+    return any(k in s_ for k in _CLOSE_TEXTS)
 
 # 「关掉这一层」的最小画面变化(百分数)。_pct_from_diff 返回的就是百分数(10.037 = 10.037%),
 # 这里原本跟 0.2 比 —— 等于把 0.2% 的动画抖动当成关上了。真机 15:11:34 / 15:13:51 两次
@@ -2492,7 +2539,7 @@ def exit_miniapp(verify=True, wait=1.0):
                                      "先 observe 看清楚再动")}
 
 
-def close_dialog(bbox=None, verify=True, wait=0.8, tries=3, expect_text=None):
+def close_dialog(bbox=None, verify=True, wait=0.8, tries=3, expect_text=None, allow_back=None):
     """关掉屏幕上的弹层: **只在弹层自己的范围里**找关闭控件, 找不到再按系统返回。
 
     为什么单独一个原语: 真机 2026-10-30 10:06 的三角洲会话里, 「今日密码」是 canvas 里的一个
@@ -2510,6 +2557,11 @@ def close_dialog(bbox=None, verify=True, wait=0.8, tries=3, expect_text=None):
     """
     if not verify:
         tries = 1
+    if allow_back is None:
+        # 给了 bbox 就说明"这是弹层", 不是整页: 弹层关不掉时按系统返回, 在自绘小程序里
+        # 等于把整个小程序退掉 —— 真机 15:30:02 close 的兜底 back 直接把画面送回了桌面,
+        # 模型下一句还按着"弹窗开着"的记忆继续点。所以只有没有 bbox 时才允许按系统返回。
+        allow_back = not bbox
     img = shot()
     H, W = img.shape[:2]
     box = None
@@ -2525,7 +2577,7 @@ def close_dialog(bbox=None, verify=True, wait=0.8, tries=3, expect_text=None):
             t = str(text or "").strip()
             if not t or len(t) > 10:
                 continue                       # 长句是正文/说明, 不是按钮
-            if not any(k == t or k in t for k in _CLOSE_TEXTS):
+            if not _is_close_text(t):
                 continue
             xs = [p[0] for p in bx]
             ys = [p[1] for p in bx]
@@ -2587,6 +2639,12 @@ def close_dialog(bbox=None, verify=True, wait=0.8, tries=3, expect_text=None):
                             "point": [ix, iy], "diff": r2.get("diff"), "tried": tried}
         except Exception:
             pass
+    if not allow_back:
+        return {"ok": False, "via": "none", "diff": None, "tried": tried,
+                "still_there": bool(expect_text and _text_on_screen(expect_text)),
+                "hint": ("这一层没认出可点的关闭控件, 也没有替你按系统返回(在小程序/canvas 上按"
+                         "返回会把整个小程序退掉)。改用 target=<弹层上的文字> 操作它, "
+                         "或动作 exit_miniapp 离开整个小程序。")}
     r = back()
     pct = _pct_from_diff(r.get("diff"))
     return {"ok": bool(pct is not None and _closed_ok(pct, expect_text)), "via": "system",

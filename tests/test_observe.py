@@ -153,5 +153,25 @@ class TestObserve(unittest.TestCase):
         self.assertEqual([d['label'] for d in out], ['取消'])
 
 
+    def test_roi_box_string_is_read_as_the_0_1000_contract(self):
+        """真机 2026-10-30 15:41 实证: 模型把 roi 写成 "[800, 150, 950, 250]",
+        而名字校验只认 'top'/'title', 于是整轮观测作废
+        ({"ok":false,"reason":"ocr_failed","error":"ValueError: unknown roi …"}).
+        文档里 roi 的契约就是 0-1000 归一化, 数字框必须吃下。"""
+        _wire(self, 'tree', nodes=[], dets=[_det(x=10, y=10)])
+        r = droid.observe(roi='[500, 0, 1000, 500]')      # 右半屏上半(0-1000), 屏幕 200x100
+        self.assertEqual(droid._OBS_CACHE['roi'], (100, 0, 200, 50))
+        self.assertEqual(r['items'][0]['x'], 110)          # 检出坐标已换算回整屏
+        self.assertEqual(r['items'][0]['y'], 10)
+
+    def test_roi_box_helper_and_resolve(self):
+        self.assertEqual(droid._roi_box('[800, 150, 950, 250]'), (800.0, 150.0, 950.0, 250.0))
+        self.assertEqual(droid._roi_box('( 0 , 0 ,1000, 1000 )'), (0.0, 0.0, 1000.0, 1000.0))
+        self.assertIsNone(droid._roi_box('title'))         # 名字不是数字框
+        self.assertIsNone(droid._roi_box([1, 2, 3, 4]))    # 非字符串: 保持原有像素/比例语义
+        self.assertIsNone(droid._roi_box('[1, 2, 3]'))
+        self.assertEqual(droid._resolve_roi('[800, 150, 950, 250]'), (800, 150, 950, 250))
+
+
 if __name__ == '__main__':
     unittest.main()

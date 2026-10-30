@@ -67,11 +67,20 @@ class CloseDialogTest(unittest.TestCase):
         self.assertEqual(res['via'], 'system')
 
     def test_bbox_limits_the_search_scope(self):
-        # 弹层之外的「取消」(底栏) 不是这一层的按钮
+        # 弹层之外的「取消」(底栏) 不是这一层的按钮; 有 bbox = 弹层, 也不再按系统返回
         res, calls = self._run([(_box(540, 2420, 660, 2490), '取消', 0.9)],
                                ['diff: 0.000%'], bbox=[80, 320, 1120, 2300])
         self.assertEqual(calls['tap'], [])
-        self.assertEqual(calls['back'], 1)
+        self.assertEqual(calls['back'], 0)
+
+    def test_dialog_layer_never_presses_system_back(self):
+        # 真机 15:30:02: close 认不出控件时兜底按了系统返回, 在自绘小程序里等于把整个
+        # 小程序退掉(画面直接回桌面), 模型还按着「弹窗开着」的记忆继续点。
+        res, calls = self._run([], ['diff: 0.000%'], bbox=[80, 320, 1120, 2300])
+        self.assertEqual(calls['back'], 0)
+        self.assertFalse(res['ok'])
+        self.assertEqual(res['via'], 'none')
+        self.assertIn('整个小程序', res['hint'])
 
     def test_right_top_corner_inside_the_dialog_is_tried_first(self):
         res, calls = self._run([(_box(200, 1500, 340, 1560), '取消', 0.9),

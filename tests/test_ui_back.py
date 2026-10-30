@@ -115,7 +115,9 @@ class GuiActBackUsesUiBackTest(unittest.TestCase):
         i = src.find("elif act == 'back':")
         self.assertGreater(i, 0)
         block = src[i:i + 1200]
-        self.assertIn('droid.ui_back()', block)
+        self.assertIn('droid.ui_back(allow_system=not _layer)', block)
+        # 弹层语义(目标里出现弹窗/弹层/对话框/窗口)不许按系统返回
+        self.assertIn("'弹窗'", block)
         self.assertIn("'via'", block)
         self.assertNotIn('droid.back()', block)               # 不再直接按系统返回
 

@@ -6,6 +6,23 @@ publicly released. Exact artifacts and acceptance belong to their release record
 本页记录源码候选的变化，不表示各版本均已公开；制品与验收以对应发布记录为准。
 
 ## Unreleased / 未发布变更
+- droid/ga_android: 任务第一帧必附图 + 旧截图不再冒充"现在" + roi 接受 0-1000 数字框
+  / first turn always attaches a live frame, stale screenshots are dropped, roi accepts a 0-1000 box
+  - 真机 15:29/15:34 两次任务第一轮 prompt 里一张图都没有(前台是桌面, auto 模式只在视觉型页面附图),
+    而同一会话历史还带着上一个任务的截图和"今日密码弹窗已打开、密码 0600/…"的结论 → 模型在桌面上
+    连按 close/back, 把整个小程序退掉, 用户看到"路径完全不对"。
+  - `ga_android.GenericAgentHandler._task_frame_pending`(任务边界置 True): `turn_content_blocks()` 在
+    auto 模式下**第一步例外附图**, 提示前置"任务刚开始(第 1 步): 这是此刻的真实屏幕 … 上一个任务/上一轮
+    的截图、坐标、『已经打开了什么页面』的结论一律作废" + `当前前台: <pkg>`; 用完置 False(第二步起回落原判据)。
+  - `_drop_stale_frame_history()`: 任务第一步顺手摘掉历史里的 image 块(保留文字, 纯图消息补一句占位),
+    既防"把上一任务的画面当成现在", 也省 token(一帧约 1.4k)。`/vision off` 时一帧不发、历史也不动。
+  - `droid.close_dialog(..., allow_back=None)`: 给了 bbox 的弹层关闭**不许按系统返回**(自绘小程序里
+    "返回"=退出整个小程序), 只能点文字按钮或图标叉; 新增 `droid.ui_back(..., allow_system=True)`,
+    目标像弹层(`弹窗/弹层/对话框/窗口`)时 ga_android 传 False。
+  - `_CLOSE_TEXTS` 里的单字符改用 `_is_close_text()` 全等判定(旧 `any(k in t)` 会把 OCR 出来的 "TEXT" 当叉)。
+  - `droid._roi_box()`: roi 现在也吃 `"[800, 150, 950, 250]"` 这种 0-1000 数字框(真机 15:41 模型就是这么传的,
+    旧代码 `ValueError: unknown roi …` 让整轮观测作废); 非字符串仍保持原比例/像素语义。
+  - 新增 `tests/test_first_frame.py`(5 条) + `tests/test_observe.py` 两条 + close/back 回归断言若干。
 - droid/ga_android: 关弹层不再把弹窗正文当叉点 + 关闭判据按百分比 + 单字 target="X" 软失败
   / droid+ga_android: dialog close can no longer pick body text as the ×, close threshold is real percent, single-letter target="X" is refused
   - 真机 15:08/15:11 三次会话同一条路打转: 模型 `tap target="X"` 命中了底栏 (361,2366); 之后 `gui_act close`
