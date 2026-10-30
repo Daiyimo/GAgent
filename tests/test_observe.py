@@ -50,6 +50,31 @@ def _wire(self, kind, nodes=(), dets=(), note=None, pkg='com.x'):
     droid._OBS_CACHE.update(thumb=None, roi=None, pkg=None, rot=None, res=None)
 
 
+class RoiBoxTest(unittest.TestCase):
+    """模型把 roi 写成 0-1000 数字框是合理用法(真机 15:41 就这么写然后整轮观测作废)。"""
+
+    def test_bracketed_box(self):
+        import droid as _d
+        self.assertEqual(_d._roi_box('[800, 150, 950, 250]'), (800.0, 150.0, 950.0, 250.0))
+
+    def test_bracketed_box_with_parens(self):
+        import droid as _d
+        self.assertEqual(_d._roi_box('(0,0,500,500)'), (0.0, 0.0, 500.0, 500.0))
+
+    def test_unbracketed_box_is_accepted(self):
+        import droid as _d
+        self.assertEqual(_d._roi_box('800,150,950,250'), (800.0, 150.0, 950.0, 250.0))
+
+    def test_a_box_clamped_to_nothing_is_not_a_box(self):
+        import droid as _d
+        self.assertIsNone(_d._roi_box('[2000,0,3000,500]'))     # 全在屏外: 不许静默裁成零宽
+        self.assertIsNone(_d._roi_box('[0,0,0,0]'))
+
+    def test_a_name_is_not_a_box(self):
+        import droid as _d
+        self.assertIsNone(_d._roi_box('title'))
+
+
 class TestObserve(unittest.TestCase):
     def test_tree_kind_merges_tree_and_yolo(self):
         _wire(self, 'tree', nodes=[_node()], dets=[_det()])

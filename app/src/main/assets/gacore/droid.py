@@ -1266,9 +1266,11 @@ def _roi_box(roi):
     if not isinstance(roi, str):
         return None
     s = roi.strip()
-    if not s or s[0] not in '[(':
+    if not s:
         return None
     body = s.strip('[]() ')
+    if s[0] not in '[(' and body.count(',') != 3:
+        return None
     parts = [p.strip() for p in body.split(',')]
     if len(parts) != 4:
         return None
@@ -1276,7 +1278,12 @@ def _roi_box(roi):
         vals = [float(p) for p in parts]
     except ValueError:
         return None
-    return tuple(max(0.0, min(1000.0, v)) for v in vals)
+    x1, y1, x2, y2 = (max(0.0, min(1000.0, v)) for v in vals)
+    if abs(x2 - x1) < 1 or abs(y2 - y1) < 1:
+        # 夹完只剩零宽/零高(如 [2000,0,3000,500] 全在屏外): 当非法, 让调用方回退全屏,
+        # 而不是静默裁一个空条去 OCR(会稳定返回 0 条, 看起来像"页面上什么都没有")。
+        return None
+    return (x1, y1, x2, y2)
 
 
 def _resolve_roi(roi):
@@ -2432,7 +2439,9 @@ def _close_icon_ok(label):
     for ch in t:
         if ord(ch) > 0x2E80:
             return False
-    return len(t) <= 12
+    # 拉丁标签只放行短符('x'/'ok'): 真机 15:30:02 被误点的正是 OCR 读出来的正文 'TEXT',
+    # 四个字母以上的拉丁词一律当正文, 不是那个叉。
+    return len(t) <= 3
 
 
 def _text_on_screen(text):

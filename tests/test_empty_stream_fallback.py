@@ -127,8 +127,10 @@ class EmptyStreamFallbackTest(unittest.TestCase):
         否则真机上第一个模型请求就以 TypeError: ... takes 5 positional arguments but 6 were given 直接失败。"""
         import inspect
         src = (Path(__file__).resolve().parents[1] / "app/src/main/assets/gacore/kernel_adapter/patches.py").read_text(encoding="utf-8")
-        self.assertIn("def _stream_with_retry(sess, url, headers, payload, parse_fn, json_fn=None):", src)
-        self.assertIn("g = orig(sess, url, headers, payload, parse_fn, json_fn)", src)
+        # 猴补只能原样转发: 抄一遍签名就会在下次改签名时把每个请求打成 TypeError。
+        self.assertIn("def _stream_with_retry(*args, **kwargs):", src)
+        self.assertIn("g = orig(*args, **kwargs)", src)
+        self.assertNotIn("def _stream_with_retry(sess, url", src)
         self.assertIn("json_fn", inspect.signature(llmcore._stream_with_retry).parameters)
     def test_plain_timeout_keeps_old_behaviour(self):
         def fake_post(url, headers=None, json=None, **kw):

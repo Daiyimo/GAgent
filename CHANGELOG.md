@@ -6,6 +6,20 @@ publicly released. Exact artifacts and acceptance belong to their release record
 本页记录源码候选的变化，不表示各版本均已公开；制品与验收以对应发布记录为准。
 
 ## Unreleased / 未发布变更
+- 解耦审核修整: 历史剪枝归会话侧, 猴补不再抄签名, 关闭/roi 的事实不再被丢
+  / decoupling review: history pruning belongs to the session, monkey patches stop copying signatures, close/roi facts are no longer dropped
+  - `ga_android._drop_stale_frame_history()` 不再自己遍历并改写 `parent.history`(会话消息库, 属主是
+    `llmcore.BaseSession`), 改成调用新增的 `BaseSession.drop_stale_images()`(内部 `age_image_blocks(history, keep=0)`);
+    旧写法漏了 `image_url` 块, 占位文字也和 `IMAGE_PLACEHOLDER` 不一致 —— 一处策略只能有一份实现。
+  - 第一帧的标志改成**拿到 b64 之后**才清: 此前 shot 一抛错, "第一步必附图"静默失效而旧图已被剪掉(不可回滚)。
+  - `kernel_adapter/patches.py` 的 `_stream_with_retry` 改 `(*args, **kwargs)` 原样转发(payload 从 args[3]/kw 取):
+    抄全签名正是上一轮 `takes 5 positional arguments but 6 were given` 让每个模型请求立刻失败的成因。
+  - `close_dialog` 的 `still_there`(关完再 OCR 核验)现在会随 `gui_act close` 回到模型; 胶囊改道那条 close 也补上
+    `expect_text`, 与主分支一致(此前那条路仍可能把 10% 的卡片抖动当"关上了")。
+  - `_close_icon_ok`: 拉丁标签上限 12 → 3 —— 真机 15:30:02 被误点的正是 OCR 读出的正文 `TEXT`。
+  - `_roi_box`: `800,150,950,250`(无括号)也接受; 夹到零宽/零高时返回 None 让调用方回退全屏, 不静默裁空条。
+  - 测试: `tests/test_first_frame.py`(截图失败不清标志 + 剪枝走会话)、`tests/test_dialog_close.py`(拉丁正文不是叉)、
+    `tests/test_observe.py`(roi 数字框)、`tests/test_soft_failures.py`(still_there 回到模型)、`tests/test_empty_stream_fallback.py`(猴补原样转发)。
 - droid/ga_android: 任务第一帧必附图 + 旧截图不再冒充"现在" + roi 接受 0-1000 数字框
   / first turn always attaches a live frame, stale screenshots are dropped, roi accepts a 0-1000 box
   - 真机 15:29/15:34 两次任务第一轮 prompt 里一张图都没有(前台是桌面, auto 模式只在视觉型页面附图),

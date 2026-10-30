@@ -141,6 +141,29 @@ class PointSoftResultTest(unittest.TestCase):
         self.assertIn("'soft': True", src[i:i + 900])
 
 
+class CloseForwardsStillThereTest(unittest.TestCase):
+    """droid 关完会再 OCR 一次, 算出 still_there; 这个字段以前在 handler 里被丢掉了。"""
+
+    def test_still_there_reaches_the_model(self):
+        taps = []
+        d = _fake(taps, OCR)
+        seen = {}
+        def _close(**kw):
+            seen.update(kw)
+            return {'ok': False, 'via': 'icon', 'text': '查看今日密码', 'point': [612, 315],
+                    'diff': 'diff: 0.000%', 'tried': [{'text': '查看今日密码'}], 'still_there': True}
+        d.close_dialog = _close
+        h = _Handler().h
+        with patch.dict(sys.modules, {'droid': d}):
+            out = h.do_gui_act({'action': 'close', 'expect': '关闭今日密码弹窗'},
+                               types.SimpleNamespace(content=''))
+        data = json.loads(out.data)
+        self.assertTrue(data['still_there'])
+        self.assertNotIn('[Error]', out.data)
+        # 期望文字要真的传给 droid, 否则它会拿"抖动"当"关上了"
+        self.assertEqual(seen.get('expect_text'), '今日密码')
+
+
 class CloseIconTargetSoftResultTest(unittest.TestCase):
     """target="X" 不能再当关闭键用: canvas 弹窗那个叉是画出来的, 文字层里没有它。"""
 

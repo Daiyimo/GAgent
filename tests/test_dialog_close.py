@@ -202,7 +202,7 @@ class CloseDialogIconTest(unittest.TestCase):
         return res, taps
 
     def _icon(self, x, y):
-        return {'x': x, 'y': y, 'label': 'Icon', 'cls': 'icon', 'bbox': [x - 20, y - 20, x + 20, y + 20]}
+        return {'x': x, 'y': y, 'label': '×', 'cls': 'icon', 'bbox': [x - 20, y - 20, x + 20, y + 20]}
 
     def test_icon_in_the_dialog_right_top_is_tapped(self):
         res, taps = self._run([self._icon(1030, 400)])
@@ -255,7 +255,7 @@ class TitleCornerRepeatTest(unittest.TestCase):
             taps.append((x, y))
             return {'diff': 'diff: 85.850% bbox=[0, 0, 1199, 2669]'}
 
-        def close_dialog(bbox=None):
+        def close_dialog(bbox=None, **kw):          # 现在也会带 expect_text(与主分支一致)
             close_calls.append(bbox)
             return {'ok': True, 'via': 'button', 'text': '关闭窗口',
                     'point': [1015, 402], 'diff': 'diff: 62.100% bbox=[0, 0, 1199, 2669]'}
@@ -338,7 +338,7 @@ class CapsuleTest(unittest.TestCase):
             return droid.miniapp_capsule(), taps
 
     def _icon(self, x, y):
-        return {'x': x, 'y': y, 'label': 'Icon', 'cls': 'icon', 'bbox': [x - 20, y - 20, x + 20, y + 20]}
+        return {'x': x, 'y': y, 'label': '×', 'cls': 'icon', 'bbox': [x - 20, y - 20, x + 20, y + 20]}
 
     def test_two_icons_rightmost_is_close(self):
         cap, _ = self._run([self._icon(1000, 215), self._icon(1110, 214)])
@@ -415,7 +415,7 @@ class CloseRegressionTest(unittest.TestCase):
 
     @staticmethod
     def _icon(x, y):
-        return {'x': x, 'y': y, 'label': 'Icon', 'cls': 'icon',
+        return {'x': x, 'y': y, 'label': '×', 'cls': 'icon',
                 'bbox': [x - 20, y - 20, x + 20, y + 20]}
 
     def _run(self, items, ocr_items, diffs, expect_text=None, bbox=(64, 737, 968, 1577)):
@@ -430,9 +430,18 @@ class CloseRegressionTest(unittest.TestCase):
             res = droid.close_dialog(bbox=bbox, expect_text=expect_text)
         return res, taps
 
+    def test_latin_body_text_is_not_a_close_icon(self):
+        """真机 15:30:02 被点掉的正是 OCR 读出来的 'TEXT' —— 四字母以上的拉丁词是正文。"""
+        import droid as _d
+        for label in ('TEXT', 'Icon', '航天基地', '特勤处'):
+            self.assertFalse(_d._close_icon_ok(label), label)
+        for label in ('', '×', 'x', 'OK', '关闭', '关闭窗口'):
+            self.assertTrue(_d._close_icon_ok(label), label)
+
     def test_body_card_label_is_not_a_close_icon(self):
         self.assertFalse(droid._close_icon_ok('航天基地'))
-        self.assertTrue(droid._close_icon_ok('Icon'))       # 无中文的图标标签仍然准入
+        self.assertTrue(droid._close_icon_ok('×'))           # 无中文的图标标签仍然准入
+        self.assertFalse(droid._close_icon_ok('Icon'))       # 四个字母的拉丁词是正文, 不是叉
         res, taps = self._run([{'x': 690, 'y': 675, 'label': '航天基地',
                                 'cls': 'text', 'bbox': [64, 737, 968, 1577]}], [],
                               ['diff: 10.037% bbox=[64, 737, 968, 1577]'])

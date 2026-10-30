@@ -1294,7 +1294,8 @@ class GenericAgentHandler(BaseHandler):
                     if self._close_intent(args):
                         # 意图是"关掉这一层"(页内弹层)却给了胶囊坐标: 不点胶囊, 改成 close 去
                         # 弹层自己的范围里找关闭控件(真机 10:26 那次就是这样连点 5 次分享键)。
-                        res = droid.close_dialog(bbox=self._last_bbox)
+                        res = droid.close_dialog(bbox=self._last_bbox,
+                                                 expect_text=self._close_expect_text(args))
                         out = {'action': act, 'redirect': 'title_band_close',
                                'via': res.get('via'), 'diff': res.get('diff'),
                                'point': res.get('point') or [x, y],
@@ -1409,6 +1410,10 @@ class GenericAgentHandler(BaseHandler):
                         out[k] = res[k]
                 if res.get('tried'):
                     out['tried'] = res['tried']
+                if 'still_there' in res:
+                    # 关完再 OCR 一次的结果: 关键字还在屏上 = 没关上。此前这个字段在 handler 里
+                    # 被丢掉了(droid 算出来也没人看见), 模型拿不到"其实没关掉"的事实。
+                    out['still_there'] = res['still_there']
             elif act == 'exit_miniapp':
                 # 离开整个小程序: canvas 页吃系统返回键, 唯一出口是小程序总控胶囊右侧那个键。
                 # 只点右边(关闭), 绝不点左边(分享/更多) —— 真机 10:06/10:26/10:52 三次都点开分享。
@@ -1670,9 +1675,6 @@ class GenericAgentHandler(BaseHandler):
             # 开局必须知道现在到底在哪一屏(桌面? 微信? canvas 小程序?), 一帧图约 1.4k token。
             self._vision_in_turn_attached = False
             return None
-        if first:
-            self._task_frame_pending = False
-            self._drop_stale_frame_history()
         try:
             import droid
             b64, (w, h) = droid.shot_frame_b64(max_side=self._VISION_MAX_SIDE,
@@ -1684,6 +1686,11 @@ class GenericAgentHandler(BaseHandler):
         except Exception as exc:
             self._vision_in_turn_attached = False
             return [{"type": "text", "text": "[当前屏幕截图不可用: %s]" % type(exc).__name__}]
+        if first:
+            # 只有真拿到这一帧才清标志 + 清旧图: 先清的话, shot 一抛错"第一步必附图"就静默
+            # 失效, 而历史里的旧图已经剪掉了(不可回滚), 模型会拿上一任务的画面当现在。
+            self._task_frame_pending = False
+            self._drop_stale_frame_history()
         self._vision_in_turn_attached = True
         self._attached_img_wh = (int(w), int(h))
         self._attached_screen_wh = (int(sw), int(sh)) if sw and sh else None
@@ -1719,22 +1726,21 @@ class GenericAgentHandler(BaseHandler):
 
         旧图留在历史里有两条害处: ① 模型会把上一任务的画面当成"现在"(真机 15:29 就是这样在
         桌面上找弹窗); ② 每张图约 1.4k token, 历史里堆十几张会把上下文吃光(真机日志见过
-        1.5MB 的 prompt)。文字记录保留, 只摘 image 块。返回摘掉的消息条数。"""
-        hist = getattr(getattr(self, 'parent', None), 'history', None)
-        if not isinstance(hist, list):
+        1.5MB 的 prompt)。文字记录保留, 只清图块。
+
+        解耦: 历史库和"图留几张"的策略都属于会话(llmcore.BaseSession), 这里只**请求**它清,
+        不再自己去遍历改写 parent.history —— handler 不该知道消息体的形状, 也不该有第二份
+        老化规则(那版漏了 image_url 块, 占位文字也和 IMAGE_PLACEHOLDER 不一致)。"""
+        p = getattr(self, 'parent', None)
+        drop = getattr(p, 'drop_stale_images', None)
+        if not callable(drop):
             return 0
-        n = 0
-        for m in hist:
-            c = m.get('content') if isinstance(m, dict) else None
-            if not isinstance(c, list):
-                continue
-            if not any(isinstance(b, dict) and b.get('type') == 'image' for b in c):
-                continue
-            kept = [b for b in c if not (isinstance(b, dict) and b.get('type') == 'image')]
-            m['content'] = kept or [{'type': 'text', 'text': '(上一轮的截图已过期, 已移除)'}]
-            n += 1
+        try:
+            n = int(drop() or 0)
+        except Exception:
+            return 0
         if n:
-            print('[GA] 任务开始: 移除历史里 %d 条旧截图(避免把上一任务的画面当成现在)' % n)
+            print('[GA] 任务开始: 移除历史里 %d 张旧截图(避免把上一任务的画面当成现在)' % n)
         return n
 
     def _compact_obs(self, frame=None):

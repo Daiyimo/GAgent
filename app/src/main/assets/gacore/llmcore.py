@@ -843,6 +843,15 @@ class BaseSession:
         self.max_tokens = cfg.get('max_tokens')
         self.default_ua = "claude-cli/2.1.152 (external, cli)"
         self.user_agent = cfg.get("user_agent", self.default_ua)
+    def drop_stale_images(self):
+        """任务边界: 把历史里的旧截图全部换成占位文字(keep=0)。返回被换掉的张数。
+
+        为什么放在会话侧: 历史(self.history)属于这里, "图该不该留"的老化规则也在这里
+        (见 age_image_blocks)。上层(agent handler)只需要"请求清掉旧图"这一个动作,
+        不该自己去遍历并改写消息体 —— 那样两处策略会漂移(漏 image_url 块、占位文字不同),
+        而且会绕过 trim_messages_history 的既有约定。"""
+        return age_image_blocks(self.history, keep=0)
+
     def _apply_claude_thinking(self, payload):
         if self.thinking_type:
             thinking = {"type": self.thinking_type}
