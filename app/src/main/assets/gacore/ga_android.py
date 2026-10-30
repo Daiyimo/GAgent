@@ -362,7 +362,7 @@ class GenericAgentHandler(BaseHandler):
         return StepOutcome(result, next_prompt=next_prompt)
     
     _GUI_ACTIONS = ('tap', 'swipe', 'longpress', 'text', 'key', 'launch', 'back', 'home', 'wait', 'close',
-                    'search_app')
+                    'search_app', 'exit_miniapp')
 
     _SEE_BUDGET_S = 20    # see() 自己的墙钟预算。视觉调用实测 15-46s; 超过 20s 的调用通常
                           # 是供应商卡住或整屏大图, 继续等只会把一次失败放大成 40-60s。超时后
@@ -486,6 +486,19 @@ class GenericAgentHandler(BaseHandler):
         意图明确、位置错。这种组合下换成本地 close 比让它再点一次划算得多。"""
         txt = ' '.join(str(args.get(k) or '') for k in ('expect', 'note', 'reason', 'why'))
         return any(w in txt.lower() for w in cls._CLOSE_WORDS)
+
+    _EXIT_WORDS = ('关闭小程序', '退出小程序', '离开小程序', '关掉小程序', '退到聊天',
+                   'exit miniapp', 'close miniapp', 'quit miniapp')
+
+    @classmethod
+    def _exit_intent(cls, args):
+        """这一步是不是"要离开整个小程序"(不是关页内弹层)。
+
+        两者走的是不同控件: 页内弹层有自己的关闭键(action=close), 而"离开小程序"只能按
+        小程序总控胶囊右侧那个键(action=exit_miniapp)。用户 2026-10-30 明确: 胶囊是总控,
+        非必要不要点。"""
+        txt = ' '.join(str(args.get(k) or '') for k in ('expect', 'note', 'reason', 'why'))
+        return any(w in txt.lower() for w in cls._EXIT_WORDS)
 
     def _trap_note(self, x, y):
         """记住「标题栏右侧(分享/更多)」点过的位置 —— 测试替身可能没有这个属性。"""
@@ -1094,36 +1107,56 @@ class GenericAgentHandler(BaseHandler):
                             'gui_act action="close", or aim at real text with target=..., or use '
                             'img_point=[x,y] with pixels read off the attached screenshot.'
                             % ([x, y], args.get('target')))
+                if self._share_trap(x, y) and (self._exit_intent(args) or self._close_intent(args)):
+                    # 只拦"想关/想退"却点到右上角"的那一类: 标题栏右侧在小程序里是总控胶囊
+                    # (左分享右关闭), 在微信主界面上却是放大镜 —— 光凭坐标分不开, 所以用意图分。
+                    # 真机 2026-10-30 10:06 / 10:26 / 10:52 三次: 右上角是**小程序的总控胶囊**,
+                    # 里面并排两个键 —— 左「分享/更多」, 右「关闭(退出小程序)」。用户要求:
+                    # 非必要不要点。以前"第一次照点 + 提示"仍会点开分享面板(10:52:17 那次
+                    # [890,200] diff 85.867% 就是它), 所以这里一步都不点, 只按意图改道:
+                    #   · 意图是"离开小程序" → 交给 exit_miniapp 点胶囊右侧那个键;
+                    #   · 其它意图(包括"关掉这一层") → 直接拒, 让它用 close/target/ocr。
+                    if self._exit_intent(args):
+                        res = droid.exit_miniapp()
+                        out = {'action': act, 'redirect': 'miniapp_capsule_close',
+                               'via': res.get('via'), 'diff': res.get('diff'),
+                               'point': res.get('point') or [x, y],
+                               'hint': ('(%d,%d) 是小程序总控胶囊: 左分享右关闭。你要离开小程序, '
+                                        '我改点右边的关闭键: ' % (x, y))}
+                        for k in ('ok', 'text', 'hint'):
+                            if res.get(k) not in (None, ''):
+                                out[k if k != 'hint' else 'close_hint'] = res[k]
+                        if res.get('more'):
+                            out['more'] = res['more']
+                        self._trap_note(x, y)
+                        self._last_act_ok = out.get('ok') is True
+                        return StepOutcome(json.dumps(out, ensure_ascii=False, default=str),
+                                           next_prompt=self._get_anchor_prompt(skip=True))
+                    if self._close_intent(args):
+                        # 意图是"关掉这一层"(页内弹层)却给了胶囊坐标: 不点胶囊, 改成 close 去
+                        # 弹层自己的范围里找关闭控件(真机 10:26 那次就是这样连点 5 次分享键)。
+                        res = droid.close_dialog(bbox=self._last_bbox)
+                        out = {'action': act, 'redirect': 'title_band_close',
+                               'via': res.get('via'), 'diff': res.get('diff'),
+                               'point': res.get('point') or [x, y],
+                               'hint': ('(%d,%d) 是小程序总控胶囊(左分享右关闭), 不点它; 你要关这一层, '
+                                        '我改成在弹层范围里找关闭键: ' % (x, y))}
+                        for k in ('ok', 'text', 'hint'):
+                            if res.get(k) not in (None, ''):
+                                out[k if k != 'hint' else 'close_hint'] = res[k]
+                        if res.get('tried'):
+                            out['tried'] = res['tried']
+                        self._trap_note(x, y)
+                        self._last_act_ok = out.get('ok') is True
+                        return StepOutcome(json.dumps(out, ensure_ascii=False, default=str),
+                                           next_prompt=self._get_anchor_prompt(skip=True))
                 if self._share_trap(x, y):
-                    # 真机 2026-10-30 10:06 / 10:26 两次: 小程序**标题栏右上角那三个点是分享/更多**,
-                    # 模型一直把它当"关闭/退出"点(10:26 那轮同一个点 [895,206] 连点 5 次, 每次
-                    # diff 85.850% = 分享面板开→关→开)。第一次照点但带提示; 第二次起不再照点:
-                    # 想关这一层就换成本地的 close(它会在弹层范围里找真的关闭控件), 其它意图直接拒绝。
-                    if self._trap_tapped(x, y):
-                        if self._close_intent(args):
-                            res = droid.close_dialog(bbox=self._last_bbox)
-                            out = {'action': act, 'redirect': 'title_band_close',
-                                   'via': res.get('via'), 'diff': res.get('diff'),
-                                   'point': res.get('point') or [x, y],
-                                   'hint': ('你把标题栏右上角([%d,%d] 那三个点)当成关闭点, 那是'
-                                            '分享/更多 —— 我替你改成关这一层: ' % (x, y))}
-                            for k in ('ok', 'text', 'hint'):
-                                if res.get(k) not in (None, ''):
-                                    out[k if k != 'hint' else 'close_hint'] = res[k]
-                            if res.get('tried'):
-                                out['tried'] = res['tried']
-                            self._trap_note(x, y)
-                            self._last_act_ok = out.get('ok') is True
-                            return StepOutcome(json.dumps(out, ensure_ascii=False, default=str),
-                                               next_prompt=self._get_anchor_prompt(skip=True))
-                        raise ValueError(
-                            'point %r is the mini-program title bar right corner (share/more), '
-                            'not a close/exit control, and you already tried it here. To close '
-                            'this layer use gui_act action="close"; to press something, aim at '
-                            'text with target=... or at img_point=[x,y].'
-                            % ([x, y],))
-                    out_hint = ('[title-zone] 标题栏右上角([%d,%d])是小程序/微信的"分享/更多", 不是关闭/退出。'
-                                '要关掉这一层用 gui_act {"action":"close"}; 要读这一层的文字用 ocr。' % (x, y))
+                    # 意图不是"关/退": 这一下可能是微信主界面的放大镜(0.83w), 放行但把语义讲清楚,
+                    # 免得模型把它当"关闭/退出"反复点。
+                    out_hint = ('[title-zone] 标题栏右侧([%d,%d])在小程序里是总控胶囊(左=分享/更多, '
+                                '右=关闭/退出小程序), 非必要不要点; 微信主界面这里则是放大镜。'
+                                '要关页内弹层用 gui_act {"action":"close"}, 要离开小程序用 '
+                                '{"action":"exit_miniapp"}。' % (x, y))
                 if act == 'tap':
                     ret = droid.tap(x, y)
                 else:
@@ -1213,6 +1246,21 @@ class GenericAgentHandler(BaseHandler):
                         out[k] = res[k]
                 if res.get('tried'):
                     out['tried'] = res['tried']
+            elif act == 'exit_miniapp':
+                # 离开整个小程序: canvas 页吃系统返回键, 唯一出口是小程序总控胶囊右侧那个键。
+                # 只点右边(关闭), 绝不点左边(分享/更多) —— 真机 10:06/10:26/10:52 三次都点开分享。
+                res = droid.exit_miniapp()
+                out = {'action': act, 'via': res.get('via'), 'diff': res.get('diff'),
+                       'point': res.get('point')}
+                for k in ('ok', 'hint'):
+                    if res.get(k) not in (None, ''):
+                        out[k] = res[k]
+                if res.get('more'):
+                    out['more'] = res['more']
+                if not res.get('ok'):
+                    out['hint'] = ((out.get('hint') or '') +
+                                   ' 胶囊右侧的关闭键没把小程序关掉: 先用 observe 看清当前在哪一层, '
+                                   '页内弹层用 action=close, 回上一级用 action=back。').strip()
             elif act == 'back':
                 # back 在自绘 canvas/小程序/H5 页面上没有响应(系统返回键被页面吃掉), 这类页面
                 # 的唯一出口是屏幕上的「返回/关闭/×」按钮。所以 back 先在当帧里找那个按钮点它,
@@ -1299,8 +1347,9 @@ class GenericAgentHandler(BaseHandler):
                                        'OCR 定位, 你不用换算也不会偏; ② img_point=[x,y] —— 图上量的像素, '
                                        '我按 图→屏幕 比例换算; ③ rel(0-1000)。**别把图坐标填进 point**(那是'
                                        '设备像素, 填错会整体偏一半以上)。④ 要关掉这一层(弹窗/抽屉/'
-                                       '分享面板)直接 gui_act {"action":"close"}, 不用给坐标 —— 标题栏右上角'
-                                       '那三个点是分享/更多, 点它只会打开分享面板。需要文字内容时用 '
+                                       '分享面板)直接 gui_act {"action":"close"}, 不用给坐标。右上角那两个键是小程序的'
+                                       '总控胶囊(左=分享/更多, 右=关闭/退出小程序), 非必要不要点: 要离开整个小程序'
+                                       '用 action="exit_miniapp", 点它旁边只会打开分享面板。需要文字内容时用 '
                                        'code_run 的 look()/ocr')
                 else:
                     # 这句以前无条件说"已附": 真机 25 轮里说了 8 次, 实际一帧都没发出去(会话是文本

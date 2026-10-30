@@ -19,7 +19,14 @@ def _sop():
 
 class TestSopThreeStep(unittest.TestCase):
     def test_three_step_contract_is_at_the_top(self):
-        head = _sop()[:1400]
+        # 取"第一个小节"而不是魔法字符数: 表里加一行(如 exit_miniapp)不该让契约测试假失败,
+        # 要锁的是"三步契约就是第一屏", 不是"第一屏恰好 1400 字符"。
+        body = _sop()
+        start = body.find('## ')
+        self.assertGreaterEqual(start, 0)
+        self.assertLess(start, 200, '三步契约必须是文档开头第一节')
+        end = body.find(chr(10) + '## ', start + 1)
+        head = body[start:] if end < 0 else body[start:end]
         for token in ('gui_act', 'see(', 'code_run'):
             self.assertIn(token, head, token)
 

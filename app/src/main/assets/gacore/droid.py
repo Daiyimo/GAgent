@@ -2365,6 +2365,88 @@ def ui_back(verify=True, wait=1.0, tries=2):
 _CLOSE_TEXTS = ("关闭窗口", "关闭", "取消", "我知道了", "知道了", "暂不", "以后再说", "退出", "×", "✕", "╳", "X")
 
 
+_CAPSULE_MIN_X = 0.72      # 小程序「总控胶囊」在标题带右侧, 只认最右 28% 的图标框
+
+
+def miniapp_capsule():
+    """认出微信小程序右上角「总控胶囊」里的两个键: 左=分享/更多, 右=关闭(退出小程序)。
+
+    为什么单独一个原语: 用户 2026-10-30 明确 —— 小程序右上角并排两个键, 一个分享一个关闭,
+    那是小程序的**总控**, 非必要不要点。代码以前只有"标题带"一个概念, 于是模型把随便一个角
+    当成关闭点: 10:06 / 10:26 / 10:52 三次会话都这样点开了分享面板(每次 diff 85.85%).
+
+    不写死任何像素: 只认 YOLO 在 title 带里给的图标框, 取最右的当关闭, 紧挨它左边
+    (±2% 屏高, 同一行)的当分享/更多。YOLO 没给框就老实说不知道, 由调用方退到 see()。
+
+    返回 {found, more, close, screen:[w,h], hint}。
+    """
+    W = H = 0
+    try:
+        p = ping()
+        W, H = int(p.get("w") or 0), int(p.get("h") or 0)
+    except Exception:
+        pass
+    if not (W and H):
+        return {"found": False, "more": None, "close": None, "screen": [W, H],
+                "hint": "拿不到屏幕尺寸, 认不出胶囊: 用 close 或 target= 走别的手"}
+    band = getattr(geom, "BANDS", {}).get("title") or (0.0, 0.055, 1.0, 0.120)
+    y_lo, y_hi = band[1] * H, band[3] * H
+    try:
+        items = look(roi="title") or []
+    except Exception:
+        items = []
+    cands = set()
+    for it in items:
+        try:
+            x, y = int(it["x"]), int(it["y"])
+        except Exception:
+            continue
+        if x < W * _CAPSULE_MIN_X:
+            continue
+        if not (y_lo - 8 <= y <= y_hi + 8):
+            continue
+        cands.add((x, y))
+    cands = sorted(cands)
+    if not cands:
+        return {"found": False, "more": None, "close": None, "screen": [W, H],
+                "hint": ("这一帧没在标题带右侧认出图标框: 想按胶囊就用 see(want='point', "
+                         "question='小程序右上角关闭键在哪', roi='title'); 关弹层用 close; "
+                         "点页面上的字用 target=")}
+    close_pt = [cands[-1][0], cands[-1][1]]
+    more_pt = None
+    if len(cands) >= 2:
+        lx, ly = cands[-2]
+        if abs(ly - close_pt[1]) <= max(40, int(H * 0.02)):
+            more_pt = [lx, ly]
+    return {"found": True, "more": more_pt, "close": close_pt, "screen": [W, H],
+            "hint": ("胶囊 = 小程序总控: 左「分享/更多」右「关闭(退出小程序)」; 非必要不要点。"
+                     "要离开整个小程序用 action=exit_miniapp, 关页内弹层用 action=close")}
+
+
+def exit_miniapp(verify=True, wait=1.0):
+    """点胶囊里的**关闭**键离开整个小程序(canvas 页系统返回键无效时的唯一出路)。
+
+    只点最右那个键: 左边是分享/更多, 点了只会弹分享面板(真机 10:52 复现)。
+    返回 {ok, via:'capsule_close'|'none', point, more, diff, hint}。
+    """
+    cap = miniapp_capsule()
+    if not cap.get("found") or not cap.get("close"):
+        return {"ok": False, "via": "none", "point": None, "more": cap.get("more"),
+                "diff": None, "hint": cap.get("hint")}
+    x, y = cap["close"]
+    try:
+        r = tap(x, y, verify=verify, wait=wait)
+    except Exception as e:
+        return {"ok": False, "via": "capsule_close", "point": [x, y], "more": cap.get("more"),
+                "diff": None, "hint": "点胶囊关闭键失败: %s" % (e,)}
+    pct = _pct_from_diff(r.get("diff"))
+    ok = bool((pct is not None and pct >= 0.2) or (pct is None and not verify))
+    return {"ok": ok, "via": "capsule_close", "point": [x, y], "more": cap.get("more"),
+            "diff": r.get("diff"),
+            "hint": (None if ok else "点了胶囊关闭键但画面没变: 可能已退出小程序/或在别的层, "
+                                     "先 observe 看清楚再动")}
+
+
 def close_dialog(bbox=None, verify=True, wait=0.8, tries=3):
     """关掉屏幕上的弹层: **只在弹层自己的范围里**找关闭控件, 找不到再按系统返回。
 
@@ -2423,6 +2505,37 @@ def close_dialog(bbox=None, verify=True, wait=0.8, tries=3):
         if verify and (pct is None or pct >= 0.2):
             return {"ok": True, "via": "button", "text": t, "point": [x, y],
                     "diff": r.get("diff"), "tried": tried}
+    if box:
+        # 图标型关闭控件: canvas 弹窗里的叉是画出来的, OCR 读不到文字 —— 真机 2026-10-30
+        # 10:51:34 那次 action=close 返回 ok:false 正是这个原因(模型随后只好去猜标题栏角落,
+        # 又点开分享面板)。这里只认"弹层范围右上方的图标框", 标题带(y<10%)依旧不碰。
+        try:
+            roi = (box[0] * 1000.0 / W, box[1] * 1000.0 / H,
+                   box[2] * 1000.0 / W, box[3] * 1000.0 / H)
+            icons = []
+            for it in (look(roi=roi) or []):
+                ix, iy = int(it["x"]), int(it["y"])
+                if iy < H * 0.10:
+                    continue
+                if ix < box[0] + (box[2] - box[0]) * 0.55:
+                    continue
+                if iy > box[1] + (box[3] - box[1]) * 0.45:
+                    continue
+                icons.append((iy, ix, str(it.get("label") or "")))
+            icons.sort()
+            for iy, ix, lab in icons[:max(1, int(tries)) - len(tried)]:
+                try:
+                    r2 = tap(ix, iy, verify=verify, wait=wait)
+                except Exception:
+                    break
+                pct2 = _pct_from_diff(r2.get("diff"))
+                tried.append({"text": lab or "icon", "point": [ix, iy],
+                              "diff": r2.get("diff"), "via": "icon"})
+                if verify and (pct2 is None or pct2 >= 0.2):
+                    return {"ok": True, "via": "icon", "text": lab or "icon",
+                            "point": [ix, iy], "diff": r2.get("diff"), "tried": tried}
+        except Exception:
+            pass
     r = back()
     pct = _pct_from_diff(r.get("diff"))
     return {"ok": bool(pct is not None and pct >= 0.2), "via": "system",

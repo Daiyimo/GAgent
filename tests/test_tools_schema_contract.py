@@ -26,6 +26,7 @@ class GuiActSchemaContractTest(unittest.TestCase):
         'wait': 'wait_stable',
         'search_app': 'search_app',
         'close': 'close_dialog',
+        'exit_miniapp': 'exit_miniapp',
     }
 
     def _schema(self, name):

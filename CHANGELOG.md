@@ -7,6 +7,24 @@ publicly released. Exact artifacts and acceptance belong to their release record
 
 ## Unreleased / 未发布变更
 
+- gacore: 小程序「总控胶囊」不再被当关闭键 —— 胶囊区坐标一律拒点，改成 `close` / `exit_miniapp`
+  / the mini-program capsule (share + close keys) is no longer tapped as if it were a close button;
+  any coordinate inside it is now refused and redirected to `close` or `exit_miniapp`
+  - 用户实测口径：小程序右上角是总控胶囊，并排两个键 —— 左=分享/更多，右=关闭（退出小程序），
+    **非必要不要点**。三次真机记录都点到左边那个键（10:06 `[906,205]`、10:26 `[895,206]`×5、
+    10:52 `[890,200]`），每次 diff 都是 85.850%~85.867%（分享面板开→关→开），而真正要关的
+    今日密码弹窗一直没关掉。
+  - 上一版"第一次照点 + `zone_hint`"仍会点开分享面板（10:52:17 就是它），本轮改成一步都不点：
+    有"离开小程序"意图 → `droid.exit_miniapp()` 只点胶囊右侧那个键；有"关掉这一层"意图 →
+    改道 `droid.close_dialog(bbox=最近一次画面变化范围)`；其它意图直接拒绝并说明该用哪个动作。
+  - `droid.miniapp_capsule()` 用 YOLO 在标题带右侧（`x >= 0.72*W`）认框：最右=关闭、其左邻=分享，
+    只用来点"关闭"，分享键永不点击（`exit_miniapp` 返回里 `more` 只作信息）。
+  - `close_dialog()` 补图标兜底：真机 10:51:34 `action=close` 返回 `ok:false`，因为 canvas 弹窗
+    的 × 是画出来的、OCR 读不到文字。现在在弹层范围（最近一次 diff 的 bbox）内用 YOLO 找
+    "右上方的图标框"并逐个点验，标题带（y<10%）依旧不碰。
+  - 新增 `gui_act {"action":"exit_miniapp"}`（两份 schema 的 enum 与说明同步、契约测试映射
+    `'exit_miniapp': 'exit_miniapp'`），并补 `tests/test_dialog_close.py` 的
+    `CapsuleTest` / `CloseDialogIconTest` / 胶囊闸门三条用例。
 - gacore: 标题栏右侧那三个点（⋯）不再被当成关闭键 —— 同一处重复点击会被拒或被改成 `close`
   / the mini-program title-bar ⋯ (share/more) is no longer treated as a close button; a repeat tap
   there is refused or turned into `close`

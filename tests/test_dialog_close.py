@@ -175,6 +175,44 @@ class ShareTrapTest(unittest.TestCase):
             self.assertFalse(self.h._share_trap(906, 205))
 
 
+class CloseDialogIconTest(unittest.TestCase):
+    """canvas 弹窗的关闭键是画出来的叉: OCR 读不到文字, 要认弹层右上方那个图标框。"""
+
+    def _run(self, items, bbox=(0, 0, 1199, 2282), diffs=None):
+        taps = []
+        seq = diffs or ['diff: 63.000% bbox=[0, 0, 1199, 2669]']
+
+        def fake_tap(x, y, **kw):
+            taps.append((x, y))
+            return {'diff': seq.pop(0) if len(seq) > 1 else seq[0]}
+
+        with patch.object(droid, 'shot', lambda *a, **k: IMG),              patch.object(droid, 'ocr', lambda img: []),              patch.object(droid, 'look', lambda **kw: items),              patch.object(droid, 'tap', fake_tap),              patch.object(droid, 'longpress', fake_tap),              patch.object(droid, 'back', lambda: {'diff': 'diff: 0.050% bbox=[0, 0, 1199, 2669]'}):
+            res = droid.close_dialog(bbox=bbox)
+        return res, taps
+
+    def _icon(self, x, y):
+        return {'x': x, 'y': y, 'label': 'Icon', 'cls': 'icon', 'bbox': [x - 20, y - 20, x + 20, y + 20]}
+
+    def test_icon_in_the_dialog_right_top_is_tapped(self):
+        res, taps = self._run([self._icon(1030, 400)])
+        self.assertTrue(res['ok'])
+        self.assertEqual(res['via'], 'icon')
+        self.assertEqual(taps, [(1030, 400)])
+
+    def test_icon_in_the_title_band_is_never_tapped(self):
+        res, taps = self._run([self._icon(1110, 210)])
+        self.assertEqual(taps, [])
+        self.assertFalse(res['ok'])
+
+    def test_icon_far_left_inside_the_dialog_is_not_a_close_control(self):
+        res, taps = self._run([self._icon(120, 400)])
+        self.assertEqual(taps, [])
+
+    def test_icon_below_the_dialog_top_half_is_not_a_close_control(self):
+        res, taps = self._run([self._icon(1030, 2000)])
+        self.assertEqual(taps, [])
+
+
 class TitleCornerRepeatTest(unittest.TestCase):
     """2026-10-30 10:26 那一轮: 模型把标题栏右角的三个点(分享/更多)当"关闭/退出",
     同一个点 [895,206] 连点 5 次, 每次 diff 都是 85.850%(分享面板开→关→开)。
@@ -224,46 +262,117 @@ class TitleCornerRepeatTest(unittest.TestCase):
             close_dialog=close_dialog,
         )
 
-    def test_first_tap_is_allowed_but_flagged(self):
-        taps, closes = [], []
-        h = self._handler()
-        with patch.dict(sys.modules, {'droid': self._fake(taps, closes)}):
-            out = h.do_gui_act({'action': 'tap', 'point': [895, 206], 'expect': '关闭弹窗'},
-                               types.SimpleNamespace(content=''))
-        data = json.loads(out.data)
-        self.assertEqual(taps, [(895, 206)])
-        self.assertIn('zone_hint', data)
-        self.assertIn('close', data['zone_hint'])
-
-    def test_second_tap_with_close_intent_is_redirected_to_close(self):
+    def test_capsule_tap_with_close_intent_is_redirected_to_close(self):
         taps, closes = [], []
         h = self._handler()
         fake = self._fake(taps, closes)
         with patch.dict(sys.modules, {'droid': fake}):
-            h.do_gui_act({'action': 'tap', 'point': [895, 206], 'expect': '关闭弹窗'},
-                         types.SimpleNamespace(content=''))
             out = h.do_gui_act({'action': 'tap', 'point': [895, 206], 'expect': '关闭今日密码弹窗'},
                                types.SimpleNamespace(content=''))
         data = json.loads(out.data)
-        self.assertEqual(taps, [(895, 206)])          # 第二下没有再点到分享上
-        self.assertEqual(closes, [[0, 0, 1199, 2669]])  # 换成本地 close, 用弹层范围
+        self.assertEqual(taps, [])                      # 一步都没点胶囊
+        self.assertEqual(closes, [[0, 0, 1199, 2669]])   # 改成在弹层范围里找关闭键
         self.assertEqual(data['redirect'], 'title_band_close')
-        self.assertEqual(data['via'], 'button')
         self.assertTrue(data['ok'])
 
-    def test_second_tap_without_close_intent_is_refused(self):
+    def test_capsule_tap_with_exit_intent_uses_the_close_key_only(self):
+        taps, closes = [], []
+        h = self._handler()
+        fake = self._fake(taps, closes)
+        exits = []
+
+        def exit_miniapp(**kw):
+            exits.append(1)
+            return {'ok': True, 'via': 'capsule_close', 'point': [1110, 217],
+                    'more': [1000, 215], 'diff': 'diff: 62.000% bbox=[0, 0, 1199, 2669]'}
+
+        fake.exit_miniapp = exit_miniapp
+        with patch.dict(sys.modules, {'droid': fake}):
+            out = h.do_gui_act({'action': 'tap', 'point': [1000, 215],
+                                'expect': '退出小程序重来'},
+                               types.SimpleNamespace(content=''))
+        data = json.loads(out.data)
+        self.assertEqual(taps, [])                       # 分享键一步都没点
+        self.assertEqual(exits, [1])                     # 改走胶囊右侧那个关闭键
+        self.assertEqual(data['redirect'], 'miniapp_capsule_close')
+        self.assertEqual(data['point'], [1110, 217])
+
+    def test_capsule_tap_without_close_or_exit_intent_is_allowed_but_explained(self):
+        # 微信主界面的放大镜也在标题栏右侧(0.83w): 只凭坐标分不开胶囊和放大镜, 所以按意图拦。
         taps, closes = [], []
         h = self._handler()
         fake = self._fake(taps, closes)
         with patch.dict(sys.modules, {'droid': fake}):
-            h.do_gui_act({'action': 'tap', 'point': [895, 206], 'expect': '打开今日密码'},
-                         types.SimpleNamespace(content=''))
-            out = h.do_gui_act({'action': 'tap', 'point': [895, 206], 'expect': '看看这层有什么'},
+            out = h.do_gui_act({'action': 'tap', 'point': [996, 215], 'expect': '打开搜索框'},
                                types.SimpleNamespace(content=''))
-        self.assertEqual(len(taps), 1)
+        data = json.loads(out.data)
+        self.assertEqual(taps, [(996, 215)])
         self.assertEqual(closes, [])
-        self.assertIn('share/more', out.data)
-        self.assertIn('action="close"', out.data)
+        self.assertIn('总控胶囊', data['zone_hint'])
+        self.assertIn('exit_miniapp', data['zone_hint'])
+
+
+class CapsuleTest(unittest.TestCase):
+    """胶囊 = 小程序右上角并排两个键(左分享/右关闭), 只认 YOLO 在标题带右侧给的图标框。"""
+
+    def _run(self, items, screen=(1200, 2670), tap_diffs=None):
+        taps = []
+        diffs = tap_diffs or ['diff: 63.000% bbox=[0, 0, 1199, 2669]']
+
+        def fake_tap(x, y, **kw):
+            taps.append((x, y))
+            return {'diff': diffs.pop(0) if len(diffs) > 1 else diffs[0]}
+
+        with patch.object(droid, 'look', lambda **kw: items),              patch.object(droid, 'ping', lambda: {'w': screen[0], 'h': screen[1]}),              patch.object(droid, 'tap', fake_tap),              patch.object(droid, 'longpress', fake_tap):
+            return droid.miniapp_capsule(), taps
+
+    def _icon(self, x, y):
+        return {'x': x, 'y': y, 'label': 'Icon', 'cls': 'icon', 'bbox': [x - 20, y - 20, x + 20, y + 20]}
+
+    def test_two_icons_rightmost_is_close(self):
+        cap, _ = self._run([self._icon(1000, 215), self._icon(1110, 214)])
+        self.assertTrue(cap['found'])
+        self.assertEqual(cap['close'], [1110, 214])
+        self.assertEqual(cap['more'], [1000, 215])
+
+    def test_single_icon_is_close_and_more_is_unknown(self):
+        cap, _ = self._run([self._icon(1110, 214)])
+        self.assertEqual(cap['close'], [1110, 214])
+        self.assertIsNone(cap['more'])
+
+    def test_icon_outside_the_capsule_zone_is_ignored(self):
+        cap, _ = self._run([self._icon(400, 214)])       # 标题带左侧, 不是胶囊
+        self.assertFalse(cap['found'])
+        self.assertIn('see', cap['hint'])
+
+    def test_icon_below_the_title_band_is_ignored(self):
+        cap, _ = self._run([self._icon(1110, 900)])
+        self.assertFalse(cap['found'])
+
+    def test_no_icons_at_all_means_not_found(self):
+        cap, _ = self._run([])
+        self.assertFalse(cap['found'])
+        self.assertIsNone(cap['close'])
+
+    def test_exit_miniapp_taps_the_close_key_and_never_the_share_key(self):
+        taps = []
+
+        def fake_tap(x, y, **kw):
+            taps.append((x, y))
+            return {'diff': 'diff: 62.000% bbox=[0, 0, 1199, 2669]'}
+
+        with patch.object(droid, 'look', lambda **kw: [self._icon(1000, 215), self._icon(1110, 214)]),              patch.object(droid, 'ping', lambda: {'w': 1200, 'h': 2670}),              patch.object(droid, 'tap', fake_tap),              patch.object(droid, 'longpress', fake_tap):
+            res = droid.exit_miniapp()
+        self.assertTrue(res['ok'])
+        self.assertEqual(res['via'], 'capsule_close')
+        self.assertEqual(taps, [(1110, 214)])
+
+    def test_exit_miniapp_refuses_when_the_capsule_is_not_found(self):
+        taps = []
+        with patch.object(droid, 'look', lambda **kw: []),              patch.object(droid, 'ping', lambda: {'w': 1200, 'h': 2670}),              patch.object(droid, 'tap', lambda x, y, **kw: taps.append((x, y)) or {'diff': 'x'}):
+            res = droid.exit_miniapp()
+        self.assertFalse(res['ok'])
+        self.assertEqual(taps, [])
 
 
 class CloseWiringTest(unittest.TestCase):
