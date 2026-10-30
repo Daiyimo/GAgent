@@ -15,6 +15,8 @@ publicly released. Exact artifacts and acceptance belong to their release record
     请求体形状, 图片只留长度, 最多 20 份), 报错文案也带上 `raw_lines`/`saw_done`, 便于事后判定是哪一类。
   - `_parse_openai_sse` 遇到 `data: {"error": ...}`(网关把错误包成事件)现在会 yield `!!!Error: <msg>`,
     不再被静默忽略然后误报成"空流"。
+  - 修 `kernel_adapter/patches.py:patch_llm_timing` 的猴补签名(补 `json_fn=None` 并转发): 否则真机上第一个模型
+    请求就 `TypeError: ... takes 5 positional arguments but 6 were given`, 任务 6 秒即结束。
 - llmcore: 空流(HTTP 200 零 chunk)自动改非流式重取 + 中间重试不再刷红字
   / llmcore: empty-stream auto-retry via non-stream fallback + silent intermediate retries
   - 真机取证(2026-10-30, StepFun `step_plan` + `step-3.7-flash`): `files/ga/chat.json` 20 条历史任务里 4 条

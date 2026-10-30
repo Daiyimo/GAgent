@@ -310,10 +310,10 @@ def patch_llm_timing():
     import llmcore
     if getattr(llmcore, '_ga_llmt_patched', None) is _ae: return
     orig = getattr(llmcore, '_ga_llmt_orig', None) or llmcore._stream_with_retry
-    def _stream_with_retry(sess, url, headers, payload, parse_fn):
+    def _stream_with_retry(sess, url, headers, payload, parse_fn, json_fn=None):
         try: rec = _llmt_open(payload)
         except Exception: rec = None
-        g = orig(sess, url, headers, payload, parse_fn)
+        g = orig(sess, url, headers, payload, parse_fn, json_fn)
         try:
             while True:
                 prev, _tls.llmt = getattr(_tls, 'llmt', None), rec   # 只在推进内层生成器时归属本记录: 弃用的生成器不会吞下后续请求

@@ -122,6 +122,14 @@ class EmptyStreamFallbackTest(unittest.TestCase):
         self.assertEqual(len(seen), 1, '空流应落一次诊断')
         self.assertEqual(seen[0][0][-1], 'empty response')
 
+    def test_timing_wrapper_keeps_the_json_fn_parameter(self):
+        """patches.patch_llm_timing 会猴补 _stream_with_retry; 它必须跟着新签名走,
+        否则真机上第一个模型请求就以 TypeError: ... takes 5 positional arguments but 6 were given 直接失败。"""
+        import inspect
+        src = (Path(__file__).resolve().parents[1] / "app/src/main/assets/gacore/kernel_adapter/patches.py").read_text(encoding="utf-8")
+        self.assertIn("def _stream_with_retry(sess, url, headers, payload, parse_fn, json_fn=None):", src)
+        self.assertIn("g = orig(sess, url, headers, payload, parse_fn, json_fn)", src)
+        self.assertIn("json_fn", inspect.signature(llmcore._stream_with_retry).parameters)
     def test_plain_timeout_keeps_old_behaviour(self):
         def fake_post(url, headers=None, json=None, **kw):
             raise llmcore.requests.Timeout('read timed out')
